@@ -5,6 +5,18 @@ use std::{
 };
 use surface_tracker::{App, ingest_router, read_router};
 
+async fn terminate() {
+    #[cfg(unix)]
+    {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler")
+            .recv()
+            .await;
+    }
+    #[cfg(not(unix))]
+    std::future::pending::<()>().await;
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = std::fs::read_to_string(env::var("TRACKER_TOKEN_FILE")?)?;
@@ -34,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         result = axum::serve(a, ingest_router(app.clone())) => result?,
         result = axum::serve(b, read_router(app)) => result?,
         _ = tokio::signal::ctrl_c() => (),
+        _ = terminate() => (),
     }
     Ok(())
 }

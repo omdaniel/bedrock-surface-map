@@ -39,10 +39,13 @@ const publisher = new Publisher(
     if (body.length > 12000) throw Error("Tracker payload bound exceeded");
     request.body = body;
     const response = await http.request(request);
-    if (response.status !== 204) throw Error("Tracker request rejected");
+    if (response.status !== 204) throw Error(`HTTP_${response.status}`);
   },
   () => roster.acknowledge(),
-  () => console.warn("Surface tracker export unavailable; gameplay continues"),
+  (code) =>
+    console.warn(
+      `Surface tracker export unavailable (${code}); gameplay continues`,
+    ),
 );
 let loaded = false;
 const pump = () => {

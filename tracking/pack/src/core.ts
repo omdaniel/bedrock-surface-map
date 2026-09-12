@@ -88,6 +88,19 @@ export interface Snapshot {
   pack_version: string;
   players: SamplePlayer[];
 }
+export function failureCode(error: unknown): string {
+  if (!(error instanceof Error)) return "unclassified";
+  if (/^HTTP_[1-5][0-9]{2}$/.test(error.message)) return error.message;
+  const allowed = [
+    "HttpRequestLimitExceededError",
+    "InternalHttpRequestError",
+    "MalformedUriError",
+    "RequestBodyTooLargeError",
+    "TLSOnlyError",
+    "UriNotAllowedError",
+  ];
+  return allowed.includes(error.name) ? error.name : "sampling-or-request";
+}
 export class Publisher {
   private world: string;
   private instance: string;
@@ -95,7 +108,7 @@ export class Publisher {
   private read: () => SamplePlayer[];
   private send: (snapshot: Snapshot) => Promise<void>;
   private success: () => void;
-  private failure: () => void;
+  private failure: (code: string) => void;
   private pending = true;
   private inFlight = false;
   private nextTick = 0;
@@ -109,7 +122,7 @@ export class Publisher {
     read: () => SamplePlayer[],
     send: (snapshot: Snapshot) => Promise<void>,
     success: () => void,
-    failure: () => void,
+    failure: (code: string) => void,
   ) {
     this.world = world;
     this.instance = instance;
@@ -148,12 +161,12 @@ export class Publisher {
       await this.send(snapshot);
       this.failures = 0;
       this.success();
-    } catch {
+    } catch (error) {
       this.pending = true;
       this.failures++;
       this.nextTime =
         now + Math.min(30000, 2000 * 2 ** Math.min(this.failures - 1, 4));
-      if (this.failures === 1) this.failure();
+      if (this.failures === 1) this.failure(failureCode(error));
     } finally {
       this.inFlight = false;
     }
