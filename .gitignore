@@ -1,0 +1,15 @@
+/target/
+/node_modules/
+/web/pkg/
+/web/dist/
+/web/public/maps/
+/.local/
+/.sources/
+/test-results/
+/playwright-report/
+*.mcworld
+*.zip
+*.ldb
+*.log
+.DS_Store
+.env*

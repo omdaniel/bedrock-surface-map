@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+case "$2" in
+ https://github.com/omdaniel/bedrock-surface-map.git|git@github.com:omdaniel/bedrock-surface-map.git) ;;
+ *) echo 'Unexpected push destination' >&2; exit 1 ;;
+esac
+while read -r local_ref local_sha remote_ref remote_sha; do
+ case "$local_ref:$remote_ref" in refs/heads/*:refs/heads/*|refs/tags/*:refs/tags/*) ;; *) exit 1 ;; esac
+ if [ "$local_sha" = 0000000000000000000000000000000000000000 ]; then echo 'Deletion blocked' >&2; exit 1; fi
+ if [ "$remote_sha" != 0000000000000000000000000000000000000000 ]; then git merge-base --is-ancestor "$remote_sha" "$local_sha"; fi
+done
+.sources/tools/gitleaks/gitleaks git --redact --no-banner .
