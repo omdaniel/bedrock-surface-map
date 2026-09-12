@@ -69,17 +69,21 @@ function around(x: number, z: number) {
   ])
     mark(x + dx, z + dz);
 }
-world.afterEvents.playerBreakBlock.subscribe((e) =>
-  around(e.block.x, e.block.z),
-);
-world.afterEvents.playerPlaceBlock.subscribe((e) =>
-  around(e.block.x, e.block.z),
-);
-world.afterEvents.playerInteractWithBlock.subscribe((e) =>
-  around(e.block.x, e.block.z),
-);
-world.afterEvents.blockExplode.subscribe((e) => around(e.block.x, e.block.z));
+world.afterEvents.playerBreakBlock.subscribe((e) => {
+  if (e.dimension.id === "minecraft:overworld") around(e.block.x, e.block.z);
+});
+world.afterEvents.playerPlaceBlock.subscribe((e) => {
+  if (e.dimension.id === "minecraft:overworld") around(e.block.x, e.block.z);
+});
+world.afterEvents.playerInteractWithBlock.subscribe((e) => {
+  if (e.block.dimension.id === "minecraft:overworld")
+    around(e.block.x, e.block.z);
+});
+world.afterEvents.blockExplode.subscribe((e) => {
+  if (e.dimension.id === "minecraft:overworld") around(e.block.x, e.block.z);
+});
 world.afterEvents.pistonActivate.subscribe((e) => {
+  if (e.dimension.id !== "minecraft:overworld") return;
   for (let z = -1; z <= 1; z++)
     for (let x = -1; x <= 1; x++) mark(e.block.x + x * 16, e.block.z + z * 16);
 });
@@ -101,8 +105,10 @@ system.runInterval(() => {
             candidates.set(`${cx + x},${cz + z}`, [cx + x, cz + z]);
           }
     }
-    discovery = Array.from(candidates.values()).slice(0, 8192);
-    discoveryIndex = 0;
+    const next = Array.from(candidates.values()).slice(0, 8192);
+    // Keep progressing through distant loaded chunks when a scan spans refreshes.
+    discovery = next;
+    discoveryIndex %= Math.max(1, discovery.length);
   } catch {
     errors++;
   }

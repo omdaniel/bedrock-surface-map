@@ -45,6 +45,7 @@ jobs:
       - run: npm run terrain:build
       - run: npm run terrain:test
       - run: cargo run --locked -p surface-cli -- fixture
+      - run: node scripts/terrain-fixture.mjs
       - run: npx playwright install --with-deps chromium
       - run: xvfb-run -a -s '-screen 0 1280x900x24' npm test
       # No world imports, Mojang downloads, homelab secrets or artifact uploads.

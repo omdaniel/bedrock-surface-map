@@ -240,6 +240,7 @@ export class Outbox {
     { sample: Sample; key: string; bytes: number }
   >();
   private acknowledged = new Map<string, string>();
+  private acknowledgedBytes = 0;
   bytes = 0;
   overflow = 0;
   offer(sample: Sample, force = false) {
@@ -268,13 +269,22 @@ export class Outbox {
       this.bytes -= entry.bytes;
       this.pending.delete(coord);
     }
+    this.acknowledgedBytes -= (this.acknowledged.get(coord)?.length ?? 0) * 2;
     this.acknowledged.delete(coord);
     this.acknowledged.set(coord, key);
+    this.acknowledgedBytes += key.length * 2;
     // The suppression cache is expendable; eviction only causes another full observation.
-    while (this.acknowledged.size > 512)
-      this.acknowledged.delete(this.acknowledged.keys().next().value!);
+    while (
+      this.acknowledged.size > 512 ||
+      this.acknowledgedBytes > 8 * 1024 * 1024
+    ) {
+      const oldest = this.acknowledged.keys().next().value!;
+      this.acknowledgedBytes -= this.acknowledged.get(oldest)!.length * 2;
+      this.acknowledged.delete(oldest);
+    }
   }
   resetAcknowledged() {
     this.acknowledged.clear();
+    this.acknowledgedBytes = 0;
   }
 }

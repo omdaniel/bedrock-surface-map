@@ -6,8 +6,8 @@
     "strict": true,
     "skipLibCheck": true,
     "types": [],
-    "rootDir": "src",
-    "outDir": "../../.local/terrain/pack/scripts"
+    "rootDir": "../..",
+    "outDir": "../../.local/terrain/probe-build"
   },
   "include": ["src"]
 }

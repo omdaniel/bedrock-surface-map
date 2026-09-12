@@ -1,8 +1,7 @@
 use crate::store::{Store, hash, now_ms, valid_object_name};
 use axum::{
     Router,
-    body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -16,6 +15,7 @@ pub struct App {
     pub store: Arc<Mutex<Store>>,
     pub token: Arc<Vec<u8>>,
     pub world: String,
+    writers: Arc<tokio::sync::Semaphore>,
 }
 impl App {
     pub fn new(store: Store, token: Vec<u8>, world: String) -> anyhow::Result<Self> {
@@ -27,6 +27,7 @@ impl App {
             store: Arc::new(Mutex::new(store)),
             token: Arc::new(token),
             world,
+            writers: Arc::new(tokio::sync::Semaphore::new(1)),
         })
     }
 }
@@ -63,15 +64,30 @@ fn response(
     )
         .into_response()
 }
-async fn ingest(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
-    let given = headers
+async fn ingest(State(app): State<App>, request: Request) -> Response {
+    let given = request
+        .headers()
         .get("x-terrain-token")
         .map(|v| v.as_bytes())
         .unwrap_or_default();
     if !bool::from(given.ct_eq(&app.token)) {
         return StatusCode::UNAUTHORIZED.into_response();
     }
+    let Ok(permit) = app.writers.clone().try_acquire_owned() else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    let body = match tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        axum::body::to_bytes(request.into_body(), MAX_REQUEST_BYTES),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) => return StatusCode::PAYLOAD_TOO_LARGE.into_response(),
+        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
+    };
     let result = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
         let parsed = serde_json::from_slice::<TerrainObservation>(&body)
             .map_err(|_| StatusCode::BAD_REQUEST)?;
         let mut store = app

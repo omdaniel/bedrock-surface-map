@@ -6,7 +6,7 @@ import { networkInterfaces } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { preview } from "vite";
-import { trackerProxy } from "./tracker-proxy.mjs";
+import { mapProxy } from "./map-proxy.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -14,13 +14,17 @@ const { values } = parseArgs({
     "players-origin": { type: "string" },
     "world-id": { type: "string" },
     "map-fingerprint": { type: "string" },
+    "terrain-origin": { type: "string" },
+    generation: { type: "string" },
   },
 });
 const host = values.host;
-const playerProxy = trackerProxy({
+const playerProxy = mapProxy({
   origin: values["players-origin"],
   world: values["world-id"],
   fingerprint: values["map-fingerprint"],
+  terrainOrigin: values["terrain-origin"],
+  generation: values.generation,
 });
 const localAddresses = Object.values(networkInterfaces())
   .flat()

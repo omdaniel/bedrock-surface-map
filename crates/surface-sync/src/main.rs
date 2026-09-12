@@ -21,6 +21,17 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    Observe {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    Manifest,
+    Chunk {
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        z: i32,
+    },
     Serve {
         #[arg(long, env = "TERRAIN_TOKEN_FILE")]
         token_file: PathBuf,
@@ -51,6 +62,28 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let mut store = Store::open(&args.state, &args.world, &args.generation, args.limit)?;
     match args.command {
+        Command::Observe { input } => {
+            let bytes = std::fs::read(input)?;
+            anyhow::ensure!(
+                bytes.len() <= surface_core::terrain::MAX_REQUEST_BYTES,
+                "observation size"
+            );
+            let observation = serde_json::from_slice(&bytes)?;
+            println!("changed={}", store.ingest(&observation, now_ms())?);
+        }
+        Command::Manifest => println!("{}", store.manifest()?),
+        Command::Chunk { x, z } => {
+            let hash: String = store.connection.query_row(
+                "SELECT hash FROM chunks WHERE cx=?1 AND cz=?2",
+                rusqlite::params![x, z],
+                |r| r.get(0),
+            )?;
+            let bytes = store.object(&format!("{hash}.zst"))?;
+            let chunk = surface_core::terrain::SurfaceChunk::decode(&surface_core::decompress(
+                &bytes, 32768,
+            )?)?;
+            println!("{}", serde_json::to_string(&chunk)?);
+        }
         Command::Serve {
             token_file,
             ingest,

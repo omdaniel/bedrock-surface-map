@@ -14,6 +14,76 @@ pub type Column = [i32; 10];
 pub const UNKNOWN: Column = [0, -32768, 0, 0xffffff, -1, 0, -32768, 0, 0, -32768];
 pub const EMPTY: Column = [2, -32768, 0, 0xffffff, -1, 0, -32768, 0, 0, -32768];
 
+/// Patch leaves and only their ancestors. Returned word ranges can be uploaded as rows.
+pub fn patch_height_tree(
+    tree: &mut [u32],
+    x: usize,
+    z: usize,
+    width: usize,
+    height: usize,
+    values: &[f32],
+) -> Result<Vec<(usize, usize)>> {
+    ensure!(
+        tree.len() >= 129 && width > 0 && height > 0 && values.len() == width * height,
+        "height patch shape"
+    );
+    let tw = tree[1] as usize;
+    let th = tree[2] as usize;
+    ensure!(
+        x.checked_add(width).is_some_and(|v| v <= tw)
+            && z.checked_add(height).is_some_and(|v| v <= th)
+            && values.iter().all(|v| v.is_finite()),
+        "height patch bounds"
+    );
+    let levels = tree[127] as usize;
+    ensure!((1..=25).contains(&levels), "height tree levels");
+    let mut ranges = Vec::new();
+    for row in 0..height {
+        let start = 128 + tree[0] as usize + (z + row) * tw + x;
+        ensure!(start + width <= tree.len(), "height tree leaf bounds");
+        for (dst, src) in tree[start..start + width]
+            .iter_mut()
+            .zip(&values[row * width..(row + 1) * width])
+        {
+            *dst = src.to_bits();
+        }
+        ranges.push((start, width));
+    }
+    let (mut x0, mut z0, mut x1, mut z1) = (x, z, x + width, z + height);
+    for level in 1..levels {
+        x0 /= 2;
+        z0 /= 2;
+        x1 = x1.div_ceil(2);
+        z1 = z1.div_ceil(2);
+        let prev = 128 + tree[(level - 1) * 4] as usize;
+        let pw = tree[(level - 1) * 4 + 1] as usize;
+        let ph = tree[(level - 1) * 4 + 2] as usize;
+        let offset = 128 + tree[level * 4] as usize;
+        let lw = tree[level * 4 + 1] as usize;
+        ensure!(
+            prev + pw * ph <= tree.len() && offset + lw * z1 <= tree.len(),
+            "height tree parent bounds"
+        );
+        for row in z0..z1 {
+            for col in x0..x1 {
+                let mut high = -1e6f32;
+                for dz in 0..2 {
+                    for dx in 0..2 {
+                        if col * 2 + dx < pw && row * 2 + dz < ph {
+                            high = high.max(f32::from_bits(
+                                tree[prev + (row * 2 + dz) * pw + col * 2 + dx],
+                            ));
+                        }
+                    }
+                }
+                tree[offset + row * lw + col] = high.to_bits();
+            }
+            ranges.push((offset + row * lw + x0, x1 - x0));
+        }
+    }
+    Ok(ranges)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct MaterialSpec {
@@ -313,6 +383,26 @@ impl TerrainObservation {
 mod tests {
     use super::*;
     use crate::MISSING_HEIGHT;
+    #[test]
+    fn rectangular_height_patches_match_full_rebuild() {
+        let mut source = vec![0.; 512 * 257];
+        let mut tree = crate::height_pyramid(&source, 512, 257);
+        for (x, z, w, h, y) in [
+            (250, 250, 16, 7, 20.),
+            (256, 0, 256, 256, -4.),
+            (0, 256, 512, 1, 100.),
+            (250, 250, 16, 7, -1e6),
+        ] {
+            let values = vec![y; w * h];
+            patch_height_tree(&mut tree, x, z, w, h, &values).unwrap();
+            for row in 0..h {
+                source[(z + row) * 512 + x..(z + row) * 512 + x + w]
+                    .copy_from_slice(&values[row * w..(row + 1) * w]);
+            }
+            assert_eq!(tree, crate::height_pyramid(&source, 512, 257));
+        }
+        assert!(patch_height_tree(&mut tree, 512, 0, 1, 1, &[0.]).is_err());
+    }
     #[test]
     fn exact_chunk_roundtrip_and_region_patch() {
         let mut c = SurfaceChunk {

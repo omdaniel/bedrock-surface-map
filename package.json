@@ -8,7 +8,8 @@
   },
   "scripts": {
     "terrain:build": "node scripts/build-terrain.mjs",
-    "terrain:test": "node --test terrain/test/*.test.ts",
+    "terrain:bundle": "node scripts/bundle-terrain.mjs",
+    "terrain:test": "node --test terrain/test/*.test.ts scripts/map-proxy.test.mjs",
     "tracking:build": "node scripts/build-tracking.mjs",
     "tracking:bundle": "node scripts/bundle-tracking.mjs",
     "tracking:test": "node --test tracking/pack/test/*.test.ts tracking/test/*.test.ts scripts/tracker-proxy.test.mjs",

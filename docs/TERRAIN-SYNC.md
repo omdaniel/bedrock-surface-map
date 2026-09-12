@@ -52,3 +52,31 @@ Deployment and daily repair belong in runproxmox, not this application repositor
 Terrain synchronization never reads live LevelDB or forces chunks to load. It does
 not publish the map on the internet, collect inventories/chat, or retain movement
 history. Keep snapshots, terrain objects, textures and all credentials outside Git.
+
+## Build and Local Validation
+
+```sh
+uv tool install ziglang==0.15.2
+cargo install cargo-zigbuild --version 0.20.1 --locked
+npm run terrain:build
+npm run terrain:test
+node scripts/terrain-fixture.mjs
+npx playwright test tests/terrain.spec.ts
+# A clean, committed checkout is required; Linux binaries are built on the Mac.
+npm run terrain:bundle
+```
+
+The bundle contains static x86_64-musl binaries, packs and a synthetic seed only.
+The service image includes the importer for isolated repair workers. It does not
+contain Mojang textures or real terrain. The separate `asset-library` CLI command
+prepares the shared pinned texture atlas; `import --surface-only` emits bounded
+region-only repair data without allocating a world-sized shadow field.
+
+`?terrain=off` selects the retained offline snapshot. `?players=off` continues to
+disable positions independently. A live manifest requires an explicit matching
+world/generation binding in the fixed-origin proxy configuration.
+
+Checkpoint 2 synthetic checks verify chunk replacement, matching picking records,
+camera preservation, no draws on unchanged polls, and movement into new regions.
+Native GPU reference tests still pass. These checks do not establish real BDS API
+compatibility or iPad terrain-update acceptance; those remain deployment gates.

@@ -131,18 +131,42 @@ fn retain_leaf_litter(sample: &mut TerrainColumnSample, below: BlockState) -> Re
 
 // Bounded vanilla-biome palette, not a claim of exact Minecraft climate blending.
 fn biome_tint(biome: u32) -> u32 {
-    match biome {
-        2 | 17 | 35 | 36 | 37 | 38 | 39 | 163 | 164 | 165 | 166 | 167 => 0xbfb755,
-        6 | 134 => 0x6a7039,
-        5 | 19 | 30 | 31 | 32 | 33 | 133 | 160 | 161 => 0x86b783,
-        12 | 13 | 140 | 178 | 179 | 180 => 0x91bd59,
-        21 | 22 | 23 | 149 | 151 | 168 | 169 => 0x59c93c,
-        27 | 28 | 155 | 156 => 0x88bb67,
-        _ => 0x91bd59,
-    }
+    static RULES: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../terrain/rules.json"))
+            .expect("checked surface rules")
+    });
+    rules["tints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| {
+            t["ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v.as_u64() == Some(biome as u64))
+        })
+        .map_or(&rules["default_tint"], |t| &t["rgb"])
+        .as_u64()
+        .unwrap() as u32
 }
 
 pub fn extract(path: &Path) -> Result<Extraction> {
+    let mut regions = BTreeMap::new();
+    let mut result = extract_stream(path, |r| {
+        regions.insert((r.rx, r.rz), r);
+        Ok(())
+    })?;
+    result.regions = regions;
+    Ok(result)
+}
+
+/// Emit completed regions, retaining only one region plus a bounded chunk batch.
+pub fn extract_stream(
+    path: &Path,
+    mut consume: impl FnMut(SurfaceRegion) -> Result<()>,
+) -> Result<Extraction> {
     let document = bedrock_world::read_level_dat(&path.join("level.dat"))?;
     ensure!(
         document.warnings.is_empty(),
@@ -174,13 +198,13 @@ pub fn extract(path: &Path) -> Result<Extraction> {
             .all(|p| (-524288..524288).contains(&p.x) && (-524288..524288).contains(&p.z)),
         "chunk outside exact GPU coordinate range"
     );
-    positions.sort_by_key(|p| (p.z, p.x));
+    positions.sort_by_key(|p| (p.z.div_euclid(16), p.x.div_euclid(16), p.z, p.x));
     ensure!(!positions.is_empty(), "no Overworld chunks found");
     ensure!(
-        positions.len() <= 65536,
-        "snapshot exceeds prototype chunk limit"
+        positions.len() <= 1048576,
+        "snapshot exceeds bounded import chunk limit"
     );
-    let mut regions = BTreeMap::new();
+    let mut current: Option<SurfaceRegion> = None;
     let mut ids = BTreeMap::new();
     let mut materials = vec![Material {
         key: "unknown".into(),
@@ -199,19 +223,28 @@ pub fn extract(path: &Path) -> Result<Extraction> {
             false,
         );
         options.threading = WorldThreadingOptions::Fixed(2);
-        let (chunks, stats) =
+        let (mut chunks, stats) =
             world.query_chunk_data_with_stats_blocking(batch.iter().copied(), options)?;
         ensure!(
             stats.missing_subchunk_columns == 0,
             "missing subchunk columns in batch {batch_number}"
         );
+        chunks.sort_by_key(|c| {
+            (
+                c.pos.z.div_euclid(16),
+                c.pos.x.div_euclid(16),
+                c.pos.z,
+                c.pos.x,
+            )
+        });
         for chunk in chunks {
             ensure!(chunk.is_loaded, "chunk {:?} could not be loaded", chunk.pos);
             let rx = chunk.pos.x.div_euclid(16);
             let rz = chunk.pos.z.div_euclid(16);
-            let region = regions
-                .entry((rx, rz))
-                .or_insert_with(|| SurfaceRegion::empty(rx, rz));
+            if current.as_ref().is_some_and(|r| r.rx != rx || r.rz != rz) {
+                consume(current.take().unwrap())?;
+            }
+            let region = current.get_or_insert_with(|| SurfaceRegion::empty(rx, rz));
             let samples = chunk.column_samples.context("surface samples missing")?;
             // Released 0.3.5 treats leaf litter as solid. Decode each needed layer
             // once per chunk to retain the real supporting block under this overlay.
@@ -303,8 +336,11 @@ pub fn extract(path: &Path) -> Result<Extraction> {
             );
         }
     }
+    if let Some(region) = current {
+        consume(region)?;
+    }
     Ok(Extraction {
-        regions,
+        regions: BTreeMap::new(),
         materials,
         spawn,
         chunks: positions.len(),

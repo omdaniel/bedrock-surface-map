@@ -240,6 +240,7 @@ async fn read_listener_never_accepts_ingestion_and_bad_tokens_cannot_write() {
     let r = ingest_router(app.clone())
         .oneshot(
             Request::post("/ingest/v1/terrain")
+                .header("x-terrain-token", "a".repeat(32))
                 .body(Body::from(vec![b'x'; 262145]))
                 .unwrap(),
         )

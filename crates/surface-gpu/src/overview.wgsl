@@ -7,7 +7,7 @@
 fn color(id:u32,tint:u32)->vec4f {let m=materials[id];return tint_color(m,m.average,tint,p.lighting.y);}
 @compute @workgroup_size(8,8) fn overview(@builtin(global_invocation_id) id:vec3u) {
     if any(id.xy>=vec2u(256)){return;}let c=cells[id.y*256u+id.x];
-    if c.covered==0u{textureStore(out_image,id.xy,vec4f(0));return;}
+    if c.covered!=1u{textureStore(out_image,id.xy,vec4f(0));return;}
     var col=color(c.material,c.tint);
     if c.depth>0u {col=vec4f(mix(color(c.support,c.tint).rgb,water_color(p.lighting.y),1.0-exp(-f32(c.depth)*0.16))*mix(vec3f(0.85),vec3f(1.1),col.rgb),1.0);}
     else {col=vec4f(mix(col.rgb*0.7,col.rgb,col.a),1.0);}

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     fs::{self, File},
     io::Write,
@@ -61,6 +62,19 @@ pub struct Store {
     pub connection: Connection,
     pub root: PathBuf,
     pub limit: u64,
+    used: Cell<u64>,
+}
+
+struct Objects<'a> {
+    root: &'a Path,
+    used: &'a Cell<u64>,
+    limit: u64,
+}
+impl std::ops::Deref for Objects<'_> {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        self.root
+    }
 }
 
 fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
@@ -71,11 +85,15 @@ fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
     db.execute("INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(value)?])?;
     Ok(())
 }
-fn object(root: &Path, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
+fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
     let sha256 = hash(bytes);
     let name = format!("{sha256}.{extension}");
     let path = root.join("objects").join(&name);
     if !path.exists() {
+        ensure!(
+            root.used.get().saturating_add(bytes.len() as u64) < root.limit,
+            "derived store capacity exceeded"
+        );
         let tmp = root
             .join("objects")
             .join(format!(".{name}.{}.part", std::process::id()));
@@ -83,6 +101,8 @@ fn object(root: &Path, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
         f.write_all(bytes)?;
         f.sync_all()?;
         fs::rename(tmp, &path)?;
+        root.used
+            .set(root.used.get().saturating_add(bytes.len() as u64));
         File::open(root.join("objects"))?.sync_all()?;
     } else {
         ensure!(hash(&fs::read(&path)?) == sha256, "existing object corrupt");
@@ -203,7 +223,12 @@ fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
     Ok(id)
 }
 
-fn save_chunk(db: &Connection, root: &Path, c: &SurfaceChunk, observed: u64) -> Result<bool> {
+fn save_chunk(
+    db: &Connection,
+    root: &Objects<'_>,
+    c: &SurfaceChunk,
+    observed: u64,
+) -> Result<bool> {
     c.validate(65536, false)?;
     let packed = zstd::encode_all(c.encode()?.as_slice(), 3)?;
     let reference = object(root, &packed, "zst")?;
@@ -218,7 +243,7 @@ fn save_chunk(db: &Connection, root: &Path, c: &SurfaceChunk, observed: u64) -> 
     Ok(old.as_deref() != Some(reference.sha256.as_str()))
 }
 
-fn publish_region(db: &Connection, root: &Path, rx: i32, rz: i32) -> Result<()> {
+fn publish_region(db: &Connection, root: &Objects<'_>, rx: i32, rz: i32) -> Result<()> {
     let mut r = SurfaceRegion::empty(rx, rz);
     let mut refs = BTreeMap::new();
     let mut statement=db.prepare("SELECT cx,cz,hash,bytes FROM chunks WHERE cx>=?1 AND cx<?2 AND cz>=?3 AND cz<?4 ORDER BY cz,cx")?;
@@ -281,7 +306,7 @@ fn publish_region(db: &Connection, root: &Path, rx: i32, rz: i32) -> Result<()> 
     Ok(())
 }
 
-fn publish_root(db: &Connection, root: &Path, dirty: &BTreeSet<(i32, i32)>) -> Result<()> {
+fn publish_root(db: &Connection, root: &Objects<'_>, dirty: &BTreeSet<(i32, i32)>) -> Result<()> {
     if dirty.is_empty() {
         return Ok(());
     }
@@ -370,10 +395,14 @@ impl Store {
                 && meta::<String>(&db, "generation")? == generation,
             "dataset identity mismatch; use a new state directory for another generation"
         );
+        let used = fs::read_dir(root.join("objects"))?.try_fold(0u64, |n, e| -> Result<u64> {
+            Ok(n.saturating_add(e?.metadata()?.len()))
+        })?;
         Ok(Self {
             connection: db,
             root: root.to_owned(),
             limit,
+            used: Cell::new(used),
         })
     }
     pub fn ingest(&mut self, observation: &TerrainObservation, now: u64) -> Result<bool> {
@@ -383,6 +412,11 @@ impl Store {
             "future observation"
         );
         self.ensure_space()?;
+        let objects = Objects {
+            root: &self.root,
+            used: &self.used,
+            limit: self.limit,
+        };
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -435,7 +469,7 @@ impl Store {
         for source in &observation.chunks {
             let mut chunk = source.clone();
             chunk.remap(&ids)?;
-            if save_chunk(&tx, &self.root, &chunk, accepted)? {
+            if save_chunk(&tx, &objects, &chunk, accepted)? {
                 dirty.insert((chunk.cx.div_euclid(16), chunk.cz.div_euclid(16)));
             }
         }
@@ -445,8 +479,18 @@ impl Store {
         set_meta(&tx, "observation", &accepted)?;
         set_meta(&tx, "last_sample_ms", &now)?;
         set_meta(&tx, "diagnostics", &observation.diagnostics)?;
-        set_meta(&tx, "status_reason", &"live")?;
-        publish_root(&tx, &self.root, &dirty)?;
+        set_meta(
+            &tx,
+            "status_reason",
+            &if observation.diagnostics.overflow > 0 {
+                "scan-overflow-repair-required"
+            } else if observation.diagnostics.oldest_scan_ms > 60000 {
+                "scan-delayed"
+            } else {
+                "live"
+            },
+        )?;
+        publish_root(&tx, &objects, &dirty)?;
         tx.commit()?;
         Ok(!dirty.is_empty())
     }
@@ -494,14 +538,22 @@ impl Store {
         } else {
             (manifest.materials.clone(), map.join(&manifest.atlas))
         };
-        let atlas = object(&self.root, &fs::read(atlas_path)?, "png")?;
+        let objects = Objects {
+            root: &self.root,
+            used: &self.used,
+            limit: self.limit,
+        };
+        let atlas = object(&objects, &fs::read(atlas_path)?, "png")?;
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         if let Some(b) = boundary {
+            let recorded: Boundary = meta(&tx, "boundary")?;
             ensure!(
                 b.world_id == meta::<String>(&tx, "world_id")?
-                    && b.generation == meta::<String>(&tx, "generation")?,
+                    && b.generation == meta::<String>(&tx, "generation")?
+                    && b.created_ms == recorded.created_ms
+                    && b.observation == recorded.observation,
                 "wrong repair dataset"
             );
         }
@@ -572,12 +624,7 @@ impl Store {
                         continue;
                     }
                     chunk.remap(&ids)?;
-                    if save_chunk(
-                        &tx,
-                        &self.root,
-                        &chunk,
-                        boundary.map_or(0, |b| b.observation),
-                    )? {
+                    if save_chunk(&tx, &objects, &chunk, boundary.map_or(0, |b| b.observation))? {
                         dirty.insert((region.rx, region.rz));
                         changed += 1;
                     }
@@ -585,7 +632,10 @@ impl Store {
             }
         }
         ensure!(checked > 0, "empty repair import");
-        publish_root(&tx, &self.root, &dirty)?;
+        publish_root(&tx, &objects, &dirty)?;
+        let mut published: Value = meta(&tx, "manifest")?;
+        published["source_sha256"] = json!(manifest.source_sha256);
+        set_meta(&tx, "manifest", &published)?;
         set_meta(&tx, "last_repair_ms", &now_ms())?;
         tx.commit()?;
         Ok(json!({"checked":checked,"changed":changed,"newer_live_preserved":skipped}))
@@ -625,12 +675,8 @@ impl Store {
         let _ = set_meta(&self.connection, "status_reason", &reason);
     }
     pub fn ensure_space(&self) -> Result<()> {
-        let mut total = 0u64;
-        for entry in fs::read_dir(self.root.join("objects"))? {
-            total = total.saturating_add(entry?.metadata()?.len());
-        }
         ensure!(
-            total.saturating_add(8 * 1024 * 1024) < self.limit,
+            self.used.get().saturating_add(8 * 1024 * 1024) < self.limit,
             "derived store capacity exceeded"
         );
         Ok(())
@@ -672,6 +718,7 @@ impl Store {
         }
         drop(s);
         let mut removed = 0;
+        let mut used = 0u64;
         for entry in fs::read_dir(self.root.join("objects"))? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
@@ -683,9 +730,12 @@ impl Store {
             if !reachable.contains(&name) && now.saturating_sub(modified) > 3600000 {
                 fs::remove_file(entry.path())?;
                 removed += 1;
+            } else {
+                used = used.saturating_add(entry.metadata()?.len());
             }
         }
         tx.commit()?;
+        self.used.set(used);
         Ok(removed)
     }
 }

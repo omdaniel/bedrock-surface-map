@@ -14,6 +14,13 @@ export interface RegionRef {
   sha256: string;
   bytes: number;
   columns: number;
+  index?: ObjectRef;
+  heights?: ObjectRef;
+}
+export interface ObjectRef {
+  url: string;
+  sha256: string;
+  bytes: number;
 }
 export interface Manifest {
   format_version: number;
@@ -34,7 +41,7 @@ export interface DecodeRequest {
   id: number;
   url: string;
   sha256: string;
-  kind: "region" | "heights";
+  kind: "region" | "heights" | "chunk";
   rx?: number;
   rz?: number;
   materials?: number;

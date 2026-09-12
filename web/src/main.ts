@@ -15,6 +15,7 @@ import {
 import type { Manifest, RegionRef, DecodeRequest, DecodeReply } from "./types";
 import { bindSunDial } from "./sun-dial";
 import { PlayerLayer } from "./players";
+import { TerrainClient, type LiveRoot } from "./terrain";
 import "./style.css";
 
 const DEFAULT_SUN_AZIMUTH = 330;
@@ -70,6 +71,12 @@ app.insertBefore($("message"), main);
 let manifest: Manifest;
 let renderer: Renderer;
 let base: URL;
+let terrain: TerrainClient | null = null;
+let terrainBusy = false,
+  terrainAgain = false,
+  terrainPollAgain = false;
+let terrainTimer: ReturnType<typeof setTimeout> | undefined;
+let terrainFailures = 0;
 let cx = 0,
   cz = 0,
   scale = 1,
@@ -196,6 +203,8 @@ function visible(r: RegionRef) {
 function memory() {
   return renderer
     ? renderer.gpu_bytes() +
+        renderer.cpu_bytes() +
+        (terrain?.memoryBytes ?? 0) +
         [...cache.values()].reduce((n, r) => n + r.pick.byteLength, 0)
     : 0;
 }
@@ -212,7 +221,7 @@ function makeSpace() {
   return true;
 }
 function loadRegions() {
-  if (!renderer || disposed || renderer.is_lost()) return;
+  if (!renderer || disposed || renderer.is_lost() || terrainBusy) return;
   const wanted = manifest.regions
     .filter(visible)
     .sort(
@@ -241,13 +250,18 @@ function loadRegions() {
       materials: manifest.materials.length,
     })
       .then((data) => {
-        if (disposed) return;
+        if (
+          disposed ||
+          terrainBusy ||
+          !manifest.regions.some((v) => key(v) === k && v.sha256 === r.sha256)
+        )
+          return;
         const words = data as Uint32Array;
         if (!makeSpace()) return;
         renderer.add_region(r.rx, r.rz, words);
         const pick = new Int32Array(65536 * 2);
         for (let i = 0; i < 65536; i++) {
-          pick[i * 2] = words[i * 8 + 7] ? words[i * 8] | 0 : -32768;
+          pick[i * 2] = words[i * 8 + 7] === 1 ? words[i * 8] | 0 : -32768;
           pick[i * 2 + 1] = words[i * 8 + 1];
         }
         cache.set(k, { ref: r, pick, last: performance.now() });
@@ -274,9 +288,11 @@ function updateStatus() {
     `${ready} / ${wanted.length} regions · ${Math.round(scale * 100)}%`;
   if (
     ready > 0 &&
+    (!terrain || terrain.covers(viewport(), elevation)) &&
     !renderer.is_lost() &&
     active === 0 &&
     failures.size === 0 &&
+    terrainFailures === 0 &&
     ready === wanted.length
   )
     message("");
@@ -297,6 +313,7 @@ function updateScale() {
 }
 function requestDraw() {
   if (frameQueued || !renderer || disposed) return;
+  if (terrain && !terrain.covers(viewport(), elevation)) return;
   frameQueued = true;
   requestAnimationFrame(() => {
     frameQueued = false;
@@ -336,7 +353,173 @@ function changed() {
   for (const c of cache.values())
     if (visible(c.ref)) c.last = performance.now();
   loadRegions();
+  if (terrain && !terrain.covers(viewport(), elevation)) void syncTerrain();
   requestDraw();
+}
+
+function materialWords(value: Manifest) {
+  return new Float32Array(
+    value.materials.flatMap((m) => [
+      ...m.uv,
+      ...m.average,
+      m.tint,
+      Number(m.name.toLowerCase() === "sand"),
+      0,
+      0,
+    ]),
+  );
+}
+function updatePick(ref: RegionRef, words: Uint32Array) {
+  const pick = new Int32Array(65536 * 2);
+  for (let i = 0; i < 65536; i++) {
+    pick[i * 2] = words[i * 8 + 7] === 1 ? words[i * 8] | 0 : -32768;
+    pick[i * 2 + 1] = words[i * 8 + 1];
+  }
+  cache.set(key(ref), { ref, pick, last: performance.now() });
+}
+function terrainBudget() {
+  // Height storage includes its GPU tree, CPU tree and compact source pages.
+  const nonHeight = renderer.gpu_bytes() - renderer.cpu_bytes();
+  const picks = [...cache.values()].reduce((n, r) => n + r.pick.byteLength, 0);
+  return 256 * 1024 * 1024 - nonHeight - picks;
+}
+async function syncTerrain(poll = false) {
+  if (
+    !terrain ||
+    !renderer ||
+    disposed ||
+    document.hidden ||
+    renderer.is_lost()
+  )
+    return;
+  if (terrainBusy) {
+    terrainAgain = true;
+    terrainPollAgain ||= poll;
+    return;
+  }
+  terrainBusy = true;
+  const camera = [cx, cz, scale, elevation].join(",");
+  try {
+    let update;
+    try {
+      update = await terrain.prepare(
+        cache,
+        viewport(),
+        elevation,
+        poll,
+        terrainBudget(),
+      );
+    } catch (error) {
+      if (!String(error).includes("cache")) throw error;
+      for (const [k, r] of cache)
+        if (!visible(r.ref)) {
+          renderer.remove_region(r.ref.rx, r.ref.rz);
+          cache.delete(k);
+        }
+      update = await terrain.prepare(
+        cache,
+        viewport(),
+        elevation,
+        poll,
+        terrainBudget(),
+      );
+    }
+    if (camera !== [cx, cz, scale, elevation].join(",")) {
+      terrainAgain = true;
+      return;
+    }
+    const changedCatalog =
+      manifest.catalog_version !== update.manifest.catalog_version;
+    if (manifest.atlas !== update.manifest.atlas)
+      throw Error("Terrain texture set changed; reload required");
+    if (changedCatalog)
+      renderer.update_materials(materialWords(update.manifest));
+    if (update.heights)
+      renderer.set_height_window(new Int32Array(update.window), update.heights);
+    else
+      for (const p of update.heightPatches)
+        renderer.patch_height_region(p.rx, p.rz, p.values);
+    for (const { ref, words } of update.replacements) {
+      renderer.add_region(ref.rx, ref.rz, words);
+      updatePick(ref, words);
+    }
+    for (const p of update.patches) {
+      const cached = cache.get(
+        `${Math.floor(p.cx / 16)},${Math.floor(p.cz / 16)}`,
+      );
+      if (!cached) continue;
+      renderer.patch_chunk(p.cx, p.cz, p.words);
+      const ox = (((p.cx % 16) + 16) % 16) * 16,
+        oz = (((p.cz % 16) + 16) % 16) * 16;
+      for (let i = 0; i < 256; i++) {
+        const ix = (oz + Math.floor(i / 16)) * 256 + ox + (i % 16);
+        cached.pick[ix * 2] =
+          p.words[i * 8 + 7] === 1 ? p.words[i * 8] | 0 : -32768;
+        cached.pick[ix * 2 + 1] = p.words[i * 8 + 1];
+      }
+    }
+    manifest = update.manifest;
+    terrain.commit(update);
+    for (const r of manifest.regions) {
+      const cached = cache.get(key(r));
+      if (cached) cached.ref = r;
+    }
+    if (
+      update.heights ||
+      update.heightPatches.length ||
+      update.patches.length ||
+      update.replacements.length ||
+      changedCatalog
+    )
+      requestDraw();
+    terrainFailures = 0;
+    if (poll) {
+      const response = await fetch(new URL("status", terrain.base), {
+        cache: "no-store",
+        signal: AbortSignal.timeout(5000),
+      });
+      if (!response.ok) throw Error("Terrain status unavailable");
+      const status = await response.json();
+      if (
+        status.world_id !== terrain.root.world_id ||
+        status.generation !== terrain.root.generation
+      )
+        throw Error("Terrain status identity mismatch");
+      const state = document.querySelector<HTMLElement>(".local-state")!;
+      state.textContent = `Terrain ${String(status.status)}`;
+      state.title = `Last repair: ${status.last_repair_ms ? new Date(status.last_repair_ms).toLocaleString() : "not yet"}; queued chunks: ${Number(status.diagnostics?.queued ?? 0)}`;
+    }
+  } catch (error) {
+    terrainFailures++;
+    document.querySelector<HTMLElement>(".local-state")!.textContent =
+      "Terrain delayed";
+    if (
+      !terrain.covers(viewport(), elevation) ||
+      String(error).includes("reload")
+    )
+      message(String(error), true);
+  } finally {
+    terrainBusy = false;
+    loadRegions();
+    updateStatus();
+    if (terrainAgain) {
+      const againPoll = terrainPollAgain;
+      terrainAgain = false;
+      terrainPollAgain = false;
+      void syncTerrain(againPoll);
+    }
+  }
+}
+function scheduleTerrain() {
+  if (terrainTimer) clearTimeout(terrainTimer);
+  if (!terrain || disposed || document.hidden) return;
+  terrainTimer = setTimeout(
+    async () => {
+      await syncTerrain(true);
+      scheduleTerrain();
+    },
+    Math.min(30000, 2000 * 2 ** Math.min(terrainFailures, 4)),
+  );
 }
 function fit() {
   playerLayer.manualNavigation();
@@ -524,6 +707,7 @@ $("retry").onclick = () => {
     return;
   }
   failures.clear();
+  if (terrain) void syncTerrain(true);
   message("Retrying map data...");
   changed();
 };
@@ -531,11 +715,16 @@ new ResizeObserver(() => {
   changed();
 }).observe(main);
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) requestDraw();
+  if (terrainTimer) clearTimeout(terrainTimer);
+  if (!document.hidden) {
+    requestDraw();
+    if (terrain) void syncTerrain(true).finally(scheduleTerrain);
+  }
 });
 window.addEventListener("pagehide", () => {
   playerLayer.destroy();
   disposed = true;
+  if (terrainTimer) clearTimeout(terrainTimer);
   worker.terminate();
   renderer?.free();
 });
@@ -597,7 +786,7 @@ declare global {
   interface Window {
     __map: {
       ready: boolean;
-      state: () => unknown;
+      state: () => ReturnType<typeof mapState>;
       fit: () => void;
       spawn: () => void;
       zoom: (factor: number) => void;
@@ -607,9 +796,8 @@ declare global {
     };
   }
 }
-window.__map = {
-  ready: false,
-  state: () => ({
+function mapState() {
+  return {
     cx,
     cz,
     scale,
@@ -627,7 +815,20 @@ window.__map = {
     draws,
     firstVisible,
     totalDecode,
-  }),
+    terrain: terrain
+      ? {
+          revision: terrain.root.revision,
+          changedChunks: terrain.changedChunks,
+          window: terrain.window,
+          bytesReceived: terrain.bytesReceived,
+          busy: terrainBusy,
+        }
+      : null,
+  };
+}
+window.__map = {
+  ready: false,
+  state: mapState,
   fit,
   spawn,
   zoom,
@@ -648,8 +849,23 @@ async function boot() {
     throw new Error(
       "WebGPU is unavailable in this browser. No fallback renderer is enabled.",
     );
+  const params = new URLSearchParams(location.search);
+  const configuration: {
+    terrain?: { url: string; world_id: string; generation: string };
+  } =
+    params.get("players") === "off" && params.get("map")?.startsWith("/maps/")
+      ? {}
+      : await fetch("/viewer-config.json", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(5000),
+        })
+          .then((r) => (r.ok ? r.json() : {}))
+          .catch(() => ({}));
   const url = new URL(
     new URLSearchParams(location.search).get("map") ??
+      (params.get("terrain") === "off"
+        ? undefined
+        : configuration.terrain?.url) ??
       "/maps/bedrock-survival/manifest.json",
     location.href,
   );
@@ -661,9 +877,21 @@ async function boot() {
     throw new Error(
       "No imported map found. Run the snapshot import command, then retry.",
     );
-  manifest = await response.json();
+  const raw = await response.json();
+  if (raw.format_version === 2) {
+    if (
+      !configuration.terrain ||
+      configuration.terrain.world_id !== raw.world_id ||
+      configuration.terrain.generation !== raw.generation ||
+      new URL(configuration.terrain.url, location.href).href !== url.href
+    )
+      throw Error("No explicit live-terrain binding for this map");
+    terrain = new TerrainClient(url, raw as LiveRoot, decode);
+    manifest = await terrain.initialize();
+    document.querySelector(".subtitle")!.textContent = "OVERWORLD / LIVE";
+  } else manifest = raw;
   if (
-    manifest.format_version !== 1 ||
+    ![1, 2].includes(manifest.format_version) ||
     !Array.isArray(manifest.bounds) ||
     manifest.bounds.length !== 4 ||
     !manifest.bounds.every(
@@ -671,7 +899,7 @@ async function boot() {
     ) ||
     !Array.isArray(manifest.regions) ||
     !manifest.regions.length ||
-    manifest.regions.length > 4096 ||
+    manifest.regions.length > (terrain ? 65536 : 4096) ||
     !Array.isArray(manifest.materials) ||
     !manifest.materials.length ||
     manifest.materials.length > 65536 ||
@@ -683,7 +911,11 @@ async function boot() {
   $("app").querySelector(".identity strong")!.textContent = manifest.name;
   const width = manifest.bounds[2] - manifest.bounds[0],
     height = manifest.bounds[3] - manifest.bounds[1];
-  if (width <= 0 || height <= 0 || width * height > 16 * 1024 * 1024)
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    (!terrain && width * height > 16 * 1024 * 1024)
+  )
     throw new Error("Map bounds exceed the prototype limit");
   const ids = new Set<string>();
   for (const r of manifest.regions) {
@@ -727,25 +959,56 @@ async function boot() {
   const rgba = ctx.getImageData(0, 0, c.width, c.height).data;
   message("Preparing terrain and sunlight...");
   await init();
-  const heights = (await decode({
-    kind: "heights",
-    url: asset(manifest.heights),
-    sha256: manifest.heights_sha256,
-    columns: width * height,
-  })) as Float32Array;
-  const materials = new Float32Array(
-    manifest.materials.flatMap((m) => [
-      ...m.uv,
-      ...m.average,
-      m.tint,
-      Number(m.name.toLowerCase() === "sand"),
-      0,
-      0,
-    ]),
-  );
+  let bounds = manifest.bounds;
+  let heights: Float32Array;
+  if (terrain) {
+    cx = (bounds[0] + bounds[2]) / 2;
+    cz = (bounds[1] + bounds[3]) / 2;
+    scale = Math.min(
+      main.clientWidth / (width + 64),
+      main.clientHeight / (height + 64),
+    );
+    const budget = () =>
+      256 * 1024 * 1024 -
+      manifest.regions.filter(visible).length * (65536 * 40 + 349524) -
+      (rgba.byteLength * 21) / 16 -
+      manifest.materials.length * 48;
+    let update;
+    try {
+      update = await terrain.prepare(
+        new Map(),
+        viewport(),
+        elevation,
+        false,
+        budget(),
+      );
+    } catch (error) {
+      if (!String(error).includes("cache")) throw error;
+      cx = manifest.spawn[0];
+      cz = manifest.spawn[2];
+      scale = 3;
+      update = await terrain.prepare(
+        new Map(),
+        viewport(),
+        elevation,
+        false,
+        budget(),
+      );
+    }
+    bounds = update.window;
+    heights = update.heights!;
+    terrain.commit(update);
+  } else
+    heights = (await decode({
+      kind: "heights",
+      url: asset(manifest.heights),
+      sha256: manifest.heights_sha256,
+      columns: width * height,
+    })) as Float32Array;
+  const materials = materialWords(manifest);
   renderer = await Renderer.create(
     canvas,
-    new Int32Array(manifest.bounds),
+    new Int32Array(bounds),
     heights,
     materials,
     new Uint8Array(rgba.buffer),
@@ -753,10 +1016,22 @@ async function boot() {
     c.height,
   );
   window.__map.ready = true;
-  fit();
+  if (terrain) {
+    changed();
+    void syncTerrain(true).finally(scheduleTerrain);
+  } else fit();
   if (new URLSearchParams(location.search).get("players") === "off")
     playerLayer.disableForView();
-  else void playerLayer.configure(manifest.source_sha256);
+  else
+    void playerLayer.configure(
+      manifest.source_sha256,
+      terrain
+        ? {
+            world_id: terrain.root.world_id,
+            generation: terrain.root.generation,
+          }
+        : undefined,
+    );
 }
 void boot().catch((e) => {
   message(String(e), true);

@@ -17,6 +17,12 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    AssetLibrary {
+        #[arg(long, default_value = ".local/assets/bedrock-samples.zip")]
+        assets: PathBuf,
+        #[arg(long, default_value = ".local/terrain/library")]
+        output: PathBuf,
+    },
     Import {
         #[arg(long)]
         input: PathBuf,
@@ -24,6 +30,9 @@ enum Command {
         output: PathBuf,
         #[arg(long, default_value = ".local/assets/bedrock-samples.zip")]
         assets: PathBuf,
+        /// Bounded region-only export for live-map repair; no whole-world height array.
+        #[arg(long)]
+        surface_only: bool,
     },
     Inspect {
         path: PathBuf,
@@ -205,6 +214,82 @@ fn peak_rss_bytes() -> u64 {
     }
 }
 
+fn stream_publish(
+    cache: &Path,
+    input: &Path,
+    output: &Path,
+    assets: &Path,
+    source: String,
+    start: Instant,
+) -> Result<serde_json::Value> {
+    let mut refs = Vec::new();
+    let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    let mut range = [i16::MAX, i16::MIN];
+    let extracted = bedrock_adapter::extract_stream(cache, |r| {
+        bounds[0] = bounds[0].min(r.rx * 256);
+        bounds[1] = bounds[1].min(r.rz * 256);
+        bounds[2] = bounds[2].max((r.rx + 1) * 256);
+        bounds[3] = bounds[3].max((r.rz + 1) * 256);
+        for (&coverage, &height) in r.coverage.iter().zip(&r.heights) {
+            if coverage == 1 {
+                range[0] = range[0].min(height);
+                range[1] = range[1].max(height);
+            }
+        }
+        let packed = zstd::encode_all(encode_region(&r)?.as_slice(), 3)?;
+        ensure!(
+            decode_region(&decompress(&packed, MAX_DECOMPRESSED)?)? == r,
+            "streamed region verification failed"
+        );
+        let sha = hash(&packed);
+        let url = format!("regions/{sha}.bsm.zst");
+        atomic_write(&output.join(&url), &packed)?;
+        refs.push(RegionRef {
+            rx: r.rx,
+            rz: r.rz,
+            url,
+            sha256: sha,
+            bytes: packed.len(),
+            columns: r.coverage.iter().filter(|&&v| v == 1).count(),
+        });
+        Ok(())
+    })?;
+    let extraction_seconds = start.elapsed().as_secs_f64();
+    let mut materials = extracted.materials;
+    let (atlas, unsupported) = assets::prepare(assets, output, &mut materials)?;
+    ensure!(
+        file_hash(input)? == source,
+        "input snapshot changed during extraction"
+    );
+    let report = serde_json::json!({"source_sha256":source,"source_unchanged":true,"surface_only":true,"chunks":extracted.chunks,"regions":refs.len(),"extraction_seconds":extraction_seconds,"total_seconds":start.elapsed().as_secs_f64(),"peak_rss_bytes":peak_rss_bytes(),"verified_samples":extracted.verified_samples,"unsupported_materials":unsupported});
+    let manifest = MapManifest {
+        format_version: 1,
+        name: "Bedrock Survival".into(),
+        bounds,
+        spawn: extracted.spawn,
+        source_sha256: source,
+        catalog_version: hash(&serde_json::to_vec(&materials)?),
+        materials,
+        atlas,
+        regions: refs,
+        heights: String::new(),
+        heights_sha256: String::new(),
+        height_range: range,
+        approximations: vec![
+            "Region-only repair input; not a directly viewable offline manifest".into(),
+        ],
+    };
+    atomic_write(
+        &output.join("manifest.json"),
+        &serde_json::to_vec(&manifest)?,
+    )?;
+    atomic_write(
+        &output.join("import-report.json"),
+        &serde_json::to_vec(&report)?,
+    )?;
+    Ok(report)
+}
+
 fn main() -> std::process::ExitCode {
     match run() {
         Ok(()) => std::process::ExitCode::SUCCESS,
@@ -220,10 +305,18 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     match Args::parse().command {
+        Command::AssetLibrary { assets, output } => {
+            let result = assets::library(&assets, &output)?;
+            println!(
+                "{}",
+                serde_json::json!({"materials":result["materials"].as_array().map(Vec::len),"unsupported":result["unsupported"].as_array().map(Vec::len),"atlas":result["atlas"]})
+            );
+        }
         Command::Import {
             input,
             output,
             assets,
+            surface_only,
         } => {
             let start = Instant::now();
             let source = file_hash(&input)?;
@@ -235,6 +328,12 @@ fn run() -> Result<()> {
                 fs::set_permissions(".local", fs::Permissions::from_mode(0o700))?;
             }
             unpack(&input, &cache)?;
+            if surface_only {
+                let result = stream_publish(&cache, &input, &output, &assets, source, start)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                fs::remove_dir_all(&cache)?;
+                return Ok(());
+            }
             let extracted = bedrock_adapter::extract(&cache)?;
             let extracted_seconds = start.elapsed().as_secs_f64();
             let chunks = extracted.chunks;
