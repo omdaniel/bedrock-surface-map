@@ -33,6 +33,19 @@ test("synthetic pixels, picking, navigation, idle, toggles, resize and device re
   page.on("pageerror", (e) => errors.push(String(e)));
   await page.goto(fixture);
   await ready(page);
+  await page
+    .getByRole("button", { name: "Lighting and color", exact: true })
+    .click();
+  await page.getByLabel("Color treatment").selectOption("original");
+  await page
+    .getByRole("button", { name: "Lighting and color", exact: true })
+    .click();
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   const pixels = colors(await page.screenshot());
   const near = (expected: number[]) =>
     [...pixels].some((v) =>
@@ -111,6 +124,72 @@ test("synthetic pixels, picking, navigation, idle, toggles, resize and device re
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await ready(page);
   expect(errors).toEqual([]);
+});
+
+test("one-block sand ledge has partial shadows and elevation changes their reach", async ({
+  page,
+}) => {
+  await page.goto(fixture);
+  await ready(page);
+  await page.evaluate(() => {
+    const s = window.__map.state() as { cx: number; cz: number; scale: number };
+    window.__map.pan(-111.5 - s.cx, -207.5 - s.cz);
+    window.__map.zoom(80 / s.scale);
+  });
+  await page
+    .getByRole("button", { name: "Block borders", exact: true })
+    .click();
+  const controls = page.getByRole("button", {
+    name: "Lighting and color",
+    exact: true,
+  });
+  await controls.click();
+  await page.getByLabel("Color treatment").selectOption("original");
+  await controls.click();
+  const sample = async (u: number, v: number) => {
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const png = PNG.sync.read(await page.locator("canvas").screenshot());
+    const x = Math.floor(png.width / 2 + (u - 0.5) * 80),
+      y = Math.floor(png.height / 2 + (v - 0.5) * 80);
+    const i = (y * png.width + x) * 4;
+    return [...png.data.subarray(i, i + 3)].reduce((s, c) => s + c, 0) / 3;
+  };
+  const lit = await sample(0.9, 0.8);
+  const shaded45 = await sample(0.55, 0.8);
+  expect(lit - shaded45).toBeGreaterThan(65);
+  await page.screenshot({ path: "test-results/sand-ledge-45.png" });
+  await controls.click();
+  const elevation = page.getByLabel("Sun elevation");
+  await elevation.press("End");
+  await elevation.press("ArrowLeft");
+  await elevation.press("ArrowLeft");
+  await elevation.press("ArrowLeft");
+  await expect(page.locator("#elevation-value")).toHaveText("60°");
+  await controls.click();
+  expect(await sample(0.55, 0.8)).toBeGreaterThan(shaded45 + 65);
+  expect(lit - (await sample(0.2, 0.8))).toBeGreaterThan(65);
+  await page.screenshot({ path: "test-results/sand-ledge-60.png" });
+  await controls.click();
+  await page.getByLabel("Shadow strength").press("Home");
+  await page.getByLabel("Color treatment").selectOption("vivid");
+  await controls.click();
+  expect(await sample(0.2, 0.8)).toBeGreaterThan(shaded45 + 65);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await controls.click();
+  await expect(
+    page.getByRole("region", { name: "Lighting and color settings" }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({ path: "test-results/lighting-mobile.png" });
 });
 test("download failure and retry", async ({ page }) => {
   await page.route("**/*.bsm.zst", (route) =>

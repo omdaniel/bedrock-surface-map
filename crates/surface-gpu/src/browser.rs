@@ -82,10 +82,12 @@ pub struct Renderer {
     render_pipeline: wgpu::RenderPipeline,
     overview_pipeline: wgpu::ComputePipeline,
     mip_pipeline: wgpu::ComputePipeline,
+    shadow_pipeline: wgpu::ComputePipeline,
+    shadow_group: wgpu::BindGroup,
     global_render: wgpu::BindGroup,
     global_overview: wgpu::BindGroup,
     params: wgpu::Buffer,
-    values: [f32; 12],
+    values: [f32; 16],
     regions: BTreeMap<(i32, i32), Region>,
     sampler: wgpu::Sampler,
     base_bytes: usize,
@@ -176,11 +178,15 @@ impl Renderer {
             1.,
             1.,
             1.,
-            1.,
+            std::f32::consts::SQRT_2,
             bounds[0] as f32,
             bounds[1] as f32,
             w as f32,
             h as f32,
+            0.55,
+            1.,
+            0.,
+            0.,
         ];
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera"),
@@ -189,7 +195,7 @@ impl Renderer {
         });
         let hs = storage(&device, bytemuck::cast_slice(&heights));
         let ss = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cached sun shadows"),
+            label: Some("cached sun horizon"),
             size: (w * h * 4) as u64,
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: false,
@@ -342,7 +348,8 @@ impl Renderer {
             layout: &overview_pipeline.get_bind_group_layout(0),
             entries: &[entry(0, &params), entry(1, &mats), entry(2, &ss)],
         });
-        let base_bytes = w * h * 4 + rgba.len() * 21 / 16 + materials.len() * 4;
+        // Both source heights and horizons stay resident for elevation changes.
+        let base_bytes = w * h * 8 + rgba.len() * 21 / 16 + materials.len() * 4;
         Ok(Self {
             device,
             queue,
@@ -351,6 +358,8 @@ impl Renderer {
             render_pipeline,
             overview_pipeline,
             mip_pipeline,
+            shadow_pipeline: shadow,
+            shadow_group: group,
             global_render,
             global_overview,
             params,
@@ -515,6 +524,9 @@ impl Renderer {
         height: u32,
         grid: bool,
         shadows: bool,
+        elevation: f32,
+        shadow_strength: f32,
+        vivid: bool,
     ) -> Result<bool, JsValue> {
         if self.is_lost() {
             return Err(js_error("GPU device lost; reload the map"));
@@ -522,12 +534,24 @@ impl Renderer {
         if width == 0 || height == 0 {
             return Ok(false);
         }
+        if !elevation.is_finite()
+            || !(15.0..=75.0).contains(&elevation)
+            || !shadow_strength.is_finite()
+            || !(0.0..=0.8).contains(&shadow_strength)
+        {
+            return Err(js_error("invalid lighting settings"));
+        }
         if self.config.width != width || self.config.height != height {
             self.config.width = width;
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
         }
-        let changed = self.values[6] != (shadows as u32 as f32);
+        let slope = elevation.to_radians().tan() * std::f32::consts::SQRT_2;
+        let sun_changed = self.values[7] != slope;
+        let changed = sun_changed
+            || self.values[6] != (shadows as u32 as f32)
+            || self.values[12] != shadow_strength
+            || self.values[13] != vivid as u32 as f32;
         self.values[..8].copy_from_slice(&[
             cx,
             cz,
@@ -536,10 +560,26 @@ impl Renderer {
             height as f32,
             grid as u32 as f32,
             shadows as u32 as f32,
-            1.,
+            slope,
         ]);
+        self.values[12] = shadow_strength;
+        self.values[13] = vivid as u32 as f32;
         self.queue
             .write_buffer(&self.params, 0, bytemuck::cast_slice(&self.values));
+        if sun_changed {
+            let mut encoder = self.device.create_command_encoder(&Default::default());
+            {
+                let mut pass = encoder.begin_compute_pass(&Default::default());
+                pass.set_pipeline(&self.shadow_pipeline);
+                pass.set_bind_group(0, &self.shadow_group, &[]);
+                pass.dispatch_workgroups(
+                    ((self.values[10] + self.values[11] - 1.) as u32).div_ceil(64),
+                    1,
+                    1,
+                );
+            }
+            self.queue.submit([encoder.finish()]);
+        }
         if changed {
             for r in self.regions.values() {
                 self.regenerate(r);

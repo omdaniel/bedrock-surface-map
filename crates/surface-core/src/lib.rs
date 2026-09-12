@@ -329,8 +329,32 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
 }
 
 pub fn shadow_reference(heights: &[i16], width: usize, height: usize) -> Vec<f32> {
+    let horizon = horizon_reference(heights, width, height, SUN_STEP);
+    heights
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            if *h == MISSING_HEIGHT {
+                return 0.;
+            }
+            shadow_coverage_reference(
+                &horizon,
+                [width, height],
+                [i % width, i / width],
+                *h as f32 / 16.,
+                SUN_STEP,
+                [0.4999, 0.4999],
+                [0.5001, 0.5001],
+            )
+        })
+        .collect()
+}
+
+/// Cached NW diagonal horizon. Unlike a binary shadow mask, this retains enough
+/// information to shade fractional top faces at any map zoom.
+pub fn horizon_reference(heights: &[i16], width: usize, height: usize, slope: f32) -> Vec<f32> {
     assert_eq!(heights.len(), width * height);
-    let mut result = vec![0.; heights.len()];
+    let mut result = vec![-1e6; heights.len()];
     for diagonal in 0..width + height - 1 {
         let (mut x, mut z) = if diagonal < width {
             (diagonal, 0)
@@ -340,17 +364,59 @@ pub fn shadow_reference(heights: &[i16], width: usize, height: usize) -> Vec<f32
         let mut horizon = -1e6f32;
         while x < width && z < height {
             let i = z * width + x;
-            horizon -= SUN_STEP;
+            horizon = (horizon - slope).max(-1e6);
             if heights[i] != MISSING_HEIGHT {
                 let h = heights[i] as f32 / 16.;
-                result[i] = if horizon > h + 0.05 { 1. } else { 0. };
                 horizon = horizon.max(h);
             }
+            result[i] = horizon;
             x += 1;
             z += 1;
         }
     }
     result
+}
+
+/// Exact top-face shadow area for a rectangular sample footprint within one
+/// column. Each triangle sees a side-diagonal horizon and the shared NW horizon.
+pub fn shadow_coverage_reference(
+    horizon: &[f32],
+    size: [usize; 2],
+    at: [usize; 2],
+    y: f32,
+    slope: f32,
+    lower: [f32; 2],
+    upper: [f32; 2],
+) -> f32 {
+    let read = |dx: isize, dz: isize| {
+        let x = at[0] as isize + dx;
+        let z = at[1] as isize + dz;
+        if x < 0 || z < 0 || x >= size[0] as isize || z >= size[1] as isize {
+            -1e6
+        } else {
+            horizon[z as usize * size[0] + x as usize]
+        }
+    };
+    let threshold = |h: f32| (h - y - 0.0001) / slope;
+    let lit_half = |lo: [f32; 2], hi: [f32; 2], side: f32, diagonal: f32| {
+        let x0 = lo[0].max(side);
+        let x1 = hi[0].min(hi[1]);
+        let y0 = lo[1].max(diagonal);
+        if x1 <= x0 || hi[1] <= y0 {
+            return 0.;
+        }
+        let split = y0.clamp(x0, x1);
+        (split - x0) * (hi[1] - y0) + (x1 - split) * (hi[1] - (split + x1) * 0.5)
+    };
+    let nw = threshold(read(-1, -1));
+    let lit = lit_half(lower, upper, threshold(read(-1, 0)), nw)
+        + lit_half(
+            [lower[1], lower[0]],
+            [upper[1], upper[0]],
+            threshold(read(0, -1)),
+            nw,
+        );
+    (1. - lit / ((upper[0] - lower[0]) * (upper[1] - lower[1]))).clamp(0., 1.)
 }
 
 #[cfg(test)]
@@ -419,5 +485,96 @@ mod tests {
         h[254 * 300 + 254] = 160;
         h[255 * 300 + 255] = MISSING_HEIGHT;
         assert_eq!(shadow_reference(&h, 300, 300)[256 * 300 + 256], 1.);
+    }
+
+    #[test]
+    fn single_block_ledge_casts_fractional_shadow() {
+        let mut heights = vec![0; 8 * 8];
+        for z in 0..8 {
+            for x in 0..4 {
+                heights[z * 8 + x] = 16;
+            }
+        }
+        for elevation in [30f32, 45., 60.] {
+            let slope = elevation.to_radians().tan() * std::f32::consts::SQRT_2;
+            let horizon = horizon_reference(&heights, 8, 8, slope);
+            let fraction =
+                shadow_coverage_reference(&horizon, [8, 8], [4, 4], 0., slope, [0., 0.], [1., 1.]);
+            assert!((fraction - (1. / slope).min(1.)).abs() < 0.0002);
+            assert_eq!(
+                shadow_coverage_reference(&horizon, [8, 8], [3, 4], 1., slope, [0., 0.], [1., 1.]),
+                0.
+            );
+        }
+    }
+
+    #[test]
+    fn horizon_coverage_agrees_with_independent_ray_walk() {
+        let (w, h) = (19usize, 23usize);
+        let mut seed = 718u32;
+        let heights: Vec<i16> = (0..w * h)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                if seed.is_multiple_of(11) {
+                    MISSING_HEIGHT
+                } else {
+                    (seed % 320) as i16 - 96
+                }
+            })
+            .collect();
+        for elevation in [30f32, 45., 60.] {
+            let slope = elevation.to_radians().tan() * std::f32::consts::SQRT_2;
+            let horizon = horizon_reference(&heights, w, h, slope);
+            for z in 0..h {
+                for x in 0..w {
+                    if heights[z * w + x] == MISSING_HEIGHT {
+                        continue;
+                    }
+                    let y = heights[z * w + x] as f32 / 16.;
+                    let mut shadowed = 0usize;
+                    for v in 0..24 {
+                        for u in 0..24 {
+                            let uv = [(u as f32 + 0.5) / 24., (v as f32 + 0.5) / 24.];
+                            let (mut xx, mut zz) = (x as isize, z as isize);
+                            let (mut tx, mut tz) = (uv[0], uv[1]);
+                            loop {
+                                let distance = tx.min(tz);
+                                if tx <= distance {
+                                    xx -= 1;
+                                    tx += 1.;
+                                }
+                                if tz <= distance {
+                                    zz -= 1;
+                                    tz += 1.;
+                                }
+                                if xx < 0 || zz < 0 {
+                                    break;
+                                }
+                                let sample = heights[zz as usize * w + xx as usize];
+                                if sample != MISSING_HEIGHT
+                                    && sample as f32 / 16. > y + distance * slope + 0.0001
+                                {
+                                    shadowed += 1;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let actual = shadow_coverage_reference(
+                        &horizon,
+                        [w, h],
+                        [x, z],
+                        y,
+                        slope,
+                        [0., 0.],
+                        [1., 1.],
+                    );
+                    assert!(
+                        (actual - shadowed as f32 / 576.).abs() < 0.045,
+                        "coverage at {x},{z}: {actual}"
+                    );
+                }
+            }
+        }
     }
 }

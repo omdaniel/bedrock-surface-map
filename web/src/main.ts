@@ -10,12 +10,30 @@ import {
   Activity,
   RotateCcw,
   ChevronDown,
+  SlidersHorizontal,
 } from "lucide";
 import type { Manifest, RegionRef, DecodeRequest, DecodeReply } from "./types";
 import "./style.css";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `<header><div class="identity"><span class="brand-mark" aria-hidden="true"></span><div><strong>Bedrock Survival</strong><span class="subtitle">OVERWORLD <span class="separator">/</span> SNAPSHOT</span></div></div><nav aria-label="Map tools"><button id="fit" title="Fit world" aria-label="Fit world"><i data-lucide="maximize"></i></button><button id="spawn" title="World spawn" aria-label="World spawn"><i data-lucide="map-pin"></i></button><span class="divider"></span><button id="grid" title="Block borders" aria-label="Block borders" aria-pressed="true"><i data-lucide="grid-2-x2"></i></button><button id="sun" title="Sun shadows" aria-label="Sun shadows" aria-pressed="true"><i data-lucide="sun"></i></button><button id="stats" title="Performance" aria-label="Performance" aria-pressed="false"><i data-lucide="activity"></i></button></nav></header><main><canvas id="map" aria-label="Interactive Bedrock world map" tabindex="0"></canvas><div id="message" role="status"><span id="message-text">Opening world...</span><button id="retry" hidden>Retry</button></div><div class="zoom"><button id="in" title="Zoom in" aria-label="Zoom in"><i data-lucide="plus"></i></button><button id="out" title="Zoom out" aria-label="Zoom out"><i data-lucide="minus"></i></button></div><div class="north" title="North">N<span aria-hidden="true">↑</span></div><section id="inspect" hidden><span class="eyebrow">SURFACE</span><strong id="block-name"></strong><span id="block-pos"></span><span id="block-detail"></span></section><section id="diagnostics" hidden><strong>Performance</strong><pre id="metrics"></pre><button id="measure">Measure 5 seconds</button></section><div id="scale"><div></div><span></span></div></main><footer><span id="coordinates">X — &nbsp; Z —</span><span id="load-state">Preparing renderer</span><span class="local-state"><b></b> Local snapshot</span></footer>`;
+app
+  .querySelector("#sun")!
+  .insertAdjacentHTML(
+    "afterend",
+    `<button id="lighting-toggle" title="Lighting and color" aria-label="Lighting and color" aria-expanded="false" aria-controls="lighting"><i data-lucide="sliders-horizontal"></i></button>`,
+  );
+app.querySelector("main")!.insertAdjacentHTML(
+  "beforeend",
+  `<section id="lighting" aria-label="Lighting and color settings" hidden>
+  <strong>Lighting and color</strong>
+  <div class="setting-label"><label for="elevation">Sun elevation</label><output id="elevation-value" for="elevation">45&deg;</output></div>
+  <input id="elevation" type="range" min="15" max="75" step="5" value="45">
+  <div class="setting-label"><label for="shadow-strength">Shadow strength</label><output id="strength-value" for="shadow-strength">55%</output></div>
+  <input id="shadow-strength" type="range" min="0" max="80" step="5" value="55">
+  <div class="setting-label"><label for="color-treatment">Color treatment</label><select id="color-treatment"><option value="vivid">Vivid</option><option value="original">Original</option></select></div>
+</section>`,
+);
 createIcons({
   icons: {
     Maximize,
@@ -27,6 +45,7 @@ createIcons({
     Activity,
     RotateCcw,
     ChevronDown,
+    SlidersHorizontal,
   },
 });
 const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
@@ -41,6 +60,9 @@ let cx = 0,
   scale = 1,
   grid = true,
   sun = true,
+  elevation = 45,
+  shadowStrength = 0.55,
+  vivid = true,
   frameQueued = false,
   disposed = false;
 let sequence = 0,
@@ -233,7 +255,18 @@ function requestDraw() {
         canvas.width = w;
         canvas.height = h;
       }
-      renderer.render(cx, cz, scale * dpr, w, h, grid, sun);
+      renderer.render(
+        cx,
+        cz,
+        scale * dpr,
+        w,
+        h,
+        grid,
+        sun,
+        elevation,
+        shadowStrength,
+        vivid,
+      );
       draws++;
       updateScale();
       updateMetrics();
@@ -369,10 +402,37 @@ $("sun").onclick = () => {
   $("sun").setAttribute("aria-pressed", String(sun));
   requestDraw();
 };
+$("lighting-toggle").onclick = () => {
+  const show = $("lighting").hidden;
+  $("lighting").hidden = !show;
+  $("lighting-toggle").setAttribute("aria-expanded", String(show));
+  if (show) {
+    $("diagnostics").hidden = true;
+    $("stats").setAttribute("aria-pressed", "false");
+  }
+};
+$("elevation").oninput = () => {
+  elevation = Number($<HTMLInputElement>("elevation").value);
+  $("elevation-value").textContent = `${elevation}\u00b0`;
+  requestDraw();
+};
+$("shadow-strength").oninput = () => {
+  shadowStrength = Number($<HTMLInputElement>("shadow-strength").value) / 100;
+  $("strength-value").textContent = `${Math.round(shadowStrength * 100)}%`;
+  requestDraw();
+};
+$("color-treatment").onchange = () => {
+  vivid = $<HTMLSelectElement>("color-treatment").value === "vivid";
+  requestDraw();
+};
 $("stats").onclick = () => {
   const show = $("diagnostics").hidden;
   $("diagnostics").hidden = !show;
   $("stats").setAttribute("aria-pressed", String(show));
+  if (show) {
+    $("lighting").hidden = true;
+    $("lighting-toggle").setAttribute("aria-expanded", "false");
+  }
   updateMetrics();
 };
 $("retry").onclick = () => {
@@ -469,6 +529,9 @@ window.__map = {
     cx,
     cz,
     scale,
+    elevation,
+    shadowStrength,
+    vivid,
     cached: cache.size,
     pending: active,
     failures: [...failures],

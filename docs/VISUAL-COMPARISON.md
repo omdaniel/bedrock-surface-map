@@ -39,12 +39,17 @@ of every block, and the external render does not cover our complete dataset.
 
 ## Deliberate Differences and Remaining Work
 
-- Our grass and leaves are darker and more olive. Biome tinting uses a bounded
-  palette and leaf litter uses an explicitly approximate fixed dry-foliage tint.
-  The references use different coloring, lighting and transparency choices.
-- uNmINeD and BedrockMap show stronger relief and terrace-edge detailing. Our
-  design deliberately omits contour lines and uses northwest sunlight at 60
-  degrees with cast shadows. Their relief appearance is not an exact target.
+- The initial darker/olive grass and leaves prompted a Vivid color treatment.
+  Normalized texture brightness now preserves brighter biome colors. The former
+  treatment is available as Original. Biome palettes and dry-foliage tint remain
+  approximations, not the reference renderers' color model.
+- The initial binary shadow cache missed much of the single-block relief. The
+  follow-up retains horizons and integrates fractional-block cast shadows, with
+  a user-requested 45-degree default sun and adjustable elevation/strength.
+  Central beach terraces now show their height changes. uNmINeD also displays
+  bright up-sun edges and softer-looking canopy relief; our hard parallel-light
+  heightfield does not reproduce those effects. No elevation contour lines were
+  added, and uNmINeD's exact sun elevation was not measured or assumed known.
 - Water depth shading and submerged plants differ noticeably. The retained
   support can be the first underwater vegetation block, not the bare seabed,
   and an exposed aquatic primary surface can look too prominent. Full
@@ -82,3 +87,6 @@ the local origin images side by side. It does not serve or upload the raw world.
 Reference images are not committed or sent to CI; synthetic fixtures remain the
 automated regression tests. Timing this optional PNG export is not an equivalent
 comparison to our interactive renderer or surface-import pipeline.
+
+The [appearance follow-up](APPEARANCE.md) adds a closer 192-by-192-block beach
+crop at four pixels per block, including 45/60-degree wgpu and uNmINeD images.

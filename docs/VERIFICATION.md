@@ -54,7 +54,8 @@ Zero unresolved textures does not imply perfect block-model/state appearance.
 ## Real Browsers
 
 Both browsers were tested directly, not via a Linux WebKit substitute or the VDI.
-Final five-second controlled-pan samples, after map data loaded:
+Initial five-second controlled-pan samples, after map data loaded (before the
+lighting follow-up below):
 
 | Measurement | Chrome 152.0.7977.83 | Safari 26.3 |
 | --- | ---: | ---: |
@@ -101,16 +102,49 @@ Desktop and 390 x 844 mobile-layout screenshots are local under
 a test of iPad hardware, mobile Safari WebGPU, touch latency or mobile memory.
 Safari remote automation was enabled temporarily for the test and restored off.
 
+### Adjustable Lighting Follow-Up
+
+The fractional-shadow/Vivid-color build was measured again in Chrome
+152.0.7977.83, with all 64 regions loaded and no page errors:
+
+| Measurement | Updated Chrome |
+| --- | ---: |
+| Canvas / DPR | 1920 x 1080 / 1 |
+| Sun elevation / shadow strength | 45 degrees / 55% |
+| Animation frames / submitted draws | 600 / 600 |
+| Median / 95th percentile interval | 8.3 / 9.1 ms |
+| Maximum interval | 9.3 ms |
+| First populated frame | 152.5 ms |
+| Accumulated worker decode | 278.5 ms |
+| Resident map accounting | 235,717,792 bytes (224.80 MiB) |
+
+These remain animation-frame intervals, not GPU execution timings. First-visible
+latency is a warm local run using the definition above. Changing the sun angle
+retains the source height buffer, adding about 20.25 MiB to the earlier accounting;
+the full map still fits the 256 MiB logical budget. Camera navigation does not
+rerun shadow computation. Sun-angle interaction latency is not separately
+benchmarked by this controlled-pan test.
+
+Native Safari was reloaded and visually checked with the new shader and all 64
+regions. Its earlier performance timings are not new-build measurements. Chrome
+automated checks exercise the sliders and color selector, including screenshot
+evidence of the change in one-block shadow reach. A real-beach comparison at
+30/45/60 degrees and a 390 x 844 lighting-panel screenshot have no page errors or
+horizontal overflow. See [APPEARANCE.md](APPEARANCE.md) for reproduction and limits.
+The source archive's SHA-256 was rechecked unchanged; no reimport was needed.
+
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
-- Eleven Rust tests: exact constant/mixed codec round trips, negative coordinates,
+- Thirteen Rust tests: exact constant/mixed codec round trips, negative coordinates,
   missing coverage, corrupt/truncated payloads, decompression/window bounds,
   archive path/symlink rejection, leaf-litter support/overlay semantics, CPU
   shadow geometry and GPU equivalence.
-- GPU fixtures independently compare flat terrain, isolated 10-block column,
-  terraces, and a missing sample at a 256-column region boundary.
-- Six Playwright tests: expected terrain/water pixels, picking, drag/wheel,
+- GPU fixtures compare flat terrain, isolated 10-block column, terraces,
+  one-block ledges at 45/60 degrees, and a missing sample at a 256-column region
+  boundary. CPU analytical coverage also agrees with an independent ray walker.
+- Seven Playwright tests: expected terrain/water pixels, fractional ledge shadows,
+  sun elevation/strength/color controls, picking, drag/wheel,
   negative coordinates, idle redraw, resize, toggles, device-loss recovery,
   download retry, checksum rejection, missing WebGPU, invalid manifests and raw
   world path denial.

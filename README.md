@@ -41,7 +41,10 @@ This route and the real map use exactly the same codec, worker and renderer.
 ## Interaction
 
 Drag to pan; wheel or pinch to zoom. The toolbar provides fit-world, spawn,
-block borders, shadows and diagnostics. Hover inspects coordinates, top height
+block borders, shadows, lighting/color settings and diagnostics. Sun elevation
+defaults to 45 degrees from the northwest and is adjustable from 15 to 75 degrees.
+Shadow strength defaults to 55%; Vivid/Original selects the color treatment.
+These settings are session-local. Hover inspects coordinates, top height
 and material. The camera stays north-up. Redraws stop while the view is idle;
 performance sampling animates a short pan only when explicitly requested.
 WebGPU is required: unsupported browsers and lost devices produce an explicit
@@ -61,6 +64,8 @@ the snapshot and recreates GPU resources.
 See [import safety and commands](docs/IMPORT.md), [format and rendering](docs/FORMAT.md),
 [verification results](docs/VERIFICATION.md) and the
 [uNmINeD/BedrockMap visual comparison](docs/VISUAL-COMPARISON.md).
+The [appearance follow-up](docs/APPEARANCE.md) explains fractional-block shadows
+and how to reproduce the matched beach comparison.
 
 ## Verify
 

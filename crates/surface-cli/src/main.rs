@@ -300,6 +300,10 @@ fn run() -> Result<()> {
                     if x == 100 && z == 100 {
                         r.heights[i] += 160;
                     }
+                    if (128..160).contains(&x) && (32..64).contains(&z) {
+                        r.heights[i] = if x < 144 { 16 } else { 0 };
+                        r.materials[i] = 4;
+                    }
                 }
             }
             let mut ms = vec![];
@@ -308,6 +312,7 @@ fn run() -> Result<()> {
                 ("Grass", [90, 160, 64, 255]),
                 ("Stone", [155, 158, 160, 255]),
                 ("Water", [38, 125, 194, 255]),
+                ("Sand", [225, 209, 163, 255]),
             ] {
                 ms.push(Material {
                     key: name.into(),

@@ -61,18 +61,33 @@ Water blends a retained support surface with water color according to depth;
 thin vegetation alpha-blends over its supporting top surface. Snow layers and
 slabs preserve fractional top height. No model geometry is reconstructed.
 
-The orthographic north-up camera uses a fixed parallel light from northwest,
-60 degrees above the horizon. For each NW-to-SE diagonal the compute shader
-maintains `horizon = max(height, horizon - sqrt(2)*tan(60 degrees))`. A column is
-shadowed when the propagated horizon exceeds its top. Complexity is linear in
-the dataset's bounding rectangle, not per-pixel multi-step ray marching.
+The orthographic north-up camera uses parallel light from a fixed northwest
+azimuth. Elevation defaults to 45 degrees, adjustable from 15 to 75. For each
+NW-to-SE diagonal the compute shader maintains
+`horizon = max(height, horizon - sqrt(2)*tan(elevation))`. It retains floating-point
+horizons, not a binary shadow bit. Missing cells propagate the incoming horizon
+but do not create an occluder. Complexity is linear in the dataset's bounding
+rectangle, not per-pixel multi-step ray marching.
 
-The theoretical horizontal reach of a height difference H is `H / tan(60)`;
-10 blocks gives 5.7735 blocks. The grid samples this at diagonal cell centers:
-four diagonal steps are shadowed, five are not. Shadow fixtures cover flat
-ground, a column, terraces and a boundary with a missing sample. The complete
-heightfield supplies all known up-sun occluders, even for nonresident regions.
-Changing snapshots rebuilds the shadow buffer and all dependent overview levels.
+The shared appearance shader combines west, north and northwest horizons with
+the receiving height. It analytically integrates the lit fraction of each pixel's
+block-local footprint, including side-cell crossings. Thus even a one-block
+ledge casts a visible partial-block shadow. Overviews use the same calculation
+integrated over an entire block before filtering. See [APPEARANCE.md](APPEARANCE.md)
+for the derivation and independent ray-walk tests.
+
+The theoretical horizontal reach of a height difference H is `H / tan(elevation)`;
+10 blocks gives 5.7735 blocks at 60 degrees, or 10 blocks at 45 degrees. The
+complete heightfield supplies all known up-sun occluders, even for nonresident
+regions. Changing elevation rebuilds horizons and resident overviews; a snapshot
+reload also recreates the heightfield. Camera motion does neither.
+
+Vivid color treatment normalizes grayscale grass/leaf texture brightness before
+applying the approximate biome palette, then adds mild saturation and brightness.
+It also uses a richer blue water base. Original preserves the earlier color
+formulas, but uses the corrected shadow model. Both detail and overview passes
+share the same WGSL appearance functions. Shadow strength and color treatment
+only regenerate resident overview colors, not the heightfield or horizon sweep.
 
 Overview compute writes an RGBA texture from surface colors, overlays, water and
 cached shadows. Subsequent GPU compute passes box-filter premultiplied levels.
@@ -83,6 +98,7 @@ texture; very coarse transitions are an acknowledged prototype approximation.
 Block borders use fragment derivatives and procedural fractional coordinates,
 fade with zoom, and require no per-block geometry. Elevation contours are not
 drawn. Shadows are cached, not recomputed for camera motion. Grid toggles only
-redraw; shadow toggles regenerate resident overview colors. LRU eviction prefers
+redraw; shadow toggles regenerate resident overview colors. The resident budget
+includes both the source-height and cached-horizon buffers. LRU eviction prefers
 nonvisible regions and destroys their GPU resources; loading stays two requests
 at a time. An unchanged view schedules no animation loop.
