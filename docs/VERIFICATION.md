@@ -109,6 +109,14 @@ Chromium. Consult the PR checks for the latest run status; no CI result should
 be interpreted as the Mac hardware measurements above. No raw worlds, Mojang
 assets or local screenshots are sent to CI.
 
+The first Linux run exposed test portability issues: exact screenshot bytes
+without a GPU-completion wait, and a nonexistent Mac path falling through Vite's
+SPA route. Checks now wait for the first completed GPU frame, allow two RGB
+quantization levels, and create a real synthetic private file outside the web
+root on each platform. CI uses the SHA-verified official wasm-bindgen 0.2.127
+binary and the already-tested debug CLI for fixture generation, avoiding redundant
+tool and native-release compilation. Real import benchmarks still use release.
+
 ## Remaining Limits
 
 No live updates, players, public hosting, authentication or homelab deployment.

@@ -1,11 +1,18 @@
 import { test, expect } from "@playwright/test";
 import { PNG } from "pngjs";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 const fixture = "/?map=/maps/fixture/manifest.json";
 async function ready(page: import("@playwright/test").Page) {
   await page.waitForFunction(() => window.__map?.ready);
   await page.waitForFunction(() => {
-    const s = window.__map.state() as { cached: number; pending: number };
-    return s.cached > 0 && s.pending === 0;
+    const s = window.__map.state() as {
+      cached: number;
+      pending: number;
+      firstVisible: number | null;
+    };
+    return s.cached > 0 && s.pending === 0 && s.firstVisible !== null;
   });
   await expect(page.locator("#message")).toBeHidden();
 }
@@ -27,8 +34,21 @@ test("synthetic pixels, picking, navigation, idle, toggles, resize and device re
   await page.goto(fixture);
   await ready(page);
   const pixels = colors(await page.screenshot());
-  expect(pixels.has("5aa040")).toBe(true);
-  expect(pixels.has("9b9ea0")).toBe(true);
+  const near = (expected: number[]) =>
+    [...pixels].some((v) =>
+      expected.every(
+        (c, i) =>
+          Math.abs(parseInt(String(v).slice(i * 2, i * 2 + 2), 16) - c) <= 2,
+      ),
+    );
+  expect(
+    near([90, 160, 64]),
+    `Grass pixels absent: ${[...pixels].slice(0, 20)}`,
+  ).toBe(true);
+  expect(
+    near([155, 158, 160]),
+    `Stone pixels absent: ${[...pixels].slice(0, 20)}`,
+  ).toBe(true);
   expect(
     [...pixels].some((v) => {
       const n = String(v);
@@ -117,10 +137,20 @@ test("missing WebGPU is explicit", async ({ page }) => {
   await expect(page.locator("#message")).toContainText("WebGPU is unavailable");
 });
 test("development server refuses raw world paths", async ({ request }) => {
-  const response = await request.get(
-    "/@fs/Users/macbookpro/Downloads/Bedrock-Survival-2026-09-11.mcworld",
-  );
-  expect([403, 404]).toContain(response.status());
+  const dir = await mkdtemp(join(tmpdir(), "surface-private-"));
+  try {
+    const path = join(dir, "synthetic.mcworld");
+    await writeFile(path, "synthetic private data, never serve", {
+      mode: 0o600,
+    });
+    const response = await request.get(`/@fs${path}`);
+    expect([403, 404]).toContain(response.status());
+    expect(await response.text()).not.toContain(
+      "synthetic private data, never serve",
+    );
+  } finally {
+    await rm(dir, { recursive: true });
+  }
 });
 test("invalid manifest bounds fail before allocating terrain", async ({
   page,
