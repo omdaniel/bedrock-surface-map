@@ -6,6 +6,11 @@ request slots and the same deadline. Slow/oversized/unauthorized requests do not
 replace the current roster. Health retains only the last pack version and aggregate
 counters after positions expire, never player history.
 
+The bundle also contains `probe/`, a separate diagnostic pack with different UUIDs.
+It tests BDS HTTP URI/body/concurrency limits and request timeout using a disposable
+fresh world. Deployment mounts only `bundle/pack` in Survival; never register the
+diagnostic pack there. Neither pack contains a token or reads inventories/chat.
+
 ## Current Release Gate
 
 The application implements a player roster, compass markers, click-to-center/zoom,

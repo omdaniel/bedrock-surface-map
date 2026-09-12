@@ -45,6 +45,9 @@ execFileSync(
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true, mode: 0o700 });
 await cp(".local/tracking/pack", resolve(output, "pack"), { recursive: true });
+await cp(".local/tracking/probe", resolve(output, "probe"), {
+  recursive: true,
+});
 await cp(
   "target/x86_64-unknown-linux-musl/release/surface-tracker",
   resolve(output, "surface-tracker"),
@@ -55,6 +58,8 @@ for (const path of [
   "pack/manifest.json",
   "pack/scripts/core.js",
   "pack/scripts/main.js",
+  "probe/manifest.json",
+  "probe/scripts/main.js",
 ])
   files[path] = createHash("sha256")
     .update(await readFile(resolve(output, path)))
