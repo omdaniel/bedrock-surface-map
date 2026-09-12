@@ -17,9 +17,10 @@ The application implements a player roster, compass markers, click-to-center/zoo
 follow and a read-only LAN proxy. It is **not yet connected to Survival**. The
 default `viewer-config.json` deliberately disables tracking; a lack of telemetry
 is not represented as an empty, healthy server. Production experiment activation
-still requires isolated test evidence and explicit owner approval. Updater and
-monitoring integration, real-client acceptance and iPad performance acceptance
-remain deployment checkpoints in `runproxmox`, not claims made by this build.
+still requires explicit owner approval. Updater and monitoring integration are
+installed but not yet adopted in Survival. A real retail iPad joined the restored
+copy and its owner confirmed matching map/game coordinates. Two-player/Switch
+acceptance and iPad performance measurements remain separate gates in `runproxmox`.
 
 The Players button is the people icon at the right of the map toolbar. Select a
 gamertag to center and zoom; the target button toggles follow. Manual navigation
@@ -80,8 +81,10 @@ actual tested BDS versions.
 The [audited compatibility record](../tracking/compatibility.json) now confirms
 these exact dependencies load on BDS 1.26.45.1 with the Beta APIs experiment,
 on both a fresh world and the verified September 11 Survival export. Empty
-heartbeats, authentication and a 35-second collector outage/recovery passed.
-This is not a retail-client or actual-position acceptance result.
+heartbeats, authentication, a 35-second collector outage/recovery, a real iPad
+join and matching positions passed. The disposable diagnostic pack also proved
+actual BDS URI/body/concurrency rejection and a 1.045-second timeout. The full
+fresh-world candidate gate, including those checks, took 19.46 seconds.
 
 BDS 1.26.20 [renamed the permission to `force_tls`](https://learn.microsoft.com/en-us/minecraft/creator/documents/update1.26.20?view=minecraft-bedrock-stable).
 In the tested 1.26.45.1 runtime, including it with `false` still raised
@@ -108,8 +111,36 @@ Neither the world fingerprint nor world ID is a secret. The binding must be
 explicitly updated when replacing the terrain snapshot. No login/public hosting
 is enabled; a future internet URL would expose player names and current positions.
 
-To independently disable the overlay, omit the three tracking arguments and
-restart the preview. This does not alter the world or remove its experiment state.
+To independently disable tracking for one view, open `/?players=off`. This skips
+configuration and position requests and creates no polling timer. To disable it
+for all viewers, omit the three tracking arguments and restart the preview.
+Neither action alters the world or removes its experiment state.
+
+## Local Measurement
+
+`node scripts/check-live-tracking.mjs` observes one minute of the current LAN feed
+and writes aggregate latency/draw-count statistics under ignored `.local/tracking`.
+It never writes player payloads. `node scripts/check-tracking-performance.mjs
+--browser chrome` runs controlled-pan ABBA tracking-off/on comparisons. For real
+Mac Safari, start `/usr/bin/safaridriver -p 4444` separately and use `--browser safari`;
+the script does not change Safari automation permissions. Close other GPU workloads
+before measuring. Results are frame intervals, not GPU execution timestamps.
+
+September 12 restored-copy observations, not production load claims:
+
+- One live player: 22 fresh snapshots in a stationary minute; sample-to-browser
+  p50 713 ms, p95 1,536 ms, maximum 1,632 ms. Terrain redraw count stayed zero.
+  This depends on Mac/server clock alignment and is not action-to-display latency.
+- Chrome 152 at 1920x984 physical pixels, DPR 1: off p95 16.7/16.7 ms;
+  on with one player 16.8/16.8 ms. At the exact 1920x1080 target, the player had
+  disconnected: off p95 33.3/33.4 ms, on empty-roster 33.3/16.8 ms. Do not present
+  the latter as a live-marker performance result or a guaranteed 60 FPS result.
+- Mac Safari 26.3 at 1920x1080 physical pixels, native DPR 2: off p95 18/21 ms;
+  on with one player 17/19 ms. These small samples overlap; they do not prove a
+  statistically bounded five-percent regression budget.
+- A larger Safari 3840x2056 Retina canvas was substantially slower with tracking
+  both off and on (p95 51-136 ms off, 58-60 ms on). Keep resolution/load effects
+  separate from marker overhead. No M4 iPad off/on benchmark has been recorded.
 
 ## Verification Boundaries
 

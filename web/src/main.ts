@@ -745,7 +745,9 @@ async function boot() {
   );
   window.__map.ready = true;
   fit();
-  void playerLayer.configure(manifest.source_sha256);
+  if (new URLSearchParams(location.search).get("players") === "off")
+    playerLayer.disableForView();
+  else void playerLayer.configure(manifest.source_sha256);
 }
 void boot().catch((e) => {
   message(String(e), true);

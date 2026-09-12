@@ -2,7 +2,7 @@
   "audited_on": "2026-09-12",
   "bds_version": "1.26.45.1",
   "bds_zip_sha256": "b0db86098ee418a9bb226f6f3f51ff2be36542236839375627b29aef3dfa5cda",
-  "application_commit_tested": "64612c304d591d6b3b1e10a879f4ccff65c4d4ae",
+  "application_commit_tested": "0ec1de463bba1af850c0677cfcfaf704a8c632ff",
   "pack_version": "1.0.0",
   "npm_declarations": {
     "@minecraft/server": "2.9.0",
@@ -15,10 +15,21 @@
     "@minecraft/server-admin": "1.0.0-beta"
   },
   "isolated_fresh_world": "authenticated empty heartbeats and restart/outage recovery verified",
-  "isolated_survival_export": "startup and authenticated empty heartbeats verified",
+  "isolated_survival_export": "retail iPad join, matching map/game positions, empty roster after leave, restart and resumed heartbeats verified",
   "http_permissions": "force_tls omitted; false still raised TLSOnlyError in this build",
+  "http_negative_tests": {
+    "forbidden_uri": "UriNotAllowedError",
+    "oversized_body": "RequestBodyTooLargeError",
+    "concurrent_request": "HttpRequestLimitExceededError",
+    "allowed_request_status": 204,
+    "timeout": "InternalHttpRequestError",
+    "timeout_ms": 1045
+  },
+  "full_candidate_seconds": 19.46,
   "production_enabled": false,
-  "retail_client_join_verified": false,
-  "real_player_coordinates_verified": false,
-  "updater_integration_complete": false
+  "retail_client_join_verified": true,
+  "real_player_coordinates_verified": true,
+  "two_real_players_verified": false,
+  "updater_integration_installed": true,
+  "production_adoption_verified": false
 }

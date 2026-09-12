@@ -158,6 +158,10 @@ export class PlayerLayer {
   close() {
     this.toggle(false);
   }
+  disableForView() {
+    this.destroy();
+    this.status.textContent = "Tracking disabled in this view";
+  }
   async configure(fingerprint: string) {
     try {
       const response = await fetch("/viewer-config.json", {

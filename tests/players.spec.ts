@@ -130,6 +130,26 @@ test("unbound snapshot has an honest player status and no requests", async ({
   expect(requests).toBe(0);
 });
 
+test("per-view disable never loads tracking configuration or positions", async ({
+  page,
+}) => {
+  let requests = 0;
+  page.on("request", (r) => {
+    if (
+      r.url().includes("viewer-config.json") ||
+      r.url().includes("/api/v1/worlds/")
+    )
+      requests++;
+  });
+  await page.goto("/?map=/maps/fixture/manifest.json&players=off");
+  await page.waitForFunction(() => window.__map?.ready);
+  await page.getByRole("button", { name: "Players", exact: true }).click();
+  await expect(page.locator(".players-status")).toHaveText(
+    "Tracking disabled in this view",
+  );
+  expect(requests).toBe(0);
+});
+
 test("high-DPR projection, overlapping labels, teleports and dimensions", async ({
   browser,
 }) => {
