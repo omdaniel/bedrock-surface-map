@@ -126,7 +126,9 @@ rerun shadow computation. Sun-angle interaction latency is not separately
 benchmarked by this controlled-pan test.
 
 Native Safari was reloaded and visually checked with the new shader and all 64
-regions. Its earlier performance timings are not new-build measurements. Chrome
+regions. Its native controls switched between 45/60 degrees and Vivid/Original,
+then were restored to defaults. Its earlier performance timings are not new-build
+measurements. Chrome
 automated checks exercise the sliders and color selector, including screenshot
 evidence of the change in one-block shadow reach. A real-beach comparison at
 30/45/60 degrees and a 390 x 844 lighting-panel screenshot have no page errors or
@@ -171,6 +173,11 @@ and [Chrome's headless GPU guidance](https://developer.chrome.com/blog/superchar
 Page-side GPU completion alone is not accepted as evidence of visible pixels.
 These isolated synthetic-CI flags are not applied to ordinary Mac browsing and
 are not hardware acceleration benchmarks.
+
+The lighting follow-up's first CI run passed the new ledge-pixel and native GPU
+checks but exposed a race in the existing idle test: a final queued draw arrived
+after its fixed 200 ms settling delay. The test now waits for region loading and
+two animation-frame boundaries before starting its unchanged zero-redraw check.
 
 ## Remaining Limits
 

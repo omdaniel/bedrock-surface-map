@@ -101,7 +101,15 @@ test("synthetic pixels, picking, navigation, idle, toggles, resize and device re
   await page
     .getByRole("button", { name: "Block borders", exact: true })
     .click();
-  await page.waitForTimeout(200);
+  await ready(page);
+  // Drain interaction/region-upload draws before measuring a genuinely idle view.
+  // A wall-clock delay can finish before the next frame on software-rendered CI.
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   const draws = (
     (await page.evaluate(() => window.__map.state())) as { draws: number }
   ).draws;
