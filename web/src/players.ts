@@ -73,15 +73,18 @@ export class PlayerLayer {
   private failures = 0;
   private message = "Tracking not configured";
   private snapshotKey = "";
+  private resumePending = false;
   private readonly onVisibility = () => {
     clearTimeout(this.pollTimer);
     if (document.hidden) {
+      this.resumePending = false;
       this.request?.abort();
       cancelAnimationFrame(this.animation);
       this.animation = 0;
     } else {
       this.age();
-      if (!this.request) void this.poll();
+      if (this.request) this.resumePending = true;
+      else void this.poll();
     }
   };
   constructor(options: Options) {
@@ -211,7 +214,7 @@ export class PlayerLayer {
         this.reconcile();
       }
     } catch {
-      if (!this.stopped && !document.hidden) {
+      if (!this.stopped && !document.hidden && !this.resumePending) {
         this.failures++;
         this.message = "Tracker unreachable";
       }
@@ -219,10 +222,12 @@ export class PlayerLayer {
       clearTimeout(timeout);
       this.request = null;
       this.age();
+      const resume = this.resumePending;
+      this.resumePending = false;
       if (!this.stopped && !document.hidden)
         this.pollTimer = window.setTimeout(
           () => void this.poll(),
-          Math.min(30000, 2000 * 2 ** Math.min(this.failures, 4)),
+          resume ? 0 : Math.min(30000, 2000 * 2 ** Math.min(this.failures, 4)),
         );
     }
   }
@@ -445,7 +450,7 @@ export class PlayerLayer {
         : status === "stale"
           ? `Stale positions / ${Math.floor((age ?? 0) / 1000)}s old`
           : status === "disabled"
-            ? "Tracking disabled for compatibility"
+            ? "Tracking disabled"
             : status === "unavailable"
               ? "Player positions unavailable"
               : this.message || "Waiting for server samples";

@@ -129,3 +129,160 @@ test("unbound snapshot has an honest player status and no requests", async ({
   await expect(page.locator(".players-status")).toContainText("No live feed");
   expect(requests).toBe(0);
 });
+
+test("high-DPR projection, overlapping labels, teleports and dimensions", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 1100, height: 760 },
+    deviceScaleFactor: 2,
+    reducedMotion: "reduce",
+  });
+  const page = await context.newPage();
+  let x = -12.25,
+    dimension = "minecraft:overworld",
+    seq = 1;
+  await page.route("**/viewer-config.json", (r) =>
+    r.fulfill({
+      json: {
+        players: {
+          world_id: "fixture-world",
+          source_sha256: manifest.source_sha256,
+          url: "/api/v1/worlds/fixture-world/players",
+        },
+      },
+    }),
+  );
+  await page.route("**/api/v1/worlds/fixture-world/players", (r) => {
+    const s = structuredClone(template);
+    s.sequence = seq++;
+    s.sampled_at_ms = Date.now();
+    s.players[0].position.x = x;
+    s.players[0].dimension = dimension;
+    s.players.push({
+      ...structuredClone(s.players[0]),
+      id: "neighbor",
+      name: "Neighbor",
+    });
+    return r.fulfill({
+      json: {
+        schema_version: 1,
+        world_id: "fixture-world",
+        status: "live",
+        reason: null,
+        age_ms: 0,
+        snapshot: s,
+      },
+    });
+  });
+  try {
+    await page.goto("/?map=/maps/fixture/manifest.json");
+    await page.waitForFunction(() => window.__map?.ready);
+    await page.getByRole("button", { name: "Players", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Center on ExamplePlayer", exact: true })
+      .click();
+    const alignment = () =>
+      page.evaluate(() => {
+        const marker = document.querySelector<HTMLElement>(".player-marker")!;
+        const transform = new DOMMatrixReadOnly(marker.style.transform);
+        const canvas = document
+          .querySelector("canvas")!
+          .getBoundingClientRect();
+        return {
+          dx: transform.m41 - canvas.width / 2,
+          dy: transform.m42 - canvas.height / 2,
+        };
+      });
+    await expect.poll(alignment).toEqual({ dx: 0, dy: 0 });
+    await expect(page.locator(".player-label:not([hidden])")).toHaveCount(1);
+    await page.setViewportSize({ width: 800, height: 600 });
+    await expect
+      .poll(async () => Math.abs((await alignment()).dx))
+      .toBeLessThan(0.1);
+    await page
+      .getByRole("button", { name: "Follow ExamplePlayer", exact: true })
+      .click();
+    x = -10000;
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window.__map.state() as { cx: number }).cx),
+      )
+      .toBe(x);
+    await expect(page.locator(".player-detail").first()).toContainText(
+      "outside mapped terrain",
+    );
+    dimension = "minecraft:nether";
+    await expect(page.locator(".player-marker:not([hidden])")).toHaveCount(0);
+    await expect(page.locator(".player-row")).toHaveCount(2);
+    await expect(page.locator(".player-follow").first()).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  } finally {
+    await context.close();
+  }
+});
+
+test("stationary samples age despite successful HTTP; hidden tab resumes immediately", async ({
+  page,
+}) => {
+  test.setTimeout(60000);
+  let calls = 0;
+  const s = structuredClone(template);
+  s.sampled_at_ms = Date.now();
+  await page.route("**/viewer-config.json", (r) =>
+    r.fulfill({
+      json: {
+        players: {
+          world_id: "fixture-world",
+          source_sha256: manifest.source_sha256,
+          url: "/api/v1/worlds/fixture-world/players",
+        },
+      },
+    }),
+  );
+  await page.route("**/api/v1/worlds/fixture-world/players", (r) => {
+    calls++;
+    return r.fulfill({
+      json: {
+        schema_version: 1,
+        world_id: "fixture-world",
+        status: "live",
+        reason: null,
+        age_ms: 0,
+        snapshot: s,
+      },
+    });
+  });
+  await page.goto("/?map=/maps/fixture/manifest.json");
+  await page.waitForFunction(() => window.__map?.ready);
+  await page.getByRole("button", { name: "Players", exact: true }).click();
+  await expect(page.locator(".player-row")).toHaveCount(1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: true,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  const hiddenCalls = calls;
+  await page.waitForTimeout(2500);
+  expect(calls).toBe(hiddenCalls);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      value: false,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect
+    .poll(() => calls, { timeout: 1000 })
+    .toBeGreaterThan(hiddenCalls);
+  await expect(page.locator(".players-status")).toContainText(
+    "Stale positions",
+    { timeout: 12000 },
+  );
+  await expect(page.locator(".player-row")).toHaveCount(0, { timeout: 23000 });
+  await expect(page.locator(".player-marker")).toHaveCount(0);
+});
