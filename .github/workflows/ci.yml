@@ -1,0 +1,39 @@
+name: Prototype Checks
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+permissions:
+  contents: read
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  synthetic:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+      XDG_RUNTIME_DIR: /tmp
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '26.8.1'
+          cache: npm
+      - run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo install wasm-bindgen-cli --version 0.2.127 --locked
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run build
+      - run: npm run fixture
+      - run: npx playwright install --with-deps chromium
+      - run: npm test
+      # No world imports, Mojang downloads, homelab secrets or artifact uploads.

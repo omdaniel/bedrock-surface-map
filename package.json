@@ -1,0 +1,35 @@
+{
+  "name": "bedrock-surface-map",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "assets": "node scripts/assets.mjs",
+    "wasm": "node scripts/wasm.mjs",
+    "import": "cargo run --release --locked -p surface-cli -- import",
+    "fixture": "cargo run --release --locked -p surface-cli -- fixture",
+    "dev": "vite --config vite.config.ts",
+    "build": "npm run wasm && tsc --noEmit && vite build --config vite.config.ts",
+    "check": "tsc --noEmit",
+    "format": "prettier --write web/src web/index.html scripts/*.mjs tests vite.config.ts playwright.config.ts",
+    "format:check": "prettier --check web/src web/index.html scripts/*.mjs tests vite.config.ts playwright.config.ts",
+    "test": "playwright test",
+    "verify": "cargo test --workspace && npm run build && npm run fixture && npm test"
+  },
+  "dependencies": {
+    "lucide": "^0.577.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^22.0.0",
+    "@types/pngjs": "^6.0.5",
+    "pngjs": "^7.0.0",
+    "prettier": "^3.9.6",
+    "typescript": "~5.9.3",
+    "vite": "8.3.0"
+  }
+}
