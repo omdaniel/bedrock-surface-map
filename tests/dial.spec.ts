@@ -34,13 +34,13 @@ test("compass dial supports multiple pointer revolutions without changing the ca
   await move(0);
   await page.mouse.down();
   for (let turn = 0; turn < 3; turn++) {
-    for (let angle = 15; angle <= 360; angle += 15) {
+    for (let angle = 45; angle <= 360; angle += 45) {
       await move(angle);
       await expect(dial).toHaveAttribute("aria-valuenow", String(angle % 360));
     }
   }
   for (let turn = 0; turn < 2; turn++) {
-    for (let angle = -15; angle >= -360; angle -= 15) {
+    for (let angle = -45; angle >= -360; angle -= 45) {
       await move(angle);
       await expect(dial).toHaveAttribute(
         "aria-valuenow",

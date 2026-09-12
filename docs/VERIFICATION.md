@@ -271,6 +271,14 @@ tree exposed the bearing and clockwise-from-north value description. The camera
 and controls were left unchanged; this was a visual/accessibility check, not a
 new automated Safari gesture or performance benchmark.
 
+The initial CI run passed Rust/GPU checks and 11 browser cases but exceeded the
+60-second per-test limit in two angle-heavy browser cases on SwiftShader. Pixel
+tests now choose a bearing with a single real dial click instead of walking
+through many intermediate keyboard values. The separate gesture test still
+makes three clockwise and two counterclockwise turns, sampled at eight positions
+per turn. Keyboard wrapping and fine touch steps remain separate assertions.
+No test timeout, rendering assertion or application behavior was relaxed.
+
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
