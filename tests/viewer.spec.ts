@@ -199,6 +199,86 @@ test("one-block sand ledge has partial shadows and elevation changes their reach
   ).toBe(true);
   await page.screenshot({ path: "test-results/lighting-mobile.png" });
 });
+test("sun azimuth follows the compass, supports intermediate angles and wraps at 360", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  await page.goto(fixture);
+  await ready(page);
+  await page.evaluate(() => {
+    const s = window.__map.state() as { cx: number; cz: number; scale: number };
+    window.__map.pan(-155.5 - s.cx, -155.5 - s.cz);
+    window.__map.zoom(40 / s.scale);
+  });
+  await page
+    .getByRole("button", { name: "Block borders", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Lighting and color", exact: true })
+    .click();
+  const slider = page.getByLabel("Sun azimuth");
+  await expect(slider).toHaveValue("135");
+  await expect(slider).toHaveAttribute("min", "0");
+  await expect(slider).toHaveAttribute("max", "360");
+  await expect(slider).toHaveAttribute("step", "1");
+  const shots = new Map<number, PNG>();
+  for (const angle of [0, 90, 180, 270, 17, 45, 135, 225, 315, 359, 360]) {
+    await slider.evaluate((input, value) => {
+      (input as HTMLInputElement).value = String(value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, angle);
+    await expect(page.locator("#azimuth-value")).toHaveText(`${angle}°`);
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const bytes = await page.locator("canvas").screenshot();
+    const png = PNG.sync.read(bytes);
+    const radians = (angle * Math.PI) / 180;
+    const dx = -Math.cos(radians) * 2.5,
+      dz = Math.sin(radians) * 2.5;
+    const sample = (sign: number) => {
+      const x = Math.floor(png.width / 2 + dx * 40 * sign);
+      const y = Math.floor(png.height / 2 + dz * 40 * sign);
+      const i = (y * png.width + x) * 4;
+      return [...png.data.subarray(i, i + 3)].reduce((s, v) => s + v, 0) / 3;
+    };
+    expect(
+      sample(-1) - sample(1),
+      `shadow side at ${angle} degrees`,
+    ).toBeGreaterThan(55);
+    if (angle === 0 || angle === 360) shots.set(angle, png);
+  }
+  // Compare the terrain around the column, excluding the lighting panel's label.
+  const width = shots.get(0)!.width;
+  for (let y = 250; y < 400; y++) {
+    expect(
+      shots.get(0)!.data.subarray((y * width + 500) * 4, (y * width + 750) * 4),
+    ).toEqual(
+      shots
+        .get(360)!
+        .data.subarray((y * width + 500) * 4, (y * width + 750) * 4),
+    );
+  }
+  await slider.press("Home");
+  await slider.press("ArrowRight");
+  await expect(page.locator("#azimuth-value")).toHaveText("1°");
+  await slider.press("End");
+  await expect(page.locator("#azimuth-value")).toHaveText("360°");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(slider).toBeVisible();
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await page.screenshot({ path: "test-results/azimuth-mobile.png" });
+  expect(errors).toEqual([]);
+});
+
 test("download failure and retry", async ({ page }) => {
   await page.route("**/*.bsm.zst", (route) =>
     route.fulfill({ status: 503, body: "unavailable" }),

@@ -27,6 +27,8 @@ app.querySelector("main")!.insertAdjacentHTML(
   "beforeend",
   `<section id="lighting" aria-label="Lighting and color settings" hidden>
   <strong>Lighting and color</strong>
+  <div class="setting-label"><label for="azimuth">Sun azimuth</label><output id="azimuth-value" for="azimuth">135&deg;</output></div>
+  <input id="azimuth" type="range" min="0" max="360" step="1" value="135">
   <div class="setting-label"><label for="elevation">Sun elevation</label><output id="elevation-value" for="elevation">45&deg;</output></div>
   <input id="elevation" type="range" min="15" max="75" step="5" value="45">
   <div class="setting-label"><label for="shadow-strength">Shadow strength</label><output id="strength-value" for="shadow-strength">55%</output></div>
@@ -61,6 +63,7 @@ let cx = 0,
   grid = true,
   sun = true,
   elevation = 45,
+  azimuth = 135,
   shadowStrength = 0.55,
   vivid = true,
   frameQueued = false,
@@ -264,6 +267,7 @@ function requestDraw() {
         grid,
         sun,
         elevation,
+        azimuth,
         shadowStrength,
         vivid,
       );
@@ -411,6 +415,11 @@ $("lighting-toggle").onclick = () => {
     $("stats").setAttribute("aria-pressed", "false");
   }
 };
+$("azimuth").oninput = () => {
+  azimuth = Number($<HTMLInputElement>("azimuth").value);
+  $("azimuth-value").textContent = `${azimuth}\u00b0`;
+  requestDraw();
+};
 $("elevation").oninput = () => {
   elevation = Number($<HTMLInputElement>("elevation").value);
   $("elevation-value").textContent = `${elevation}\u00b0`;
@@ -530,6 +539,7 @@ window.__map = {
     cz,
     scale,
     elevation,
+    azimuth,
     shadowStrength,
     vivid,
     cached: cache.size,

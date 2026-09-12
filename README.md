@@ -43,6 +43,8 @@ This route and the real map use exactly the same codec, worker and renderer.
 Drag to pan; wheel or pinch to zoom. The toolbar provides fit-world, spawn,
 block borders, shadows, lighting/color settings and diagnostics. Sun elevation
 defaults to 45 degrees from the northwest and is adjustable from 15 to 75 degrees.
+Sun azimuth spans 0-360 degrees in 1-degree steps: east=0/360, north=90,
+west=180, south=270. Its default is 135 degrees (northwest).
 Shadow strength defaults to 55%; Vivid/Original selects the color treatment.
 These settings are session-local. Hover inspects coordinates, top height
 and material. The camera stays north-up. Redraws stop while the view is idle;
@@ -112,8 +114,10 @@ are under ignored `test-results`. Commit summaries, not private artifacts.
   picking arrays, not browser RSS, WASM heap, driver overhead or transient decode
   allocations. The real 64-region snapshot fits. Very large visible areas may
   request zooming in; paging compact overview-only regions is a future extension.
-- Shadows use the complete snapshot heightfield. A new manifest is adopted on
-  reload, rebuilding every affected cache, not by a live change-feed service.
+- Shadows use the complete snapshot heightfield and a max-height hierarchy for
+  arbitrary-direction ray queries. Overviews cache shaded colors; close-up
+  shadows are evaluated per pixel. A new manifest is adopted on reload,
+  rebuilding every affected cache, not by a live change-feed service.
 - Update dependencies in an isolated `codex/` branch, regenerate lockfiles,
   rerun synthetic CI and both real-browser checks. Parser updates require a
   fresh real-world import/hash/sample verification. Codec changes need a format

@@ -135,18 +135,58 @@ evidence of the change in one-block shadow reach. A real-beach comparison at
 horizontal overflow. See [APPEARANCE.md](APPEARANCE.md) for reproduction and limits.
 The source archive's SHA-256 was rechecked unchanged; no reimport was needed.
 
+### Full Azimuth Follow-Up
+
+The full 0-360 degree control replaces the NW-only shadow recurrence with a
+direction-independent max-height hierarchy and accelerated per-sample ray
+queries. The compass convention is east=0/360, north=90, west=180, south=270;
+default northwest is 135. Surface format and imported data are unchanged.
+
+Chrome 152.0.7977.83, 1920x1080 DPR1, 45-degree elevation, real beach centered at
+X -284, Z -114, four pixels per block; all 64 regions resident:
+
+| Azimuth | Frames in 5 seconds | Median / p95 / max interval (ms) |
+| --- | ---: | ---: |
+| 0 | 600 | 8.3 / 9.0 / 9.3 |
+| 90 | 600 | 8.3 / 9.1 / 9.4 |
+| 135 | 601 | 8.3 / 9.0 / 9.4 |
+| 217 | 600 | 8.3 / 9.1 / 9.4 |
+| 270 | 591 | 8.3 / 9.2 / 17.6 |
+| 360 | 600 | 8.3 / 9.0 / 9.4 |
+
+Resident accounting is 221,562,576 bytes (211.30 MiB), including the full hierarchy.
+First populated frame was 251 ms in this warm run. An earlier new-build run at
+spawn, scale 3, recorded 805 ms to first populated frame and 8.3/16.7/25 ms
+median/p95/max navigation intervals; synthetic browser checks were also running
+during that earlier sample. These are navigation cadence, not GPU timestamp
+measurements, and not a guarantee of identical performance across terrain or
+lower elevations. The algorithm now does variable-work close-up ray queries;
+overview shading remains cached. Coverage uses four subpixel samples rather
+than the previous special-case exact NW area integration.
+
+No page/console errors or horizontal overflow were recorded in the six-angle
+run. Desktop captures and a 390x844 lighting-panel screenshot are under ignored
+`.local/azimuth/`; reproduce with `node scripts/check-azimuth.mjs`. Native Safari
+was observed rendering the current build at 117 degrees with its controls open;
+the user's camera and 60% shadow-strength setting were left unchanged. This was
+a visual check, not a new Safari performance run. The matched NW beach reference
+images were also refreshed with the current algorithm.
+
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
-- Thirteen Rust tests: exact constant/mixed codec round trips, negative coordinates,
+- Fourteen Rust tests: exact constant/mixed codec round trips, negative coordinates,
   missing coverage, corrupt/truncated payloads, decompression/window bounds,
   archive path/symlink rejection, leaf-litter support/overlay semantics, CPU
   shadow geometry and GPU equivalence.
-- GPU fixtures compare flat terrain, isolated 10-block column, terraces,
-  one-block ledges at 45/60 degrees, and a missing sample at a 256-column region
-  boundary. CPU analytical coverage also agrees with an independent ray walker.
-- Seven Playwright tests: expected terrain/water pixels, fractional ledge shadows,
-  sun elevation/strength/color controls, picking, drag/wheel,
+- GPU ray fixtures compare five samples per cell against an independent CPU DDA
+  for 14 azimuths and four elevations: flat terrain, a 10-block column, terraces,
+  negative/missing randomized heights and a 256-column boundary. CPU tests verify
+  conservative hierarchy maxima at odd dimensions, compass mapping, shadow
+  reach, and retain the former NW analytical coverage reference.
+- Eight Playwright tests: expected terrain/water pixels, fractional ledge shadows,
+  sun azimuth/elevation/strength/color controls, exact 0/360 equivalence, shadow
+  direction at cardinal/intermediate angles, 1-degree keyboard steps, picking, drag/wheel,
   negative coordinates, idle redraw, resize, toggles, device-loss recovery,
   download retry, checksum rejection, missing WebGPU, invalid manifests and raw
   world path denial.

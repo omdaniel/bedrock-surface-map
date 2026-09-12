@@ -2,8 +2,9 @@
 
 Follow-up to the initial visual comparison. The user authorized varying the
 original fixed 60-degree sun to approximate uNmINeD's stronger beach relief.
-Default: 45 degrees elevation, northwest azimuth, 55% shadow strength, Vivid color.
-The controls allow 15-75 degrees, 0-80% strength, and Vivid/Original color. They
+Default: 45 degrees elevation, 135 degrees azimuth (northwest), 55% shadow strength,
+Vivid color. The controls allow 15-75 degrees elevation, 0-360 degrees azimuth in
+1-degree steps, 0-80% strength, and Vivid/Original color. They
 are session-local; changing them does not modify the imported dataset.
 
 ## Why the Original Relief Was Weak
@@ -14,23 +15,43 @@ direction, or 0.408 block across an east-facing ledge with northwest illuminatio
 An all-or-nothing sample cannot display that narrow band correctly. Simply
 lowering the sun made shadows longer without fixing the missing detail.
 
-The compute cache now retains a floating-point occlusion horizon. With
+The first relief follow-up retained a floating-point occlusion horizon. With
 `s = sqrt(2) * tan(elevation)`, each diagonal stores
 `H(x,z) = max(height(x,z), H(x-1,z-1) - s)`.
 
 Within a receiving block, a ray towards the northwest crosses west, north, and
 diagonal cells at different fractional distances. Their three horizon values
-define clipping thresholds in block-local `(u,v)` coordinates. The shader splits
-the footprint at `u=v` and integrates the lit area of both triangles analytically.
-This accounts for side crossings as well as diagonal occluders. It is constant
-work per pixel, without per-pixel ray traversal or per-block geometry.
+defined clipping thresholds in block-local `(u,v)` coordinates. The shader split
+the footprint at `u=v` and integrated the lit area of both triangles analytically.
+This approach remains in the CPU reference tests, but is no longer the renderer's
+shadow algorithm because its diagonal recurrence cannot represent arbitrary
+azimuths without approximation or direction snapping.
 
-The detail pass uses the screen pixel's clipped footprint for anti-aliasing; the
-overview pass integrates the whole block before generating its filtered levels.
-Camera movement reuses the horizons. Sun-angle changes rerun the sweep and
-resident overviews. Color/strength changes only regenerate overviews. The full
-heightfield includes known occluders outside the resident region set, avoiding
-lighting changes simply because the camera loads a neighboring region.
+## Full Azimuth
+
+The user requested east=0/360, north=90, west=180, south=270. The direction towards
+the sun is `(cos(azimuth), -sin(azimuth))` in map X/Z. Shadows extend oppositely.
+The UI displays 360 independently but the renderer normalizes it to exactly 0.
+
+A max-height hierarchy now accelerates ray/block intersections at any azimuth.
+It is built once per snapshot, retains missing coverage as non-occluding, and
+includes the entire dataset regardless of which regions are visible. Maxima
+conservatively skip blocks below the ascending ray. Leaves use actual block
+heights; this is not a blend of different compass-direction shadow images.
+Cardinal zero components are exact, and a small coordinate-scaled boundary nudge
+prevents floating-point traversal from getting stuck on a block edge.
+
+The detail pass uses four stratified samples in the clipped pixel footprint;
+the overview pass samples the whole block, then box-filters its mip chain. Thus
+partial-block shadows remain visible, but coverage is now sampled rather than
+analytically integrated. Fine boundaries can differ slightly from the earlier
+NW-only view. No per-block geometry or exported image-map tiles are introduced.
+
+The hierarchy and overview colors are cached. Changing either sun angle or the
+color controls regenerates resident overview colors; camera motion does not.
+Close-up fragments do perform accelerated ray queries on each redraw. Their cost
+depends on terrain and sun elevation, unlike the old constant-work formula.
+The real-browser multi-angle navigation measurements are in VERIFICATION.md.
 
 This is a hard, parallel-light top-heightfield approximation. Jagged block edges
 and geometric canopy shadows are expected. It does not reproduce uNmINeD's bright
@@ -54,13 +75,18 @@ plants and multilayer transparency remain approximations.
   approximately 0.707 block at 45 degrees and 0.408 block at 60 degrees.
 - An independent grid-crossing ray walker supersamples randomized fields with
   negative and missing heights, checking analytical coverage within 0.045.
-- Native GPU fixtures compare horizons against CPU within 0.0001, and five
-  pixel footprints per cell against CPU coverage within 0.0002. Flat ground,
-  a column, terraces, one-block ledges and region boundaries are covered.
+- Current GPU tests compare five samples per cell against an independent f64
+  block-by-block CPU DDA, using 14 azimuths and four elevations (15/45/60/75).
+  Fixtures cover flat terrain, a column, terraces, negative/missing random heights
+  and a 256-column boundary. Odd hierarchy dimensions and the compass convention
+  have explicit CPU tests.
 - The original 10-block/60-degree test still checks the 5.7735-block shadow reach.
 - A Chrome screenshot test checks that a point 0.55 block behind a sand ledge is
   dark at 45 degrees and lit at 60, while a nearer point stays shaded. It also
   checks zero shadow strength, color switching and the mobile control layout.
+- A second Chrome pixel test checks cast-shadow direction at cardinals and
+  intermediate azimuths, exact 0/360 pixel equivalence, 1-degree keyboard steps
+  and mobile-layout fit.
 
 ## Local Reference Crop
 
@@ -82,3 +108,8 @@ in [VISUAL-COMPARISON.md](VISUAL-COMPARISON.md):
 
 The comparison page uses that reference alongside 45- and 60-degree wgpu views.
 Private reference images are not committed, uploaded or included in CI artifacts.
+
+`node scripts/check-azimuth.mjs` adds six real-map azimuth captures, controlled-pan
+measurements at 1920x1080 DPR1, and a mobile-layout screenshot under ignored
+`.local/azimuth/`. The current algorithm's northwest beach comparisons can be
+refreshed with the original `check-appearance.mjs` command.

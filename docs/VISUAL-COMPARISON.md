@@ -44,8 +44,10 @@ of every block, and the external render does not cover our complete dataset.
   treatment is available as Original. Biome palettes and dry-foliage tint remain
   approximations, not the reference renderers' color model.
 - The initial binary shadow cache missed much of the single-block relief. The
-  follow-up retains horizons and integrates fractional-block cast shadows, with
-  a user-requested 45-degree default sun and adjustable elevation/strength.
+  follow-ups add fractional-block cast shadows, with a user-requested 45-degree
+  default sun and adjustable elevation/strength. Full azimuth control now uses
+  accelerated heightfield ray queries and sampled subpixel coverage instead of
+  the intermediate northwest-only horizon integration.
   Central beach terraces now show their height changes. uNmINeD also displays
   bright up-sun edges and softer-looking canopy relief; our hard parallel-light
   heightfield does not reproduce those effects. No elevation contour lines were

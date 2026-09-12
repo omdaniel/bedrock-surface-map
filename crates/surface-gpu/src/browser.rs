@@ -82,8 +82,6 @@ pub struct Renderer {
     render_pipeline: wgpu::RenderPipeline,
     overview_pipeline: wgpu::ComputePipeline,
     mip_pipeline: wgpu::ComputePipeline,
-    shadow_pipeline: wgpu::ComputePipeline,
-    shadow_group: wgpu::BindGroup,
     global_render: wgpu::BindGroup,
     global_overview: wgpu::BindGroup,
     params: wgpu::Buffer,
@@ -178,42 +176,23 @@ impl Renderer {
             1.,
             1.,
             1.,
-            std::f32::consts::SQRT_2,
+            1.,
             bounds[0] as f32,
             bounds[1] as f32,
             w as f32,
             h as f32,
             0.55,
             1.,
-            0.,
-            0.,
+            -std::f32::consts::FRAC_1_SQRT_2,
+            -std::f32::consts::FRAC_1_SQRT_2,
         ];
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera"),
             contents: bytemuck::cast_slice(&values),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let hs = storage(&device, bytemuck::cast_slice(&heights));
-        let ss = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("cached sun horizon"),
-            size: (w * h * 4) as u64,
-            usage: wgpu::BufferUsages::STORAGE,
-            mapped_at_creation: false,
-        });
-        let shadow = compute_pipeline(&device, "directional shadows", SHADOW_SHADER, "shadow");
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &shadow.get_bind_group_layout(0),
-            entries: &[entry(0, &params), entry(1, &hs), entry(2, &ss)],
-        });
-        let mut encoder = device.create_command_encoder(&Default::default());
-        {
-            let mut pass = encoder.begin_compute_pass(&Default::default());
-            pass.set_pipeline(&shadow);
-            pass.set_bind_group(0, &group, &[]);
-            pass.dispatch_workgroups(((w + h - 1) as u32).div_ceil(64), 1, 1);
-        }
-        queue.submit([encoder.finish()]);
+        let tree = surface_core::height_pyramid(&heights, w, h);
+        let ss = storage(&device, bytemuck::cast_slice(&tree));
         let mats = storage(&device, bytemuck::cast_slice(&materials));
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shared material atlas"),
@@ -348,8 +327,7 @@ impl Renderer {
             layout: &overview_pipeline.get_bind_group_layout(0),
             entries: &[entry(0, &params), entry(1, &mats), entry(2, &ss)],
         });
-        // Both source heights and horizons stay resident for elevation changes.
-        let base_bytes = w * h * 8 + rgba.len() * 21 / 16 + materials.len() * 4;
+        let base_bytes = tree.len() * 4 + rgba.len() * 21 / 16 + materials.len() * 4;
         Ok(Self {
             device,
             queue,
@@ -358,8 +336,6 @@ impl Renderer {
             render_pipeline,
             overview_pipeline,
             mip_pipeline,
-            shadow_pipeline: shadow,
-            shadow_group: group,
             global_render,
             global_overview,
             params,
@@ -525,6 +501,7 @@ impl Renderer {
         grid: bool,
         shadows: bool,
         elevation: f32,
+        azimuth: f32,
         shadow_strength: f32,
         vivid: bool,
     ) -> Result<bool, JsValue> {
@@ -536,6 +513,8 @@ impl Renderer {
         }
         if !elevation.is_finite()
             || !(15.0..=75.0).contains(&elevation)
+            || !azimuth.is_finite()
+            || !(0.0..=360.0).contains(&azimuth)
             || !shadow_strength.is_finite()
             || !(0.0..=0.8).contains(&shadow_strength)
         {
@@ -546,8 +525,9 @@ impl Renderer {
             self.config.height = height;
             self.surface.configure(&self.device, &self.config);
         }
-        let slope = elevation.to_radians().tan() * std::f32::consts::SQRT_2;
-        let sun_changed = self.values[7] != slope;
+        let slope = elevation.to_radians().tan();
+        let direction = surface_core::sun_direction(azimuth);
+        let sun_changed = self.values[7] != slope || self.values[14..16] != direction;
         let changed = sun_changed
             || self.values[6] != (shadows as u32 as f32)
             || self.values[12] != shadow_strength
@@ -564,22 +544,9 @@ impl Renderer {
         ]);
         self.values[12] = shadow_strength;
         self.values[13] = vivid as u32 as f32;
+        self.values[14..16].copy_from_slice(&direction);
         self.queue
             .write_buffer(&self.params, 0, bytemuck::cast_slice(&self.values));
-        if sun_changed {
-            let mut encoder = self.device.create_command_encoder(&Default::default());
-            {
-                let mut pass = encoder.begin_compute_pass(&Default::default());
-                pass.set_pipeline(&self.shadow_pipeline);
-                pass.set_bind_group(0, &self.shadow_group, &[]);
-                pass.dispatch_workgroups(
-                    ((self.values[10] + self.values[11] - 1.) as u32).div_ceil(64),
-                    1,
-                    1,
-                );
-            }
-            self.queue.submit([encoder.finish()]);
-        }
         if changed {
             for r in self.regions.values() {
                 self.regenerate(r);

@@ -328,6 +328,96 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     Ok(result)
 }
 
+/// Packed max-height hierarchy: 32 vec4<u32> descriptors followed by f32 data.
+/// Descriptor fields are offset, width, height; descriptor 31.w holds level count.
+pub fn height_pyramid(heights: &[f32], width: usize, height: usize) -> Vec<u32> {
+    assert!(width > 0 && height > 0 && width * height <= 16 * 1024 * 1024);
+    assert_eq!(heights.len(), width * height);
+    assert!(heights.iter().all(|h| h.is_finite()));
+    let mut words = vec![0u32; 128];
+    let mut values = heights.to_vec();
+    let (mut w, mut h, mut level) = (width, height, 0usize);
+    loop {
+        words[level * 4] = (words.len() - 128) as u32;
+        words[level * 4 + 1] = w as u32;
+        words[level * 4 + 2] = h as u32;
+        words.extend(values.iter().map(|v| v.to_bits()));
+        level += 1;
+        if w == 1 && h == 1 {
+            break;
+        }
+        let (nw, nh) = (w.div_ceil(2), h.div_ceil(2));
+        let mut next = vec![-1e6f32; nw * nh];
+        for z in 0..h {
+            for x in 0..w {
+                let at = z / 2 * nw + x / 2;
+                next[at] = next[at].max(values[z * w + x]);
+            }
+        }
+        values = next;
+        (w, h) = (nw, nh);
+    }
+    words[127] = level as u32;
+    words
+}
+
+/// Direction towards the sun in map X/Z: east=0, north=90, west=180, south=270.
+pub fn sun_direction(azimuth: f32) -> [f32; 2] {
+    let angle = (azimuth.rem_euclid(360.) as f64).to_radians();
+    [angle.cos(), -angle.sin()].map(|v| if v.abs() < 1e-7 { 0. } else { v as f32 })
+}
+
+/// Independent f64 grid DDA oracle, without a hierarchy or boundary nudges.
+pub fn ray_shadow_reference(
+    heights: &[f32],
+    size: [usize; 2],
+    position: [f32; 2],
+    y: f32,
+    direction: [f32; 2],
+    slope: f32,
+) -> f32 {
+    let start = position.map(f64::from);
+    let d = direction.map(f64::from);
+    let mut cell = start.map(|v| v.floor() as isize);
+    let step = d.map(|v| {
+        if v > 0. {
+            1
+        } else if v < 0. {
+            -1
+        } else {
+            0
+        }
+    });
+    let delta = d.map(|v| if v == 0. { f64::INFINITY } else { 1. / v.abs() });
+    let mut next = [0f64; 2];
+    for axis in 0..2 {
+        next[axis] = if d[axis] == 0. {
+            f64::INFINITY
+        } else {
+            let edge = cell[axis] + isize::from(step[axis] > 0);
+            (edge as f64 - start[axis]) / d[axis]
+        };
+    }
+    loop {
+        let t = next[0].min(next[1]);
+        for axis in 0..2 {
+            if next[axis] <= t + 1e-10 {
+                cell[axis] += step[axis];
+                next[axis] += delta[axis];
+            }
+        }
+        if cell[0] < 0 || cell[1] < 0 || cell[0] >= size[0] as isize || cell[1] >= size[1] as isize
+        {
+            return 0.;
+        }
+        if heights[cell[1] as usize * size[0] + cell[0] as usize] as f64
+            > y as f64 + t * slope as f64 + 0.0001
+        {
+            return 1.;
+        }
+    }
+}
+
 pub fn shadow_reference(heights: &[i16], width: usize, height: usize) -> Vec<f32> {
     let horizon = horizon_reference(heights, width, height, SUN_STEP);
     heights
@@ -422,6 +512,63 @@ pub fn shadow_coverage_reference(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compass_and_height_tree() {
+        for (azimuth, expected) in [
+            (0., [1., 0.]),
+            (90., [0., -1.]),
+            (180., [-1., 0.]),
+            (270., [0., 1.]),
+            (360., [1., 0.]),
+        ] {
+            assert_eq!(sun_direction(azimuth), expected);
+        }
+        let values: Vec<f32> = (0..17 * 11)
+            .map(|i| {
+                if i % 7 == 0 {
+                    -1e6
+                } else {
+                    (i % 19) as f32 - 10.
+                }
+            })
+            .collect();
+        let tree = height_pyramid(&values, 17, 11);
+        for level in 0..tree[127] as usize {
+            let (offset, w, h) = (
+                tree[level * 4] as usize,
+                tree[level * 4 + 1] as usize,
+                tree[level * 4 + 2] as usize,
+            );
+            let span = 1 << level;
+            for z in 0..h {
+                for x in 0..w {
+                    let mut expected = -1e6f32;
+                    for zz in z * span..((z + 1) * span).min(11) {
+                        for xx in x * span..((x + 1) * span).min(17) {
+                            expected = expected.max(values[zz * 17 + xx]);
+                        }
+                    }
+                    assert_eq!(f32::from_bits(tree[128 + offset + z * w + x]), expected);
+                }
+            }
+        }
+        let mut ledge = vec![0.; 32];
+        ledge[16] = 10.;
+        let slope = 60f32.to_radians().tan();
+        assert_eq!(
+            ray_shadow_reference(&ledge, [32, 1], [10.3, 0.5], 0., sun_direction(0.), slope),
+            1.
+        );
+        assert_eq!(
+            ray_shadow_reference(&ledge, [32, 1], [10.1, 0.5], 0., sun_direction(0.), slope),
+            0.
+        );
+        assert_eq!(
+            ray_shadow_reference(&ledge, [32, 1], [10.3, 0.5], 0., sun_direction(180.), slope),
+            0.
+        );
+    }
     #[test]
     fn constants_and_missing_roundtrip() {
         let r = SurfaceRegion::empty(-2, 3);

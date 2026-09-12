@@ -2,7 +2,7 @@
 @group(0) @binding(1) var<storage,read> materials:array<Material>;
 @group(0) @binding(2) var atlas:texture_2d<f32>;
 @group(0) @binding(3) var atlas_sampler:sampler;
-@group(0) @binding(4) var<storage,read> shadows:array<f32>;
+@group(0) @binding(4) var<storage,read> heights:HeightTree;
 @group(1) @binding(0) var<storage,read> cells:array<Cell>;
 @group(1) @binding(1) var<uniform> origin:vec4f;
 @group(1) @binding(2) var overview:texture_2d<f32>;
@@ -13,10 +13,6 @@ struct Vertex { @builtin(position) position:vec4f, @location(0) local:vec2f }
     let local=points[i]*256.0; let world=origin.xy+local;
     let pixel=(world-p.camera.xy)*p.camera.z;
     var v:Vertex;v.position=vec4f(pixel.x*2.0/p.camera.w,-pixel.y*2.0/p.screen.x,0,1);v.local=local;return v;
-}
-fn horizon_at(at:vec2i)->f32 {
-    if any(at<vec2i(0)) || any(at>=vec2i(p.bounds.zw)){return -1000000.0;}
-    return shadows[u32(at.y)*u32(p.bounds.z)+u32(at.x)];
 }
 fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
     let m=materials[id];
@@ -44,11 +40,10 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
         col=vec4f(mix(base*0.7,col.rgb,col.a),1.0);
     }
     if c.overlay!=0u {let over=material_color(c.overlay,c.tint,fractional);col=vec4f(mix(col.rgb,over.rgb,over.a*0.65),1.0);}
-    let world=origin.xy+vec2f(q);let at=vec2i(world-p.bounds.xy);
-    let horizons=vec3f(horizon_at(at+vec2i(-1,0)),horizon_at(at+vec2i(0,-1)),horizon_at(at-vec2i(1)));
+    let at=origin.xy+vec2f(q)-p.bounds.xy;
     let lo=max(vec2f(0),fractional-footprint*0.5);
     let hi=min(vec2f(1),fractional+footprint*0.5);
-    let shade=shadow_area(horizons,f32(bitcast<i32>(c.height))/16.0,p.screen.w,lo,hi);
+    let shade=surface_shadow(at,f32(bitcast<i32>(c.height))/16.0,lo,hi);
     col=vec4f(grade_color(col.rgb,p.lighting.y)*(1.0-p.lighting.x*shade*p.screen.z),1.0);
     let dist=min(fractional,vec2f(1.0)-fractional);
     let line=1.0-min(smoothstep(0.0,footprint.x*0.65,dist.x),smoothstep(0.0,footprint.y*0.65,dist.y));
