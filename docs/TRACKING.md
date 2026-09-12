@@ -66,6 +66,18 @@ Candidate declarations are pinned in `package-lock.json`: server `2.9.0`, net/ad
 No automatic beta-tag upgrades. See the deployment compatibility record for
 actual tested BDS versions.
 
+The [audited compatibility record](../tracking/compatibility.json) now confirms
+these exact dependencies load on BDS 1.26.45.1 with the Beta APIs experiment,
+on both a fresh world and the verified September 11 Survival export. Empty
+heartbeats, authentication and a 35-second collector outage/recovery passed.
+This is not a retail-client or actual-position acceptance result.
+
+BDS 1.26.20 [renamed the permission to `force_tls`](https://learn.microsoft.com/en-us/minecraft/creator/documents/update1.26.20?view=minecraft-bedrock-stable).
+In the tested 1.26.45.1 runtime, including it with `false` still raised
+`TLSOnlyError`. Omitting the optional enforcement setting permits the planned
+private-network HTTP transport; keep URI/body/concurrency limits. This behavior
+must be rechecked for future candidates, not generalized to every beta release.
+
 ## LAN Delivery
 
 After the deployment gate, use the existing HTTPS origin and CA:

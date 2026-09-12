@@ -1,12 +1,23 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Roster, Publisher, compassHeading } from "../src/core.ts";
+import { Roster, Publisher, compassHeading, failureCode } from "../src/core.ts";
 const player = () => ({
   id: "entity-private",
   name: "ExamplePlayer",
   dimension: { id: "minecraft:overworld" },
   location: { x: -2.5, y: 64, z: 8 },
   getRotation: () => ({ x: 0, y: 0 }),
+});
+test("failure diagnostics never include credentials or raw exception details", () => {
+  assert.equal(
+    failureCode(new Error("secret=private-credential")),
+    "sampling-or-request",
+  );
+  assert.equal(failureCode(new Error("HTTP_401")), "HTTP_401");
+  const failure = new Error("private URL and credential");
+  failure.name = "TLSOnlyError";
+  assert.equal(failureCode(failure), "TLSOnlyError");
+  assert.equal(failureCode({ token: "private-credential" }), "unclassified");
 });
 test("headings, identities, invalid reads, spawn, leave and service filtering", () => {
   assert.deepEqual(
