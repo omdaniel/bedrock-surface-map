@@ -2,7 +2,7 @@ name: Prototype Checks
 on:
   pull_request:
   push:
-    branches: [main, 'codex/**']
+    branches: [main]
 permissions:
   contents: read
 concurrency:
