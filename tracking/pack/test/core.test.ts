@@ -95,6 +95,36 @@ test("one in flight, bounded retry and fresh samples on recovery", async () => {
   await publisher.tick(80, 5000);
   assert.equal(reads, 3);
 });
+test("invalid known identity keeps other players live without inventing an empty roster", () => {
+  const roster = new Roster(),
+    p = player(),
+    other = { ...player(), id: "another-private-id", name: "SecondPlayer" };
+  const first = roster.sample([p, other]);
+  const invalid = {
+    ...p,
+    get name(): string {
+      throw Error("entity disconnected");
+    },
+  };
+  const next = roster.sample([invalid, other]);
+  assert.equal(next.length, 2);
+  assert.equal(next[0].id, first[0].id);
+  assert.equal(next[0].name, p.name);
+  assert.equal(next[0].position, null);
+  assert.equal(next[1].position?.x, other.location.x);
+  roster.leave(p.id);
+  assert.throws(() => roster.sample([invalid, other]));
+  assert.throws(() =>
+    roster.sample([
+      {
+        ...p,
+        get id(): string {
+          throw Error("identity lost");
+        },
+      },
+    ]),
+  );
+});
 test("failed roster enumeration never exports an empty roster", async () => {
   let sent = 0;
   const p = new Publisher(

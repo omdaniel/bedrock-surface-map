@@ -1,4 +1,4 @@
-export const PACK_VERSION = "1.0.0";
+export const PACK_VERSION = "1.0.1";
 export interface SourcePlayer {
   id: string;
   name: string;
@@ -17,12 +17,20 @@ export const compassHeading = (yaw: number) =>
   (((yaw + 180) % 360) + 360) % 360;
 export class Roster {
   private next = 1;
-  private records = new Map<string, { id: string; reset: number }>();
+  private records = new Map<
+    string,
+    { id: string; reset: number; name: string | null }
+  >();
   private pending = new Map<string, number>();
   spawn(entityId: string) {
     const r = this.records.get(entityId);
     if (r) r.reset++;
-    else this.records.set(entityId, { id: `p${this.next++}`, reset: 1 });
+    else
+      this.records.set(entityId, {
+        id: `p${this.next++}`,
+        reset: 1,
+        name: null,
+      });
   }
   leave(entityId: string) {
     this.records.delete(entityId);
@@ -33,13 +41,27 @@ export class Roster {
     this.pending.clear();
     if (players.length > 32) throw Error("player bound exceeded");
     for (const p of players) {
-      if (p.name.toLowerCase() === "popcello8931") continue;
-      active.add(p.id);
-      if (!this.records.has(p.id)) this.spawn(p.id);
-      const record = this.records.get(p.id)!;
+      const entityId = p.id;
+      let name: string | null | undefined,
+        readable = true;
+      try {
+        name = p.name;
+      } catch {
+        name = this.records.get(entityId)?.name;
+        readable = false;
+      }
+      // If identity cannot be established, fail the sample rather than invent
+      // an empty roster. A known disconnect race retains only its current name.
+      if (!name) throw Error("player identity unavailable");
+      if (name.toLowerCase() === "popcello8931") continue;
+      active.add(entityId);
+      if (!this.records.has(entityId)) this.spawn(entityId);
+      const record = this.records.get(entityId)!;
+      record.name = name;
       let dimension: string | null = null,
         position: SamplePlayer["position"] = null;
       try {
+        if (!readable) throw Error("player entity unavailable");
         dimension = p.dimension.id;
         if (
           ![
@@ -59,12 +81,12 @@ export class Roster {
       }
       result.push({
         id: record.id,
-        name: p.name,
+        name,
         dimension,
         position,
         discontinuity: record.reset > 0,
       });
-      this.pending.set(p.id, record.reset);
+      this.pending.set(entityId, record.reset);
     }
     for (const id of this.records.keys())
       if (!active.has(id)) this.records.delete(id);
