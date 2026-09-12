@@ -42,7 +42,7 @@ system.runInterval(() => {
     reader.reset();
     job ??= scan(reader.access, rules, 0, 0, Date.now);
     const start = Date.now();
-    while (reader.queries <= 253 && Date.now() - start < 1) {
+    while (reader.queries <= 252 && Date.now() - start < 1) {
       const result = job.next();
       if (result.done) {
         job = undefined;

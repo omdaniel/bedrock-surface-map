@@ -119,8 +119,9 @@ impl MaterialSpec {
     }
 
     pub fn key(&self) -> String {
+        let canonical = self.canonicalized();
         // BDS booleans and saved NBT bytes describe the same permutation.
-        let states: BTreeMap<_, _> = self
+        let states: BTreeMap<_, _> = canonical
             .states
             .iter()
             .map(|(k, v)| {
@@ -134,6 +135,23 @@ impl MaterialSpec {
             })
             .collect();
         serde_json::to_string(&(&self.name, states)).expect("JSON values")
+    }
+
+    fn canonicalized(&self) -> Self {
+        static RULES: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        let rules = RULES.get_or_init(|| {
+            serde_json::from_str(include_str!("../../../terrain/rules.json"))
+                .expect("checked-in terrain rules")
+        });
+        let mut result = self.clone();
+        if let Some(defaults) = rules["canonical_state_defaults"][&self.name].as_object() {
+            for (key, value) in defaults {
+                if result.states.get(key) == Some(value) {
+                    result.states.remove(key);
+                }
+            }
+        }
+        result
     }
 
     pub fn from_saved_key(key: &str) -> Result<Self> {
@@ -150,7 +168,7 @@ impl MaterialSpec {
             .collect();
         let result = Self { name, states };
         result.validate()?;
-        Ok(result)
+        Ok(result.canonicalized())
     }
 }
 

@@ -109,7 +109,7 @@ system.runInterval(() => {
   reader ??= surfaceAccess(dimension);
   reader.reset();
   try {
-    while (reader.queries <= 253 && Date.now() - begin < 1) {
+    while (reader.queries <= 252 && Date.now() - begin < 1) {
       if (!current) {
         const next = queue.take(Date.now(), ++work % 4 === 0);
         if (next)

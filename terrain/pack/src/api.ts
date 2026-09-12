@@ -26,12 +26,16 @@ export function surfaceAccess(dimension: Dimension) {
       return dimension.isChunkLoaded({ x, y: 64, z });
     },
     top: (x, z) => {
-      // Unlike getTopmostBlock, the filtered downward query includes liquids and
-      // passable blocks. Check the ceiling separately: getBlockBelow excludes it.
+      // The native height map supplies a lower bound, not the final surface:
+      // water and thin blocks above it must be included by an exact volume query.
       const ceiling = dimension.heightRange.max;
       queries++;
+      const solid = dimension.getTopmostBlock({ x, z });
+      const floor = solid ? solid.y + 1 : access.minimum;
+      if (floor >= ceiling) return describe(solid);
+      queries++;
       const blocks = dimension.getBlocks(
-        new BlockVolume({ x, y: ceiling - 1, z }, { x, y: ceiling, z }),
+        new BlockVolume({ x, y: floor, z }, { x, y: ceiling - 1, z }),
         { excludeTypes: ["minecraft:air"] },
         false,
       );
@@ -39,17 +43,7 @@ export function surfaceAccess(dimension: Dimension) {
       for (const location of blocks.getBlockLocationIterator())
         highest = Math.max(highest, location.y);
       if (Number.isFinite(highest)) return read(x, highest, z);
-      queries++;
-      return describe(
-        dimension.getBlockBelow(
-          { x, y: ceiling - 1, z },
-          {
-            includeLiquidBlocks: true,
-            includePassableBlocks: true,
-            maxDistance: ceiling - access.minimum,
-          },
-        ),
-      );
+      return describe(solid);
     },
     block: read,
     biome: (x, y, z) => {

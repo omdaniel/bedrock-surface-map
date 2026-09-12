@@ -32,6 +32,7 @@ export interface Sample {
 }
 export interface Rules {
   version: number;
+  canonical_state_defaults?: Record<string, States>;
   air: string[];
   water: string[];
   overlay: string[];
@@ -101,6 +102,11 @@ export function* scan(
     materials: Material[] = [UNKNOWN],
     ids = new Map([[materialKey(UNKNOWN), 0]]);
   const intern = (m: Material) => {
+    m = { name: m.name, states: { ...m.states } };
+    for (const [key, value] of Object.entries(
+      rules.canonical_state_defaults?.[m.name] ?? {},
+    ))
+      if (m.states[key] === value) delete m.states[key];
     const key = materialKey(m),
       existing = ids.get(key);
     if (existing !== undefined) return existing;

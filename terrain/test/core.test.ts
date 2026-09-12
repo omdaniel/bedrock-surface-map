@@ -75,6 +75,20 @@ test("water support, grass overlay, snow and slab fractions", () => {
     6,
   );
 });
+test("redundant legacy API states normalize without dropping other permutation fields", () => {
+  const s = finish(
+    fixture({
+      0: material("stone", { stone_type: "stone" }),
+      1: material("short_grass", { tall_grass_type: "default" }),
+    }),
+  );
+  assert.deepEqual(s.materials[1].states, {});
+  assert.deepEqual(s.materials[2].states, {});
+  const distinct = finish(
+    fixture({ 0: material("stone", { stone_type: "granite" }) }),
+  );
+  assert.deepEqual(distinct.materials[1].states, { stone_type: "granite" });
+});
 test("latest pending sample survives an older in-flight acknowledgement", () => {
   const a = finish(fixture({ 0: material("stone") })),
     b = finish(fixture({ 1: material("stone") }));

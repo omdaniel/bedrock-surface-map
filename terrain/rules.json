@@ -1,5 +1,9 @@
 {
   "version": 1,
+  "canonical_state_defaults": {
+    "minecraft:stone": { "stone_type": "stone" },
+    "minecraft:short_grass": { "tall_grass_type": "default" }
+  },
   "air": [
     "air",
     "cave_air",
