@@ -16,6 +16,7 @@ import type { Manifest, RegionRef, DecodeRequest, DecodeReply } from "./types";
 import { bindSunDial } from "./sun-dial";
 import { PlayerLayer } from "./players";
 import { TerrainClient, type LiveRoot } from "./terrain";
+import { boundedBytes } from "./http";
 import "./style.css";
 
 const DEFAULT_SUN_AZIMUTH = 330;
@@ -877,7 +878,9 @@ async function boot() {
     throw new Error(
       "No imported map found. Run the snapshot import command, then retry.",
     );
-  const raw = await response.json();
+  const raw = JSON.parse(
+    new TextDecoder().decode(await boundedBytes(response, 16 * 1024 * 1024)),
+  );
   if (raw.format_version === 2) {
     if (
       !configuration.terrain ||

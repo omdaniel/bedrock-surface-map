@@ -5,6 +5,7 @@ import type {
   ObjectRef,
   RegionRef,
 } from "./types";
+import { boundedBytes } from "./http";
 
 export interface LiveRoot {
   format_version: 2;
@@ -159,7 +160,7 @@ export class TerrainClient {
     });
     if (!response.ok)
       throw Error(`Terrain object unavailable (${response.status})`);
-    const bytes = await response.arrayBuffer();
+    const bytes = await boundedBytes(response, ref.bytes);
     if (bytes.byteLength !== ref.bytes)
       throw Error("Terrain object length mismatch");
     const sha = Array.from(
@@ -230,12 +231,18 @@ export class TerrainClient {
       ) +
       2 +
       padding;
-    return [
+    const bounds = [
       Math.max(root.bounds[0], Math.floor((view.left - halo) / 256) * 256),
       Math.max(root.bounds[1], Math.floor((view.top - halo) / 256) * 256),
       Math.min(root.bounds[2], Math.ceil((view.right + halo) / 256) * 256),
       Math.min(root.bounds[3], Math.ceil((view.bottom + halo) / 256) * 256),
     ];
+    if (bounds[0] >= bounds[2] || bounds[1] >= bounds[3]) {
+      const x = Math.floor((view.left + view.right) / 512) * 256,
+        z = Math.floor((view.top + view.bottom) / 512) * 256;
+      return [x, z, x + 256, z + 256];
+    }
+    return bounds;
   }
   covers(view: View, elevation: number) {
     const needed = this.needed(view, elevation);
@@ -288,9 +295,9 @@ export class TerrainClient {
       if (response.status !== 304) {
         if (!response.ok)
           throw Error(`Terrain manifest unavailable (${response.status})`);
-        const text = await response.text();
-        if (text.length > 16 * 1024 * 1024)
-          throw Error("Terrain manifest too large");
+        const text = new TextDecoder().decode(
+          await boundedBytes(response, 16 * 1024 * 1024),
+        );
         root = JSON.parse(text);
         validateRoot(root);
         if (
