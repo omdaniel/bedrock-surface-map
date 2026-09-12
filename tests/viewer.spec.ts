@@ -29,6 +29,15 @@ test("synthetic pixels, picking, navigation, idle, toggles, resize and device re
   const pixels = colors(await page.screenshot());
   expect(pixels.has("5aa040")).toBe(true);
   expect(pixels.has("9b9ea0")).toBe(true);
+  expect(
+    [...pixels].some((v) => {
+      const n = String(v);
+      const r = parseInt(n.slice(0, 2), 16),
+        g = parseInt(n.slice(2, 4), 16),
+        b = parseInt(n.slice(4, 6), 16);
+      return b > g && g > r * 1.25;
+    }),
+  ).toBe(true);
   await page.mouse.move(640, 400);
   await expect(page.locator("#inspect")).toBeVisible();
   await expect(page.locator("#coordinates")).toContainText("-");
@@ -112,4 +121,21 @@ test("development server refuses raw world paths", async ({ request }) => {
     "/@fs/Users/macbookpro/Downloads/Bedrock-Survival-2026-09-11.mcworld",
   );
   expect([403, 404]).toContain(response.status());
+});
+test("invalid manifest bounds fail before allocating terrain", async ({
+  page,
+}) => {
+  await page.route(
+    (url) => url.pathname === "/maps/fixture/manifest.json",
+    async (route) => {
+      const response = await route.fetch();
+      const m = await response.json();
+      m.bounds = [0, 0, 99999999, 99999999];
+      await route.fulfill({ json: m });
+    },
+  );
+  await page.goto(fixture);
+  await expect(page.locator("#message")).toContainText(
+    "Unsupported or empty map manifest",
+  );
 });

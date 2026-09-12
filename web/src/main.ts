@@ -233,13 +233,7 @@ function requestDraw() {
         canvas.width = w;
         canvas.height = h;
       }
-      const rendered = renderer.render(cx, cz, scale * dpr, w, h, grid, sun);
-      if (
-        rendered &&
-        firstVisible === null &&
-        [...cache.values()].some((r) => visible(r.ref))
-      )
-        firstVisible = performance.now() - started;
+      renderer.render(cx, cz, scale * dpr, w, h, grid, sun);
       draws++;
       updateScale();
       updateMetrics();
@@ -404,10 +398,19 @@ window.addEventListener("pagehide", () => {
 window.addEventListener("surface-device-lost", () =>
   message("GPU device lost. Reload the map.", true),
 );
+window.addEventListener("surface-frame-ready", () =>
+  requestAnimationFrame(() => {
+    if (firstVisible === null) {
+      firstVisible = performance.now() - started;
+      updateMetrics();
+    }
+  }),
+);
 
 async function measure() {
   const times: number[] = [];
-  const original = [cx, cz];
+  const original = [cx, cz, scale];
+  const startDraws = draws;
   let previous = performance.now();
   const start = previous;
   await new Promise<void>((resolve) => {
@@ -415,6 +418,8 @@ async function measure() {
       times.push(now - previous);
       previous = now;
       cx = original[0] + Math.sin((now - start) / 700) * 10;
+      cz = original[1];
+      scale = original[2];
       requestDraw();
       if (now - start < 5000) requestAnimationFrame(step);
       else resolve();
@@ -427,7 +432,10 @@ async function measure() {
   times.shift();
   times.sort((a, b) => a - b);
   const result = {
+    kind: "animation-frame intervals during controlled pan, not GPU timestamps",
     frames: times.length,
+    submitted_frames: draws - startDraws,
+    scale: original[2],
     p50_ms: times[Math.floor(times.length * 0.5)],
     p95_ms: times[Math.floor(times.length * 0.95)],
     max_ms: times.at(-1),
@@ -475,7 +483,6 @@ window.__map = {
   measure,
   loseDevice: () => {
     renderer.simulate_device_loss();
-    message("GPU device lost. Reload the map.", true);
   },
   pan: (x, z) => {
     cx += x;
@@ -497,7 +504,7 @@ async function boot() {
   if (url.origin !== location.origin)
     throw new Error("Map must use this local origin");
   base = new URL(".", url);
-  const response = await fetch(url);
+  const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
   if (!response.ok)
     throw new Error(
       "No imported map found. Run the snapshot import command, then retry.",

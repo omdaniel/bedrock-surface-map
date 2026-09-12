@@ -89,6 +89,7 @@ pub struct Renderer {
     regions: BTreeMap<(i32, i32), Region>,
     sampler: wgpu::Sampler,
     base_bytes: usize,
+    first_frame_requested: bool,
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -357,6 +358,7 @@ impl Renderer {
             regions: BTreeMap::new(),
             sampler,
             base_bytes,
+            first_frame_requested: false,
             lost,
         })
     }
@@ -557,6 +559,7 @@ impl Renderer {
         };
         let view = frame.texture.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
+        let mut drew_region = false;
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("map"),
@@ -592,10 +595,22 @@ impl Renderer {
                 }
                 pass.set_bind_group(1, &r.render, &[]);
                 pass.draw(0..6, 0..1);
+                drew_region = true;
             }
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+        if drew_region && !self.first_frame_requested {
+            self.first_frame_requested = true;
+            self.queue.on_submitted_work_done(|| {
+                if let (Some(window), Ok(event)) = (
+                    web_sys::window(),
+                    web_sys::Event::new("surface-frame-ready"),
+                ) {
+                    let _ = window.dispatch_event(&event);
+                }
+            });
+        }
         Ok(true)
     }
 }

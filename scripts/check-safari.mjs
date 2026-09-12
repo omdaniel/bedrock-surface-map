@@ -54,6 +54,48 @@ try {
   await script("window.__map.measure().then(r=>window.__safariTiming=r)");
   await wait("return !!window.__safariTiming");
   const timings = await script("return window.__safariTiming");
+  const beforeDrag = await script("return window.__map.state().cx");
+  await command(root + "/actions", {
+    actions: [
+      {
+        type: "pointer",
+        id: "mouse",
+        parameters: { pointerType: "mouse" },
+        actions: [
+          {
+            type: "pointerMove",
+            duration: 0,
+            x: 900,
+            y: 500,
+            origin: "viewport",
+          },
+          { type: "pointerDown", button: 0 },
+          {
+            type: "pointerMove",
+            duration: 250,
+            x: 980,
+            y: 540,
+            origin: "viewport",
+          },
+          { type: "pointerUp", button: 0 },
+          {
+            type: "pointerMove",
+            duration: 0,
+            x: 950,
+            y: 500,
+            origin: "viewport",
+          },
+        ],
+      },
+    ],
+  });
+  const afterDrag = await script("return window.__map.state().cx");
+  if (afterDrag === beforeDrag)
+    throw new Error("Safari pointer drag did not move the camera");
+  const picking = await script(
+    'return document.getElementById("inspect").innerText',
+  );
+  if (!picking.trim()) throw new Error("Safari surface picking is blank");
   await script("window.__map.zoom(4)");
   await delay(300);
   await screenshot("texture");
@@ -72,6 +114,8 @@ try {
     capabilities: session.capabilities,
     overview,
     timings,
+    pointer_drag: true,
+    picking,
     device_loss: loss,
     recovered: true,
   };

@@ -11,11 +11,29 @@ const scope = self as unknown as {
 scope.onmessage = async ({ data: r }) => {
   try {
     await ready;
-    const response = await fetch(r.url);
+    const response = await fetch(r.url, { signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${r.url}`);
-    const buffer = await response.arrayBuffer();
-    if (buffer.byteLength > 64 * 1024 * 1024)
-      throw new Error("Compressed payload too large");
+    if (!response.body) throw new Error("Empty map response");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > 64 * 1024 * 1024) {
+        await reader.cancel();
+        throw new Error("Compressed payload too large");
+      }
+      chunks.push(value);
+    }
+    const joined = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) {
+      joined.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const buffer = joined.buffer;
     const sha = [
       ...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer)),
     ]
