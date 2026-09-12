@@ -208,6 +208,63 @@ fn capacity_and_missing_objects_fail_without_replacing_manifest() {
         &"\u{1f600}".repeat(18)
     ));
 }
+
+#[test]
+fn external_repair_writes_refresh_the_running_process_storage_budget() {
+    let (dir, mut s) = seeded();
+    // Simulate another accepted writer and a large derived object allocation.
+    let external = Store::open(&dir.path().join("state"), "test", "generation", 1 << 30).unwrap();
+    external.disable(false, "live").unwrap();
+    let file = fs::File::create(s.root.join("objects/quota-fixture.part")).unwrap();
+    file.set_len(32 * 1024 * 1024).unwrap();
+    s.limit = 16 * 1024 * 1024;
+    assert!(
+        s.ingest(&observation(1, now_ms(), 32), now_ms() + 2)
+            .is_err()
+    );
+    assert_eq!(current_height(&s), 16);
+}
+
+#[tokio::test]
+async fn slow_authenticated_body_expires_without_queueing_another_writer() {
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use surface_sync::http::{App, ingest_router};
+    use tower::ServiceExt;
+    let (_dir, store) = seeded();
+    let app = App::new(store, vec![b'a'; 32], "test".into()).unwrap();
+    let stream = futures_util::stream::pending::<Result<axum::body::Bytes, std::io::Error>>();
+    let req = Request::post("/ingest/v1/terrain")
+        .header("x-terrain-token", "a".repeat(32))
+        .body(Body::from_stream(stream))
+        .unwrap();
+    let task = tokio::spawn(ingest_router(app.clone()).oneshot(req));
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let req = || {
+        Request::post("/ingest/v1/terrain")
+            .header("x-terrain-token", "a".repeat(32))
+            .body(Body::from("{}"))
+            .unwrap()
+    };
+    assert_eq!(
+        ingest_router(app.clone())
+            .oneshot(req())
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        task.await.unwrap().unwrap().status(),
+        StatusCode::REQUEST_TIMEOUT
+    );
+    assert_eq!(
+        ingest_router(app).oneshot(req()).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+}
 #[tokio::test]
 async fn read_listener_never_accepts_ingestion_and_bad_tokens_cannot_write() {
     use axum::{

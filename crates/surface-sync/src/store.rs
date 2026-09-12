@@ -63,6 +63,7 @@ pub struct Store {
     pub root: PathBuf,
     pub limit: u64,
     used: Cell<u64>,
+    data_version: Cell<i64>,
 }
 
 struct Objects<'a> {
@@ -74,6 +75,24 @@ impl std::ops::Deref for Objects<'_> {
     type Target = Path;
     fn deref(&self) -> &Path {
         self.root
+    }
+}
+impl Objects<'_> {
+    fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
+        let version = db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))?;
+        if version != previous.get() {
+            let used = fs::read_dir(self.root.join("objects"))?
+                .try_fold(0u64, |n, e| -> Result<u64> {
+                    Ok(n.saturating_add(e?.metadata()?.len()))
+                })?;
+            self.used.set(used);
+            previous.set(version);
+        }
+        ensure!(
+            self.used.get().saturating_add(8 * 1024 * 1024) < self.limit,
+            "derived store capacity exceeded"
+        );
+        Ok(())
     }
 }
 
@@ -398,11 +417,13 @@ impl Store {
         let used = fs::read_dir(root.join("objects"))?.try_fold(0u64, |n, e| -> Result<u64> {
             Ok(n.saturating_add(e?.metadata()?.len()))
         })?;
+        let data_version = db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))?;
         Ok(Self {
             connection: db,
             root: root.to_owned(),
             limit,
             used: Cell::new(used),
+            data_version: Cell::new(data_version),
         })
     }
     pub fn ingest(&mut self, observation: &TerrainObservation, now: u64) -> Result<bool> {
@@ -420,6 +441,7 @@ impl Store {
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        objects.refresh(&tx, &self.data_version)?;
         ensure!(
             !meta::<bool>(&tx, "disabled")?,
             "terrain deliberately disabled"
@@ -543,10 +565,11 @@ impl Store {
             used: &self.used,
             limit: self.limit,
         };
-        let atlas = object(&objects, &fs::read(atlas_path)?, "png")?;
         let tx = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        objects.refresh(&tx, &self.data_version)?;
+        let atlas = object(&objects, &fs::read(atlas_path)?, "png")?;
         if let Some(b) = boundary {
             let recorded: Boundary = meta(&tx, "boundary")?;
             ensure!(

@@ -128,7 +128,11 @@ async fn manifest(
     if world != app.world {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = app.store.lock().ok().and_then(|s| s.manifest().ok());
+    let result =
+        tokio::task::spawn_blocking(move || app.store.lock().ok().and_then(|s| s.manifest().ok()))
+            .await
+            .ok()
+            .flatten();
     match result {
         Some(value) => {
             let bytes = serde_json::to_vec(&value).unwrap();
@@ -157,7 +161,16 @@ async fn object(State(app): State<App>, Path((world, name)): Path<(String, Strin
     if world != app.world || !valid_object_name(&name) {
         return StatusCode::NOT_FOUND.into_response();
     }
-    let result = app.store.lock().ok().and_then(|s| s.object(&name).ok());
+    let requested = name.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        app.store
+            .lock()
+            .ok()
+            .and_then(|s| s.object(&requested).ok())
+    })
+    .await
+    .ok()
+    .flatten();
     match result {
         Some(bytes) => response(
             StatusCode::OK,
@@ -175,7 +188,13 @@ async fn object(State(app): State<App>, Path((world, name)): Path<(String, Strin
     }
 }
 async fn health(State(app): State<App>) -> Response {
-    match app.store.lock().ok().and_then(|s| s.health(now_ms()).ok()) {
+    match tokio::task::spawn_blocking(move || {
+        app.store.lock().ok().and_then(|s| s.health(now_ms()).ok())
+    })
+    .await
+    .ok()
+    .flatten()
+    {
         Some(value) => response(
             StatusCode::OK,
             serde_json::to_vec(&value).unwrap(),
