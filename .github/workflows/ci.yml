@@ -42,6 +42,8 @@ jobs:
       - run: npm run build
       - run: npm run tracking:build
       - run: npm run tracking:test
+      - run: npm run terrain:build
+      - run: npm run terrain:test
       - run: cargo run --locked -p surface-cli -- fixture
       - run: npx playwright install --with-deps chromium
       - run: xvfb-run -a -s '-screen 0 1280x900x24' npm test
