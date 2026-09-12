@@ -27,8 +27,8 @@ app.querySelector("main")!.insertAdjacentHTML(
   "beforeend",
   `<section id="lighting" aria-label="Lighting and color settings" hidden>
   <strong>Lighting and color</strong>
-  <div class="setting-label"><label for="azimuth">Sun azimuth</label><output id="azimuth-value" for="azimuth">135&deg;</output></div>
-  <input id="azimuth" type="range" min="0" max="360" step="1" value="135">
+  <div class="setting-label"><label for="azimuth">Sun azimuth</label><output id="azimuth-value" for="azimuth">120&deg;</output></div>
+  <input id="azimuth" type="range" min="0" max="360" step="1" value="120">
   <div class="setting-label"><label for="elevation">Sun elevation</label><output id="elevation-value" for="elevation">45&deg;</output></div>
   <input id="elevation" type="range" min="15" max="75" step="5" value="45">
   <div class="setting-label"><label for="shadow-strength">Shadow strength</label><output id="strength-value" for="shadow-strength">55%</output></div>
@@ -67,7 +67,7 @@ let cx = 0,
   grid = true,
   sun = true,
   elevation = 45,
-  azimuth = 135,
+  azimuth = 120,
   shadowStrength = 0.55,
   vivid = true,
   reliefStrength = 1,
@@ -675,7 +675,14 @@ async function boot() {
     columns: width * height,
   })) as Float32Array;
   const materials = new Float32Array(
-    manifest.materials.flatMap((m) => [...m.uv, ...m.average, m.tint, 0, 0, 0]),
+    manifest.materials.flatMap((m) => [
+      ...m.uv,
+      ...m.average,
+      m.tint,
+      Number(m.name.toLowerCase() === "sand"),
+      0,
+      0,
+    ]),
   );
   renderer = await Renderer.create(
     canvas,

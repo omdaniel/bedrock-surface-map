@@ -44,8 +44,10 @@ Drag to pan; wheel or pinch to zoom. The toolbar provides fit-world, spawn,
 block borders, shadows, lighting/color settings and diagnostics. Sun elevation
 defaults to 45 degrees from the northwest and is adjustable from 15 to 75 degrees.
 Sun azimuth spans 0-360 degrees in 1-degree steps: east=0/360, north=90,
-west=180, south=270. Its default is 135 degrees (northwest).
+west=180, south=270. Its default is 120 degrees (west of north).
 Shadow strength defaults to 55%; Vivid/Original selects the color treatment.
+Vivid sand has a slightly darker base to preserve contrast with its bright rims;
+the adjustment does not affect other materials or Original mode.
 Terrain relief adds sun-facing height-step highlights, brighter corners and
 down-sun contact shading independently of cast shadows. Strength defaults to
 100%; edge width defaults to 0.25 block (one pixel at four pixels/block, four at

@@ -16,5 +16,6 @@ fn color(id:u32,tint:u32)->vec4f {let m=materials[id];return tint_color(m,m.aver
     let shade=surface_shadow(at,f32(bitcast<i32>(c.height))/16.0,vec2f(0),vec2f(1));
     var edge=vec2f(0);
     if c.depth==0u && materials[c.material].flags.x!=3.0 {edge=edge_relief(at,f32(bitcast<i32>(c.height))/16.0,vec2f(0),vec2f(1));}
-    textureStore(out_image,id.xy,vec4f(compose_lighting(grade_color(col.rgb,p.lighting.y),shade,edge),1));
+    let sand=select(materials[c.material].flags.y,0.0,c.depth>0u);
+    textureStore(out_image,id.xy,vec4f(compose_lighting(grade_color(col.rgb,p.lighting.y,sand),shade,edge),1));
 }

@@ -46,7 +46,8 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
     let shade=surface_shadow(at,f32(bitcast<i32>(c.height))/16.0,lo,hi);
     var edge=vec2f(0);
     if c.depth==0u && materials[c.material].flags.x!=3.0 {edge=edge_relief(at,f32(bitcast<i32>(c.height))/16.0,lo,hi);}
-    col=vec4f(compose_lighting(grade_color(col.rgb,p.lighting.y),shade,edge),1.0);
+    let sand=select(materials[c.material].flags.y,0.0,c.depth>0u);
+    col=vec4f(compose_lighting(grade_color(col.rgb,p.lighting.y,sand),shade,edge),1.0);
     let dist=min(fractional,vec2f(1.0)-fractional);
     let line=1.0-min(smoothstep(0.0,footprint.x*0.65,dist.x),smoothstep(0.0,footprint.y*0.65,dist.y));
     let amount=line*0.15*p.screen.y*smoothstep(3.0,12.0,p.camera.z);

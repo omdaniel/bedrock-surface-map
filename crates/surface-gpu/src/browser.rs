@@ -168,6 +168,7 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
+        let direction = surface_core::sun_direction(120.);
         let values = [
             0.,
             0.,
@@ -183,8 +184,8 @@ impl Renderer {
             h as f32,
             0.55,
             1.,
-            -std::f32::consts::FRAC_1_SQRT_2,
-            -std::f32::consts::FRAC_1_SQRT_2,
+            direction[0],
+            direction[1],
             1.,
             0.25,
             0.,

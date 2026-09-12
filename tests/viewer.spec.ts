@@ -154,6 +154,10 @@ test("one-block sand ledge has partial shadows and elevation changes their reach
   await controls.click();
   // Isolate physically traced cast shadows from the independent contact accents.
   await page.getByLabel("Terrain relief").press("Home");
+  await page.getByLabel("Sun azimuth").evaluate((input) => {
+    (input as HTMLInputElement).value = "135";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
   await page.getByLabel("Color treatment").selectOption("original");
   await controls.click();
   const sample = async (u: number, v: number) => {
@@ -220,7 +224,8 @@ test("sun azimuth follows the compass, supports intermediate angles and wraps at
     .getByRole("button", { name: "Lighting and color", exact: true })
     .click();
   const slider = page.getByLabel("Sun azimuth");
-  await expect(slider).toHaveValue("135");
+  await expect(slider).toHaveValue("120");
+  await expect(page.locator("#azimuth-value")).toHaveText("120°");
   await expect(slider).toHaveAttribute("min", "0");
   await expect(slider).toHaveAttribute("max", "360");
   await expect(slider).toHaveAttribute("step", "1");
@@ -334,6 +339,7 @@ test("terrain relief follows height boundaries and sunlight, with block-scaled w
       return [...png.data.subarray(i, i + 3)].reduce((a, b) => a + b, 0) / 3;
     };
   };
+  await set("Sun azimuth", 135);
   await aim(-224, -224, 16);
   let sample = await shot();
   const base = sample(-223.5, -223.5);
@@ -407,6 +413,121 @@ test("terrain relief follows height boundaries and sunlight, with block-scaled w
         () => document.documentElement.scrollWidth <= innerWidth,
       ),
     ).toBe(true);
+  }
+});
+
+test("Vivid sand gains rim contrast without changing other materials or Original", async ({
+  page,
+}) => {
+  let adjusted = false;
+  await page.route(
+    (url) => url.pathname === "/maps/fixture/manifest.json",
+    async (route) => {
+      const response = await route.fetch();
+      const m = await response.json();
+      // Remove only the sand classification to recreate the previous color treatment.
+      if (!adjusted)
+        m.materials.find((m: { name: string }) => m.name === "Sand").name =
+          "Baseline sand";
+      await route.fulfill({ json: m });
+    },
+  );
+  const aim = async (cx: number, cz: number, scale: number) => {
+    await page.evaluate(
+      ({ cx, cz, scale }) => {
+        const s = window.__map.state() as {
+          cx: number;
+          cz: number;
+          scale: number;
+        };
+        window.__map.pan(cx - s.cx, cz - s.cz);
+        window.__map.zoom(scale / s.scale);
+      },
+      { cx, cz, scale },
+    );
+  };
+  const capture = async () => {
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const png = PNG.sync.read(await page.locator("canvas").screenshot());
+    const s = (await page.evaluate(() => window.__map.state())) as {
+      cx: number;
+      cz: number;
+      scale: number;
+    };
+    return (x: number, z: number) => {
+      const px = Math.floor(png.width / 2 + (x - s.cx) * s.scale);
+      const pz = Math.floor(png.height / 2 + (z - s.cz) * s.scale);
+      return [
+        ...png.data.subarray(
+          (pz * png.width + px) * 4,
+          (pz * png.width + px) * 4 + 3,
+        ),
+      ];
+    };
+  };
+  const results: {
+    mode: string;
+    adjusted: boolean;
+    colors: number[][];
+    contrast: number;
+  }[] = [];
+  const mean = (c: number[]) => c.reduce((a, b) => a + b, 0) / 3;
+  for (const corrected of [false, true]) {
+    adjusted = corrected;
+    await page.goto(fixture);
+    await ready(page);
+    await page
+      .getByRole("button", { name: "Block borders", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Sun shadows", exact: true })
+      .click();
+    for (const mode of ["original", "vivid"]) {
+      await page
+        .getByRole("button", { name: "Lighting and color", exact: true })
+        .click();
+      await page.getByLabel("Color treatment").selectOption(mode);
+      await page
+        .getByRole("button", { name: "Lighting and color", exact: true })
+        .click();
+      await aim(-128, -128, 2);
+      const sample = await capture();
+      const colors = [
+        [-222.5, -222.5],
+        [-240.5, -128.5],
+        [-160.5, -128.5],
+        [-32.5, -64.5],
+      ].map(([x, z]) => sample(x, z));
+      await aim(-224, -224, 16);
+      const close = await capture();
+      const contrast =
+        mean(close(-223.5, -223.875)) - mean(close(-223.5, -223.5));
+      results.push({ mode, adjusted, colors, contrast });
+    }
+  }
+  for (const mode of ["original", "vivid"]) {
+    const before = results.find((r) => r.mode === mode && !r.adjusted)!;
+    const after = results.find((r) => r.mode === mode && r.adjusted)!;
+    for (let material = mode === "vivid" ? 1 : 0; material < 4; material++)
+      for (let channel = 0; channel < 3; channel++)
+        expect(
+          Math.abs(
+            after.colors[material][channel] - before.colors[material][channel],
+          ),
+        ).toBeLessThanOrEqual(1);
+    if (mode === "vivid") {
+      expect(mean(before.colors[0]) - mean(after.colors[0])).toBeGreaterThan(
+        20,
+      );
+      expect(after.contrast - before.contrast).toBeGreaterThan(4);
+    } else {
+      expect(Math.abs(after.contrast - before.contrast)).toBeLessThanOrEqual(1);
+    }
   }
 });
 

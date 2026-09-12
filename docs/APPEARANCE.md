@@ -2,7 +2,7 @@
 
 Follow-up to the initial visual comparison. The user authorized varying the
 original fixed 60-degree sun to approximate uNmINeD's stronger beach relief.
-Default: 45 degrees elevation, 135 degrees azimuth (northwest), 55% shadow strength,
+Default: 45 degrees elevation, 120 degrees azimuth (west of north), 55% shadow strength,
 Vivid color. The controls allow 15-75 degrees elevation, 0-360 degrees azimuth in
 1-degree steps, 0-80% shadow strength, Vivid/Original color, 0-100% terrain relief
 (default 100%), and 0.05-0.50 block edge width (default 0.25). They
@@ -67,7 +67,7 @@ The user's reference observation is a narrow lightened upper rim, extra corner
 highlight, and a dark band on the neighboring lower surface, in addition to
 cast shadows. This is an artistic depth cue, not another physical sun or a
 claim about uNmINeD's implementation. The matched follow-up crop uses the user's
-estimated 120-degree azimuth; the app's 135-degree default is unchanged.
+estimated 120-degree azimuth; this is now also the app default at the user's request.
 
 For each land column, the shader reads its two up-sun neighbors from the complete
 heightfield. Height differences create bands; material differences or block
@@ -113,6 +113,15 @@ adjustment and richer blue water complete the treatment. Detail and overview
 use shared WGSL functions. Original retains the earlier color formulas for A/B
 comparison, but benefits from the new shadow calculation. Biome colors, aquatic
 plants and multilayer transparency remain approximations.
+
+Only ordinary exposed sand receives an additional 0.88 multiplier in Vivid,
+after color grading and before rim lighting. This lowers its base without
+increasing shadow strength or altering the other material palettes. Red sand,
+sandstone, grass/foliage, water/support blends and Original mode are unaffected.
+The shader uses an existing spare material flag, not an RGB-color heuristic.
+The browser regression compares the same synthetic scene with/without that
+classification, checking darker sand, increased rim contrast and unchanged
+grass/stone/water/Original pixels.
 
 ## Regression Tests
 

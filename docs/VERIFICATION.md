@@ -210,6 +210,16 @@ view was left in place. This is native-Safari visual evidence, not a new Safari
 performance or automated interaction benchmark. No remote-automation setting
 was changed. The original Safari tab was preserved.
 
+### Sand Contrast and Default Follow-Up
+
+At the user's request, the default azimuth is now 120 degrees in both the UI and
+initial GPU uniform. Historical angle measurements above retain their original
+settings. Ordinary exposed sand in Vivid is 12% darker before rim composition;
+other material grades, water blending and Original mode are unchanged. A browser
+regression renders both classifications of the same synthetic scene and checks
+the sand/edge contrast and non-sand pixel invariance. The matched real-beach
+comparison is refreshed under `.local/relief/`; no world reimport is needed.
+
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
@@ -226,7 +236,7 @@ was changed. The original Safari tab was preserved.
   at three widths, subpixel/whole-cell footprints, negative/missing heights and
   region boundaries. CPU tests check stronger corners, partial-height steps,
   flat interiors, direction rotation and analytic band coverage.
-- Nine Playwright tests: expected terrain/water pixels, fractional ledge shadows,
+- Ten Playwright tests: expected terrain/water pixels, fractional ledge shadows,
   sun azimuth/elevation/strength/color controls, exact 0/360 equivalence, shadow
   direction at cardinal/intermediate angles, 1-degree keyboard steps, picking, drag/wheel,
   negative coordinates, idle redraw, resize, toggles, device-loss recovery,

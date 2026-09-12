@@ -14,9 +14,11 @@ fn tint_color(m:Material, c:vec4f, tint:u32, vivid:f32)->vec4f {
     let base=select(vec3f(0.93),vec3f(0.64,0.82,0.56),m.flags.x==2.0)*rgb(tint);
     return vec4f(mix(original,clamp(c.rgb/luminance*base,vec3f(0),vec3f(1)),vivid),c.a);
 }
-fn grade_color(c:vec3f,vivid:f32)->vec3f {
+fn grade_color(c:vec3f,vivid:f32,sand:f32)->vec3f {
     let l=dot(c,vec3f(0.2126,0.7152,0.0722));
-    return clamp(mix(c,(vec3f(l)+(c-vec3f(l))*1.08)*1.04,vivid),vec3f(0),vec3f(1));
+    // Exposed ordinary sand alone gets headroom for the subsequent bright rims.
+    // Original mode, water/support blending and every other material retain their grade.
+    return clamp(mix(c,(vec3f(l)+(c-vec3f(l))*1.08)*1.04,vivid),vec3f(0),vec3f(1))*mix(1.0,0.88,vivid*sand);
 }
 fn water_color(vivid:f32)->vec3f {return mix(vec3f(0.08,0.38,0.64),vec3f(0.055,0.33,0.72),vivid);}
 

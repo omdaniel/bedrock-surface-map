@@ -62,7 +62,7 @@ thin vegetation alpha-blends over its supporting top surface. Snow layers and
 slabs preserve fractional top height. No model geometry is reconstructed.
 
 The orthographic north-up camera uses parallel sunlight. Elevation defaults to
-45 degrees (range 15-75); azimuth defaults to 135 degrees (range 0-360 in 1-degree
+45 degrees (range 15-75); azimuth defaults to 120 degrees (range 0-360 in 1-degree
 steps). The direction towards the sun in X/Z is `(cos(azimuth), -sin(azimuth))`:
 east=0/360, north=90, west=180, south=270. Cardinal components are snapped to exact
 zero to avoid drift; intermediate angles use their actual direction, not blends
@@ -96,6 +96,10 @@ It also uses a richer blue water base. Original preserves the earlier color
 formulas, but uses the corrected shadow model. Both detail and overview passes
 share the same WGSL appearance functions. Shadow strength and color treatment
 only regenerate resident overview colors, not the height hierarchy.
+An existing spare material flag identifies ordinary sand by catalog name. Its
+exposed Vivid base is multiplied by 0.88 before rim lighting, leaving other
+materials, Original mode and water/support blending unchanged. No catalog or
+surface-format change is needed.
 
 Procedural terrain-edge relief reads two immediate up-sun height neighbors from
 the same complete hierarchy, including across region boundaries. A higher
