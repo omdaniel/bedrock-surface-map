@@ -33,6 +33,10 @@ app.querySelector("main")!.insertAdjacentHTML(
   <input id="elevation" type="range" min="15" max="75" step="5" value="45">
   <div class="setting-label"><label for="shadow-strength">Shadow strength</label><output id="strength-value" for="shadow-strength">55%</output></div>
   <input id="shadow-strength" type="range" min="0" max="80" step="5" value="55">
+  <div class="setting-label"><label for="relief-strength">Terrain relief</label><output id="relief-value" for="relief-strength">100%</output></div>
+  <input id="relief-strength" type="range" min="0" max="100" step="5" value="100">
+  <div class="setting-label"><label for="relief-width">Edge width</label><output id="width-value" for="relief-width">0.25 blocks</output></div>
+  <input id="relief-width" type="range" min="5" max="50" step="5" value="25">
   <div class="setting-label"><label for="color-treatment">Color treatment</label><select id="color-treatment"><option value="vivid">Vivid</option><option value="original">Original</option></select></div>
 </section>`,
 );
@@ -66,6 +70,8 @@ let cx = 0,
   azimuth = 135,
   shadowStrength = 0.55,
   vivid = true,
+  reliefStrength = 1,
+  reliefWidth = 0.25,
   frameQueued = false,
   disposed = false;
 let sequence = 0,
@@ -270,6 +276,8 @@ function requestDraw() {
         azimuth,
         shadowStrength,
         vivid,
+        reliefStrength,
+        reliefWidth,
       );
       draws++;
       updateScale();
@@ -430,6 +438,16 @@ $("shadow-strength").oninput = () => {
   $("strength-value").textContent = `${Math.round(shadowStrength * 100)}%`;
   requestDraw();
 };
+$("relief-strength").oninput = () => {
+  reliefStrength = Number($<HTMLInputElement>("relief-strength").value) / 100;
+  $("relief-value").textContent = `${Math.round(reliefStrength * 100)}%`;
+  requestDraw();
+};
+$("relief-width").oninput = () => {
+  reliefWidth = Number($<HTMLInputElement>("relief-width").value) / 100;
+  $("width-value").textContent = `${reliefWidth.toFixed(2)} blocks`;
+  requestDraw();
+};
 $("color-treatment").onchange = () => {
   vivid = $<HTMLSelectElement>("color-treatment").value === "vivid";
   requestDraw();
@@ -542,6 +560,8 @@ window.__map = {
     azimuth,
     shadowStrength,
     vivid,
+    reliefStrength,
+    reliefWidth,
     cached: cache.size,
     pending: active,
     failures: [...failures],

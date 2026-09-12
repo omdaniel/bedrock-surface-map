@@ -172,24 +172,71 @@ the user's camera and 60% shadow-strength setting were left unchanged. This was
 a visual check, not a new Safari performance run. The matched NW beach reference
 images were also refreshed with the current algorithm.
 
+### Terrain-Edge Relief Follow-Up
+
+The new artistic rim/corner highlights and lower contact bands follow azimuth
+independently of primary cast shadows. Their default quarter-block width scales
+with zoom. No import, codec, texture or source-world changes were needed.
+See [APPEARANCE.md](APPEARANCE.md) for formulas and retained approximations.
+
+Chrome 152.0.7977.83, real beach at X -284, Z -114, four pixels/block,
+1920x1080 DPR1, 45-degree sun elevation, 55% cast shadows, all 64 regions loaded:
+
+| Azimuth | Relief | Frames in 5 seconds | Median / p95 / max interval (ms) |
+| --- | --- | ---: | ---: |
+| 120 | Off | 600 | 8.3 / 8.8 / 9.3 |
+| 120 | 100% | 600 | 8.3 / 8.9 / 9.7 |
+| 300 | Off | 601 | 8.3 / 9.0 / 9.4 |
+| 300 | 100% | 600 | 8.3 / 9.1 / 9.3 |
+
+These are rAF navigation intervals, not isolated GPU execution costs or proof of
+zero overhead. Shader/file caches were not flushed. First populated frame was
+233 ms; accumulated worker decoding 284 ms. Resident map accounting remains
+221,562,576 bytes (211.30 MiB). Relief adds no per-region memory allocation;
+the small uniform grows by 16 bytes, outside that map-resource accounting.
+
+The matched beach, close-up and reversed-sun captures were inspected against
+the local uNmINeD reference: sand terraces now have light upper rims, bright
+corners and dark lower contact bands. Tree highlights retain their green rather
+than blending directly to white. No pixel-identical or speed advantage claim is
+made. Six captures had 426-647 sampled RGB colors, no blank canvas or page/console
+errors. The 390x844 and 844x390 layouts have no horizontal overflow; the settings
+panel scrolls on the shorter viewport. Reproduce with `check-relief.mjs`.
+
+Native Safari was visually checked in a separate tab with all 64 regions loaded,
+then at a closer view with the relief/width controls and visible highlighted
+terrain steps. The user interacted with that tab during verification; their
+view was left in place. This is native-Safari visual evidence, not a new Safari
+performance or automated interaction benchmark. No remote-automation setting
+was changed. The original Safari tab was preserved.
+
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
-- Fourteen Rust tests: exact constant/mixed codec round trips, negative coordinates,
+- Sixteen Rust tests: exact constant/mixed codec round trips, negative coordinates,
   missing coverage, corrupt/truncated payloads, decompression/window bounds,
   archive path/symlink rejection, leaf-litter support/overlay semantics, CPU
   shadow geometry and GPU equivalence.
 - GPU ray fixtures compare five samples per cell against an independent CPU DDA
-  for 14 azimuths and four elevations: flat terrain, a 10-block column, terraces,
+  for 15 azimuths and four elevations: flat terrain, a 10-block column, terraces,
   negative/missing randomized heights and a 256-column boundary. CPU tests verify
   conservative hierarchy maxima at odd dimensions, compass mapping, shadow
   reach, and retain the former NW analytical coverage reference.
-- Eight Playwright tests: expected terrain/water pixels, fractional ledge shadows,
+- The same GPU fixtures validate relief against CPU band-intersection enumeration
+  at three widths, subpixel/whole-cell footprints, negative/missing heights and
+  region boundaries. CPU tests check stronger corners, partial-height steps,
+  flat interiors, direction rotation and analytic band coverage.
+- Nine Playwright tests: expected terrain/water pixels, fractional ledge shadows,
   sun azimuth/elevation/strength/color controls, exact 0/360 equivalence, shadow
   direction at cardinal/intermediate angles, 1-degree keyboard steps, picking, drag/wheel,
   negative coordinates, idle redraw, resize, toggles, device-loss recovery,
   download retry, checksum rejection, missing WebGPU, invalid manifests and raw
   world path denial.
+- Relief pixel checks verify brighter corners, no interior plateau lines,
+  opposite-side contact shade, 120-degree weighting, one/four-pixel bands at
+  4/16 pixels per block, width/strength controls, overview invalidation, and
+  water-step exclusion plus portrait/short-landscape panel fit. Cast-shadow tests disable independent
+  relief so the two effects cannot mask each other's failures.
 - WASM release compilation and Vite/TypeScript production build.
 - Gitleaks staged/history hooks, ignored-artifact checks and clean `runproxmox`.
 

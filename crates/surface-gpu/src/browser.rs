@@ -85,7 +85,7 @@ pub struct Renderer {
     global_render: wgpu::BindGroup,
     global_overview: wgpu::BindGroup,
     params: wgpu::Buffer,
-    values: [f32; 16],
+    values: [f32; 20],
     regions: BTreeMap<(i32, i32), Region>,
     sampler: wgpu::Sampler,
     base_bytes: usize,
@@ -185,6 +185,10 @@ impl Renderer {
             1.,
             -std::f32::consts::FRAC_1_SQRT_2,
             -std::f32::consts::FRAC_1_SQRT_2,
+            1.,
+            0.25,
+            0.,
+            0.,
         ];
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera"),
@@ -504,6 +508,8 @@ impl Renderer {
         azimuth: f32,
         shadow_strength: f32,
         vivid: bool,
+        relief_strength: f32,
+        relief_width: f32,
     ) -> Result<bool, JsValue> {
         if self.is_lost() {
             return Err(js_error("GPU device lost; reload the map"));
@@ -517,6 +523,10 @@ impl Renderer {
             || !(0.0..=360.0).contains(&azimuth)
             || !shadow_strength.is_finite()
             || !(0.0..=0.8).contains(&shadow_strength)
+            || !relief_strength.is_finite()
+            || !(0.0..=1.0).contains(&relief_strength)
+            || !relief_width.is_finite()
+            || !(0.05..=0.5).contains(&relief_width)
         {
             return Err(js_error("invalid lighting settings"));
         }
@@ -531,7 +541,9 @@ impl Renderer {
         let changed = sun_changed
             || self.values[6] != (shadows as u32 as f32)
             || self.values[12] != shadow_strength
-            || self.values[13] != vivid as u32 as f32;
+            || self.values[13] != vivid as u32 as f32
+            || self.values[16] != relief_strength
+            || self.values[17] != relief_width;
         self.values[..8].copy_from_slice(&[
             cx,
             cz,
@@ -545,6 +557,8 @@ impl Renderer {
         self.values[12] = shadow_strength;
         self.values[13] = vivid as u32 as f32;
         self.values[14..16].copy_from_slice(&direction);
+        self.values[16] = relief_strength;
+        self.values[17] = relief_width;
         self.queue
             .write_buffer(&self.params, 0, bytemuck::cast_slice(&self.values));
         if changed {

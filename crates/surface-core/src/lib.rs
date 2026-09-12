@@ -367,6 +367,57 @@ pub fn sun_direction(azimuth: f32) -> [f32; 2] {
     [angle.cos(), -angle.sin()].map(|v| if v.abs() < 1e-7 { 0. } else { v as f32 })
 }
 
+/// Area-integrated artistic rim/contact lighting; neighbors are west/east/north/south.
+/// Enumerating the four band intersections is independent of the WGSL union formula.
+pub fn edge_relief_reference(
+    y: f32,
+    neighbors: [f32; 4],
+    direction: [f32; 2],
+    lo: [f32; 2],
+    hi: [f32; 2],
+    width: f32,
+) -> [f32; 2] {
+    let mut coverage = [0f64; 2];
+    let mut rim = [0f64; 2];
+    let mut contact = [0f64; 2];
+    let max_direction = f64::from(direction[0].abs().max(direction[1].abs())).max(0.0001);
+    for axis in 0..2 {
+        let positive = direction[axis] >= 0.;
+        let neighbor = neighbors[axis * 2 + usize::from(positive)];
+        let delta = if neighbor < -900000. {
+            0.
+        } else {
+            f64::from(y - neighbor)
+        };
+        let weight = f64::from(direction[axis].abs()) / max_direction;
+        rim[axis] = delta.clamp(0., 1.) * weight;
+        contact[axis] = (-delta).clamp(0., 1.) * weight;
+        let start = if positive { 1. - f64::from(width) } else { 0. };
+        coverage[axis] = ((f64::from(hi[axis]).min(start + f64::from(width))
+            - f64::from(lo[axis]).max(start))
+            / f64::from(hi[axis] - lo[axis]).max(0.000001))
+        .clamp(0., 1.);
+    }
+    let mut result = [0f64; 2];
+    for mask in 0..4 {
+        let mut probability = 1.;
+        let mut lit = [0f64; 2];
+        let mut dark = [0f64; 2];
+        for axis in 0..2 {
+            if mask & (1 << axis) != 0 {
+                probability *= coverage[axis];
+                lit[axis] = rim[axis];
+                dark[axis] = contact[axis];
+            } else {
+                probability *= 1. - coverage[axis];
+            }
+        }
+        result[0] += probability * (0.55 * lit[0].max(lit[1]) + 0.25 * lit[0] * lit[1]);
+        result[1] += probability * (0.28 * dark[0].max(dark[1]) + 0.10 * dark[0] * dark[1]);
+    }
+    result.map(|v| v as f32)
+}
+
 /// Independent f64 grid DDA oracle, without a hierarchy or boundary nudges.
 pub fn ray_shadow_reference(
     heights: &[f32],
@@ -512,6 +563,69 @@ pub fn shadow_coverage_reference(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relief_only_at_steps_with_brighter_corners() {
+        let nw = sun_direction(135.);
+        let point = |neighbors, uv: [f32; 2]| {
+            edge_relief_reference(1., neighbors, nw, uv, uv.map(|v| v + 0.01), 0.25)
+        };
+        assert_eq!(point([1.; 4], [0.01; 2]), [0.; 2]);
+        assert_eq!(point([-1e6; 4], [0.01; 2]), [0.; 2]);
+        assert_eq!(point([0.; 4], [0.5; 2]), [0.; 2]);
+        let edge = point([0.; 4], [0.1, 0.5]);
+        let corner = point([0.; 4], [0.1; 2]);
+        assert!((edge[0] - 0.55).abs() < 1e-6);
+        assert!((corner[0] - 0.8).abs() < 1e-6);
+        assert_eq!(corner[1], 0.);
+        let contact = point([2.; 4], [0.1; 2]);
+        assert!((contact[1] - 0.38).abs() < 1e-6);
+        assert_eq!(contact[0], 0.);
+        let partial = point([0.5; 4], [0.1, 0.5]);
+        assert!((partial[0] - edge[0] * 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn relief_rotates_and_integrates_subpixel_width() {
+        for azimuth in [0., 90., 120., 135., 180., 225., 270., 315., 360.] {
+            let d = sun_direction(azimuth);
+            let opposite = sun_direction(azimuth + 180.);
+            let a = edge_relief_reference(1., [0.; 4], d, [0.1; 2], [0.11; 2], 0.25);
+            let b = edge_relief_reference(1., [0.; 4], opposite, [0.89; 2], [0.9; 2], 0.25);
+            assert!((a[0] - b[0]).abs() < 1e-6);
+        }
+        for width in [0.05, 0.1, 0.25, 0.5] {
+            let full =
+                edge_relief_reference(1., [0.; 4], sun_direction(180.), [0.; 2], [1.; 2], width);
+            assert!((full[0] - 0.55 * width).abs() < 1e-6);
+            let outside = edge_relief_reference(
+                1.,
+                [0.; 4],
+                sun_direction(180.),
+                [width, 0.],
+                [1.; 2],
+                width,
+            );
+            assert_eq!(outside, [0.; 2]);
+        }
+        let north = edge_relief_reference(
+            1.,
+            [0.; 4],
+            sun_direction(120.),
+            [0.5, 0.1],
+            [0.51, 0.11],
+            0.25,
+        );
+        let west = edge_relief_reference(
+            1.,
+            [0.; 4],
+            sun_direction(120.),
+            [0.1, 0.5],
+            [0.11, 0.51],
+            0.25,
+        );
+        assert!(north[0] > west[0]);
+    }
 
     #[test]
     fn compass_and_height_tree() {

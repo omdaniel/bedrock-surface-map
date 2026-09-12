@@ -152,6 +152,8 @@ test("one-block sand ledge has partial shadows and elevation changes their reach
     exact: true,
   });
   await controls.click();
+  // Isolate physically traced cast shadows from the independent contact accents.
+  await page.getByLabel("Terrain relief").press("Home");
   await page.getByLabel("Color treatment").selectOption("original");
   await controls.click();
   const sample = async (u: number, v: number) => {
@@ -277,6 +279,135 @@ test("sun azimuth follows the compass, supports intermediate angles and wraps at
   ).toBe(true);
   await page.screenshot({ path: "test-results/azimuth-mobile.png" });
   expect(errors).toEqual([]);
+});
+
+test("terrain relief follows height boundaries and sunlight, with block-scaled width", async ({
+  page,
+}) => {
+  await page.goto(fixture);
+  await ready(page);
+  await page
+    .getByRole("button", { name: "Block borders", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Sun shadows", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Lighting and color", exact: true })
+    .click();
+  await page.getByLabel("Color treatment").selectOption("original");
+  const set = async (label: string, value: number) => {
+    await page.getByLabel(label).evaluate((input, v) => {
+      (input as HTMLInputElement).value = String(v);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    }, value);
+  };
+  const aim = async (cx: number, cz: number, scale: number) => {
+    await page.evaluate(
+      ({ cx, cz, scale }) => {
+        const s = window.__map.state() as {
+          cx: number;
+          cz: number;
+          scale: number;
+        };
+        window.__map.pan(cx - s.cx, cz - s.cz);
+        window.__map.zoom(scale / s.scale);
+      },
+      { cx, cz, scale },
+    );
+  };
+  const shot = async () => {
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    const png = PNG.sync.read(await page.locator("canvas").screenshot());
+    const s = (await page.evaluate(() => window.__map.state())) as {
+      cx: number;
+      cz: number;
+      scale: number;
+    };
+    return (x: number, z: number) => {
+      const px = Math.floor(png.width / 2 + (x - s.cx) * s.scale);
+      const pz = Math.floor(png.height / 2 + (z - s.cz) * s.scale);
+      const i = (pz * png.width + px) * 4;
+      return [...png.data.subarray(i, i + 3)].reduce((a, b) => a + b, 0) / 3;
+    };
+  };
+  await aim(-224, -224, 16);
+  let sample = await shot();
+  const base = sample(-223.5, -223.5);
+  expect(sample(-223.875, -223.5) - base).toBeGreaterThan(12);
+  expect(sample(-223.875, -223.875) - sample(-223.875, -223.5)).toBeGreaterThan(
+    6,
+  );
+  // The next block is on the same plateau: neither an interior line nor a false rim.
+  expect(Math.abs(sample(-222.9375, -223.5) - base)).toBeLessThan(2);
+  expect(Math.abs(sample(-224.125, -223.5) - base)).toBeLessThan(2);
+  await set("Sun azimuth", 120);
+  sample = await shot();
+  expect(sample(-223.5, -223.875)).toBeGreaterThan(
+    sample(-223.875, -223.5) + 6,
+  );
+  await set("Sun azimuth", 315);
+  sample = await shot();
+  expect(Math.abs(sample(-223.875, -223.875) - base)).toBeLessThan(2);
+  expect(base - sample(-224.125, -223.5)).toBeGreaterThan(25);
+  await aim(-200, -200, 16);
+  sample = await shot();
+  expect(sample(-200.125, -200.125) - base).toBeGreaterThan(20);
+  await set("Sun azimuth", 135);
+  sample = await shot();
+  expect(base - sample(-199.875, -200.5)).toBeGreaterThan(25);
+  await aim(-224, -220, 16);
+  await set("Sun azimuth", 180);
+  for (const scale of [4, 16]) {
+    await aim(-224, -220, scale);
+    sample = await shot();
+    const litPixels = Array.from(
+      { length: scale },
+      (_, i) => sample(-224 + (i + 0.5) / scale, -220.5) > base + 5,
+    ).filter(Boolean).length;
+    expect(litPixels).toBe(scale / 4);
+  }
+  await set("Edge width", 50);
+  sample = await shot();
+  expect(sample(-223.625, -220.5)).toBeGreaterThan(base + 12);
+  expect(Math.abs(sample(-223.375, -220.5) - base)).toBeLessThan(2);
+  await set("Terrain relief", 0);
+  sample = await shot();
+  expect(Math.abs(sample(-223.875, -220.5) - base)).toBeLessThan(2);
+  // At overview scales, changing relief must rebuild the cached color mipmaps.
+  await aim(-212, -212, 0.8);
+  const before = await shot();
+  await set("Terrain relief", 100);
+  const after = await shot();
+  let changed = 0;
+  for (let z = -230; z < -194; z++)
+    for (let x = -230; x < -194; x++)
+      if (Math.abs(after(x, z) - before(x, z)) > 2) changed++;
+  expect(changed).toBeGreaterThan(20);
+  // Synthetic water deliberately has a height step: relief must not outline it.
+  await aim(-32, -64, 16);
+  const waterOn = await shot();
+  await set("Terrain relief", 0);
+  const waterOff = await shot();
+  for (const x of [-32.125, -31.875, -31.5])
+    expect(Math.abs(waterOn(x, -63.5) - waterOff(x, -63.5))).toBeLessThan(2);
+  for (const viewport of [
+    { width: 390, height: 844 },
+    { width: 844, height: 390 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.getByLabel("Color treatment").scrollIntoViewIfNeeded();
+    const panel = await page.locator("#lighting").boundingBox();
+    expect(panel!.y + panel!.height).toBeLessThan(viewport.height - 30);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
 });
 
 test("download failure and retry", async ({ page }) => {

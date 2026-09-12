@@ -48,10 +48,12 @@ of every block, and the external render does not cover our complete dataset.
   default sun and adjustable elevation/strength. Full azimuth control now uses
   accelerated heightfield ray queries and sampled subpixel coverage instead of
   the intermediate northwest-only horizon integration.
-  Central beach terraces now show their height changes. uNmINeD also displays
-  bright up-sun edges and softer-looking canopy relief; our hard parallel-light
-  heightfield does not reproduce those effects. No elevation contour lines were
-  added, and uNmINeD's exact sun elevation was not measured or assumed known.
+  Central beach terraces now show their height changes. A further user-directed
+  pass approximates uNmINeD's bright upper rims/corners and lower contact bands,
+  rotating them with azimuth and scaling their width in block units. The 120-degree
+  comparison follows the user's angle estimate, not a measured internal setting.
+  Rounded canopy lighting and softer-looking cast shadows are still different;
+  no separate elevation-contour geometry was added.
 - Water depth shading and submerged plants differ noticeably. The retained
   support can be the first underwater vegetation block, not the bare seabed,
   and an exposed aquatic primary surface can look too prominent. Full
@@ -92,3 +94,6 @@ comparison to our interactive renderer or surface-import pipeline.
 
 The [appearance follow-up](APPEARANCE.md) adds a closer 192-by-192-block beach
 crop at four pixels per block, including 45/60-degree wgpu and uNmINeD images.
+Its `check-relief.mjs` command adds a matched 120-degree relief-off/on comparison
+and close-ups demonstrating quarter-block bands growing to four pixels at
+16 pixels/block. Results remain local under `.local/relief/`.

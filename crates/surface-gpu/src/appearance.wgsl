@@ -1,4 +1,4 @@
-struct Params { camera:vec4f, screen:vec4f, bounds:vec4f, lighting:vec4f }
+struct Params { camera:vec4f, screen:vec4f, bounds:vec4f, lighting:vec4f, relief:vec4f }
 struct Material { uv:vec4f, average:vec4f, flags:vec4f }
 struct Cell { height:u32, material:u32, tint:u32, overlay:u32, depth:u32, support:u32, overlay_height:u32, covered:u32 }
 
@@ -19,3 +19,12 @@ fn grade_color(c:vec3f,vivid:f32)->vec3f {
     return clamp(mix(c,(vec3f(l)+(c-vec3f(l))*1.08)*1.04,vivid),vec3f(0),vec3f(1));
 }
 fn water_color(vivid:f32)->vec3f {return mix(vec3f(0.08,0.38,0.64),vec3f(0.055,0.33,0.72),vivid);}
+
+fn compose_lighting(base:vec3f,shade:f32,edge:vec2f)->vec3f {
+    let highlight=clamp(edge.x*p.relief.x,0.0,0.9);
+    let contact=clamp(edge.y*p.relief.x,0.0,0.5);
+    // Highlights remain shaded by real occluders; contact shade is independent
+    // of the cast-shadow toggle and never turns a flat material seam into a rim.
+    let bright=min(base*1.55+vec3f(0.025),vec3f(1));
+    return mix(base,bright,highlight)*(1.0-p.lighting.x*shade*p.screen.z)*(1.0-contact);
+}

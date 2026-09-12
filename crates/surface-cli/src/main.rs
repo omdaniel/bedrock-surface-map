@@ -304,6 +304,14 @@ fn run() -> Result<()> {
                         r.heights[i] = if x < 144 { 16 } else { 0 };
                         r.materials[i] = 4;
                     }
+                    if (24..64).contains(&x) && (24..64).contains(&z) {
+                        r.heights[i] = if (32..56).contains(&x) && (32..56).contains(&z) {
+                            64
+                        } else {
+                            0
+                        };
+                        r.materials[i] = 4;
+                    }
                 }
             }
             let mut ms = vec![];

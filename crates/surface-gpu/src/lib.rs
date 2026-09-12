@@ -1,18 +1,23 @@
 pub const SHADOW_SHADER: &str = include_str!("shadow.wgsl");
 pub const APPEARANCE_SHADER: &str = include_str!("appearance.wgsl");
+pub const RELIEF_SHADER: &str = include_str!("relief.wgsl");
 pub const TERRAIN_SHADER: &str = concat!(
     include_str!("appearance.wgsl"),
     "\n",
     include_str!("shadow.wgsl"),
     "\n",
-    include_str!("terrain.wgsl")
+    include_str!("terrain.wgsl"),
+    "\n",
+    include_str!("relief.wgsl")
 );
 pub const OVERVIEW_SHADER: &str = concat!(
     include_str!("appearance.wgsl"),
     "\n",
     include_str!("shadow.wgsl"),
     "\n",
-    include_str!("overview.wgsl")
+    include_str!("overview.wgsl"),
+    "\n",
+    include_str!("relief.wgsl")
 );
 pub const MIP_SHADER: &str = include_str!("mip.wgsl");
 
@@ -47,7 +52,7 @@ mod tests {
     use wgpu::util::DeviceExt;
 
     #[test]
-    fn gpu_shadows_match_cpu() {
+    fn gpu_shadows_and_relief_match_cpu() {
         pollster::block_on(async {
             let instance = wgpu::Instance::default();
             let adapter = instance
@@ -59,18 +64,24 @@ mod tests {
                 .await
                 .unwrap();
             let code = format!(
-                "{}\n{}\n{}",
+                "{}\n{}\n{}\n{}",
                 APPEARANCE_SHADER,
                 SHADOW_SHADER,
+                RELIEF_SHADER,
                 r#"
 @group(0) @binding(0) var<uniform> p:Params;
 @group(0) @binding(1) var<storage,read> heights:HeightTree;
-@group(0) @binding(2) var<storage,read_write> result:array<f32>;
+@group(0) @binding(2) var<storage,read_write> result:array<vec4f>;
 @compute @workgroup_size(64) fn check(@builtin(global_invocation_id) gid:vec3u) {
     let i=gid.x;let w=u32(p.bounds.z);if i>=w*u32(p.bounds.w){return;}
     let cell=vec2u(i%w,i/w);let y=maximum_height(0u,cell);
     let samples=array<vec2f,5>(vec2f(0.17,0.31),vec2f(0.55,0.8),vec2f(0.9,0.12),vec2f(0.25),vec2f(0.75));
-    for(var n=0u;n<5u;n++){result[i*5u+n]=select(ray_shadow(vec2f(cell)+samples[n],y),0.0,y< -900000.0);}
+    for(var n=0u;n<5u;n++){
+        let lo=select(samples[n]-vec2f(0.03),vec2f(0),n==4u);
+        let hi=select(samples[n]+vec2f(0.03),vec2f(1),n==4u);
+        let edge=edge_relief(vec2f(cell),y,lo,hi);
+        result[i*5u+n]=select(vec4f(ray_shadow(vec2f(cell)+samples[n],y),edge,0),vec4f(0),y< -900000.0);
+    }
 }
 "#
             );
@@ -121,7 +132,7 @@ mod tests {
                 });
                 let output = device.create_buffer(&wgpu::BufferDescriptor {
                     label: None,
-                    size: (w * h * 5 * 4) as u64,
+                    size: (w * h * 5 * 16) as u64,
                     usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                     mapped_at_creation: false,
                 });
@@ -132,11 +143,19 @@ mod tests {
                     mapped_at_creation: false,
                 });
                 for azimuth in [
-                    0f32, 1., 17., 45., 89., 90., 135., 179., 180., 225., 270., 315., 359., 360.,
+                    0f32, 1., 17., 45., 89., 90., 120., 135., 179., 180., 225., 270., 315., 359.,
+                    360.,
                 ] {
                     for elevation in [15f32, 45., 60., 75.] {
                         let direction = surface_core::sun_direction(azimuth);
                         let slope = elevation.to_radians().tan();
+                        let relief_width = if elevation == 15. {
+                            0.1
+                        } else if elevation == 45. {
+                            0.25
+                        } else {
+                            0.5
+                        };
                         let params = [
                             0.,
                             0.,
@@ -154,6 +173,10 @@ mod tests {
                             1.,
                             direction[0],
                             direction[1],
+                            1.,
+                            relief_width,
+                            0.,
+                            0.,
                         ];
                         let uniform =
                             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -211,10 +234,50 @@ mod tests {
                                     )
                                 };
                                 assert_eq!(
-                                    actual[i * 5 + n],
+                                    actual[(i * 5 + n) * 4],
                                     expected,
                                     "{kind}, azimuth={azimuth}, elevation={elevation}, cell={i}, sample={n}"
                                 );
+                                let (x, z) = (i % w, i / w);
+                                let neighbor = |dx: isize, dz: isize| {
+                                    let (nx, nz) = (x as isize + dx, z as isize + dz);
+                                    if nx < 0 || nz < 0 || nx >= w as isize || nz >= h as isize {
+                                        *y
+                                    } else {
+                                        values[nz as usize * w + nx as usize]
+                                    }
+                                };
+                                let edge = if *y < -900000. {
+                                    [0.; 2]
+                                } else {
+                                    surface_core::edge_relief_reference(
+                                        *y,
+                                        [
+                                            neighbor(-1, 0),
+                                            neighbor(1, 0),
+                                            neighbor(0, -1),
+                                            neighbor(0, 1),
+                                        ],
+                                        direction,
+                                        if n == 4 {
+                                            [0.; 2]
+                                        } else {
+                                            uv.map(|v| v - 0.03)
+                                        },
+                                        if n == 4 {
+                                            [1.; 2]
+                                        } else {
+                                            uv.map(|v| v + 0.03)
+                                        },
+                                        relief_width,
+                                    )
+                                };
+                                for (k, expected) in edge.iter().enumerate() {
+                                    assert!(
+                                        (actual[(i * 5 + n) * 4 + 1 + k] - expected).abs() < 1e-5,
+                                        "relief {kind}, azimuth={azimuth}, width={relief_width}, cell={i}, sample={n}, channel={k}"
+                                    );
+                                }
                             }
                         }
                         drop(mapped);

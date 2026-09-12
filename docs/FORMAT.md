@@ -97,6 +97,19 @@ formulas, but uses the corrected shadow model. Both detail and overview passes
 share the same WGSL appearance functions. Shadow strength and color treatment
 only regenerate resident overview colors, not the height hierarchy.
 
+Procedural terrain-edge relief reads two immediate up-sun height neighbors from
+the same complete hierarchy, including across region boundaries. A higher
+receiver gets an upper rim; a lower receiver gets contact shade. Equal or unknown
+neighbors contribute nothing. Sun-direction components weight the two bands;
+their intersection receives an extra corner accent. Band/pixel overlap is
+integrated analytically, with width in block units, including the whole-block
+footprint used by overviews. No new vertex, per-block mesh or height buffer is
+needed. Water receivers are excluded. Highlights brighten the base color before
+cast-shadow multiplication, then independent contact shade darkens the result.
+The shared camera/lighting uniform is now five vec4 values (80 bytes), including
+relief strength/width; the transport codec and published data format are unchanged.
+Changing relief settings rebuilds resident overview colors, not the height tree.
+
 Overview compute writes an RGBA texture from surface colors, overlays, water and
 shadow samples. Subsequent GPU compute passes box-filter premultiplied levels.
 The viewer selects/blends overview levels below one pixel per block. No overview
@@ -104,8 +117,8 @@ images are exported. Region-edge filtering is local to each region, not a global
 texture; very coarse transitions are an acknowledged prototype approximation.
 
 Block borders use fragment derivatives and procedural fractional coordinates,
-fade with zoom, and require no per-block geometry. Elevation contours are not
-drawn. Overview lighting is cached. Grid toggles only
+fade with zoom, and require no per-block geometry. Terrain relief shades height
+discontinuities, not separate contour-line geometry. Overview lighting is cached. Grid toggles only
 redraw; shadow toggles regenerate resident overview colors. The resident budget
 includes the complete height hierarchy. LRU eviction prefers
 nonvisible regions and destroys their GPU resources; loading stays two requests
