@@ -166,6 +166,19 @@ fn unchanged_newer_live_observation_wins_over_backup() {
             .is_err()
     );
 }
+
+#[test]
+fn a_superseded_repair_boundary_still_cannot_replace_newer_observations() {
+    let (dir, mut s) = seeded();
+    let old = s.boundary().unwrap();
+    s.ingest(&observation(1, old.created_ms + 1, 32), old.created_ms + 2)
+        .unwrap();
+    let _new = s.boundary().unwrap();
+    fixture(&dir.path().join("old"), 48);
+    let result = s.seed(&dir.path().join("old"), None, Some(&old)).unwrap();
+    assert_eq!(result["newer_live_preserved"], json!(1));
+    assert_eq!(current_height(&s), 32);
+}
 #[test]
 fn new_chunks_empty_columns_and_catalog_ids_are_stable() {
     let (_dir, mut s) = seeded();

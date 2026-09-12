@@ -575,8 +575,8 @@ impl Store {
             ensure!(
                 b.world_id == meta::<String>(&tx, "world_id")?
                     && b.generation == meta::<String>(&tx, "generation")?
-                    && b.created_ms == recorded.created_ms
-                    && b.observation == recorded.observation,
+                    && b.created_ms <= recorded.created_ms
+                    && b.observation <= recorded.observation,
                 "wrong repair dataset"
             );
         }
