@@ -34,6 +34,10 @@
   "two_real_players_verified": true,
   "production_client_platforms": ["iPad", "iPhone"],
   "production_switch_verified": false,
+  "production_collector_outage_seconds": 390,
+  "production_outage_game_unchanged": true,
+  "production_outage_browser_recovered": true,
+  "production_alert_dedup_recovery_verified": true,
   "updater_integration_installed": true,
   "production_adoption_verified": true
 }

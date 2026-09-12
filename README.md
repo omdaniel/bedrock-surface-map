@@ -5,8 +5,9 @@ losslessly compressed surface attributes; WebAssembly and wgpu draw the map in
 the browser with WGSL. Optional live-player tracking uses a separate collector
 and DOM overlay; terrain stays offline. No Vello, image-map tiles or streaming desktop.
 
-The new Players button is at the right of the toolbar. Its live feed is not yet
-enabled on Survival; see [tracking status and deployment gates](docs/TRACKING.md).
+The Players button is at the right of the toolbar. The operator-configured LAN
+HTTPS viewer now shows Survival's live roster and markers; other map snapshots
+remain unbound. See [tracking status and recovery boundaries](docs/TRACKING.md).
 
 ## Run on this Mac
 

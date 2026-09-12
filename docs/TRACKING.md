@@ -163,6 +163,19 @@ sample-to-browser p50 1,015 ms, p95 1,847 ms, maximum 1,949 ms, and zero terrain
 redraws. This is not measured in-game-action latency and depends on clock alignment.
 The two retail clients were iPad and iPhone; neither is a Switch acceptance result.
 
+The production collector was then stopped for 390 seconds using the guarded VM
+test. The observer saw stale positions expire 19,999 ms after the stale state,
+with zero terrain redraws. It recovered to a fresh empty roster without reloading
+(the real players had disconnected). This proves feed recovery, not a new real
+player join. Bedrock retained its process identity and passed 78 health checks.
+Existing Telegram monitoring recorded one warning after five minutes, no duplicate
+on the next check, and one recovery. No location history was saved.
+
+`node scripts/check-tracking-outage.mjs` is a read-only browser observer for that
+test. Start it with a live player before the separately authorized VM test; it
+does not stop services itself. Deployment's `tracking/OPERATIONS.md` documents
+the guarded collector stop, independent recovery timer and notification checks.
+
 Local synthetic checks cover protocol rejection/expiry/restarts, pack cadence and
 failed reads, proxy boundaries, safe labels, center/follow/navigation, mobile
 layout and stationary terrain draw counts. The full existing renderer suite also
