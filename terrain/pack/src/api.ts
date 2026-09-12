@@ -3,9 +3,9 @@ import {
   type Dimension,
   type Block as GameBlock,
 } from "@minecraft/server";
-import type { Access, Block, Rules } from "./core.js";
+import type { Access, Block } from "./core.js";
 
-export function surfaceAccess(dimension: Dimension, rules: Rules) {
+export function surfaceAccess(dimension: Dimension) {
   let queries = 0;
   const describe = (b: GameBlock | undefined): Block | undefined => {
     if (!b) return undefined;
@@ -26,18 +26,30 @@ export function surfaceAccess(dimension: Dimension, rules: Rules) {
       return dimension.isChunkLoaded({ x, y: 64, z });
     },
     top: (x, z) => {
-      // BDS's height-map query omits liquids and thin blocks. A bounded, exact
-      // volume query includes them and throws rather than concealing unloading.
+      // Unlike getTopmostBlock, the filtered downward query includes liquids and
+      // passable blocks. Check the ceiling separately: getBlockBelow excludes it.
+      const ceiling = dimension.heightRange.max;
       queries++;
       const blocks = dimension.getBlocks(
-        new BlockVolume({ x, y: access.minimum, z }, { x, y: 319, z }),
+        new BlockVolume({ x, y: ceiling - 1, z }, { x, y: ceiling, z }),
         { excludeTypes: ["minecraft:air"] },
         false,
       );
       let highest = -Infinity;
       for (const location of blocks.getBlockLocationIterator())
         highest = Math.max(highest, location.y);
-      return Number.isFinite(highest) ? read(x, highest, z) : undefined;
+      if (Number.isFinite(highest)) return read(x, highest, z);
+      queries++;
+      return describe(
+        dimension.getBlockBelow(
+          { x, y: ceiling - 1, z },
+          {
+            includeLiquidBlocks: true,
+            includePassableBlocks: true,
+            maxDistance: ceiling - access.minimum,
+          },
+        ),
+      );
     },
     block: read,
     biome: (x, y, z) => {
@@ -45,8 +57,6 @@ export function surfaceAccess(dimension: Dimension, rules: Rules) {
       return dimension.getBiome({ x, y, z }).id;
     },
   };
-  // The shared scanner handles invisible block types during descent.
-  void rules;
   return {
     access,
     reset: () => {

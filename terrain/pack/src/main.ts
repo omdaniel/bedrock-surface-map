@@ -106,7 +106,7 @@ system.runInterval(() => {
   if (!loaded) return;
   const begin = Date.now(),
     dimension = world.getDimension("overworld");
-  reader ??= surfaceAccess(dimension, rules);
+  reader ??= surfaceAccess(dimension);
   reader.reset();
   try {
     while (reader.queries <= 253 && Date.now() - begin < 1) {

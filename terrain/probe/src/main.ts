@@ -38,7 +38,7 @@ system.runInterval(() => {
   if (!ready || busy || Date.now() - last < 2000) return;
   try {
     const d = world.getDimension("overworld");
-    reader ??= surfaceAccess(d, rules);
+    reader ??= surfaceAccess(d);
     reader.reset();
     job ??= scan(reader.access, rules, 0, 0, Date.now);
     const start = Date.now();
@@ -97,6 +97,7 @@ async function send(sample: Sample) {
           columns: sample.chunk.columns.length,
           scan_ms: sample.end - sample.start,
           errors,
+          height_range: world.getDimension("overworld").heightRange,
         }),
     );
   } catch {
