@@ -58,8 +58,9 @@ the snapshot and recreates GPU resources.
 | `surface-gpu` | WASM ABI, GPU residency, compute shadows/overviews, WGSL drawing |
 | `web/src` | Worker transport, bounded visible-region cache, navigation, picking, diagnostics |
 
-See [import safety and commands](docs/IMPORT.md), [format and rendering](docs/FORMAT.md)
-and [verification results](docs/VERIFICATION.md).
+See [import safety and commands](docs/IMPORT.md), [format and rendering](docs/FORMAT.md),
+[verification results](docs/VERIFICATION.md) and the
+[uNmINeD/BedrockMap visual comparison](docs/VISUAL-COMPARISON.md).
 
 ## Verify
 

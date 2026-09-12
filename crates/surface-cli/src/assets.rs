@@ -153,7 +153,17 @@ pub fn prepare(
             result = Some(check);
             m.approximate = true;
         }
-        images.push(result.unwrap());
+        let mut img = result.unwrap();
+        if m.name == "leaf_litter" {
+            // Mojang's grayscale texture needs dry-foliage tint. Use a declared
+            // fixed approximation until climate-specific dry-foliage colors exist.
+            for p in img.pixels_mut() {
+                for (c, tint) in [184u16, 133, 66].into_iter().enumerate() {
+                    p[c] = (p[c] as u16 * tint / 255) as u8;
+                }
+            }
+        }
+        images.push(img);
     }
     unknown.sort();
     unknown.dedup();

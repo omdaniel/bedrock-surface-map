@@ -1,7 +1,9 @@
 # Verification Checkpoint
 
 Measured locally on September 11, 2026: Apple M1 Pro, 16 GiB RAM, macOS 26.3.
-These are prototype measurements, not a comparison against uNmINeD.
+These are prototype measurements, not a speed comparison against uNmINeD.
+The separate [visual comparison](VISUAL-COMPARISON.md) records geographic and
+appearance checks against uNmINeD and the user's BedrockMap render.
 
 ## Checkpoints
 
@@ -26,19 +28,23 @@ SHA-256 before and after extraction:
 | Material/state catalog entries | 366, including the diagnostic sentinel |
 | Unresolved encountered texture names | 0 |
 | Raw-block sample checks | 832 passed |
-| Region objects | 4,731,910 bytes |
-| Region bytes per present column | 1.40488 |
-| Complete compressed shadow heightfield | 736,100 bytes |
-| Atlas | 265,756 bytes |
-| Manifest | 173,002 bytes |
-| Total above derived data | 5,906,768 bytes |
-| Latest extraction stage | 10.367 seconds |
-| Latest complete import | 11.543 seconds |
-| Latest peak importer RSS | 412,418,048 bytes (393.3 MiB) |
-| Native shared-decoder benchmark | 0.175 seconds for 64 regions |
+| Region objects | 4,767,998 bytes |
+| Region bytes per present column | 1.41560 |
+| Complete compressed shadow heightfield | 709,165 bytes |
+| Atlas | 265,201 bytes |
+| Manifest | 172,987 bytes |
+| Total above derived data | 5,915,351 bytes |
+| Latest extraction stage | 12.567 seconds |
+| Latest complete import | 13.736 seconds |
+| Latest peak importer RSS | 426,475,520 bytes (406.7 MiB) |
+| Native shared-decoder benchmark | 0.152 seconds for 64 regions |
 | Identical content objects reused | 66; modification times unchanged |
 
-Earlier complete runs took 11.9-12.6 seconds; peak RSS varied roughly 375-440 MiB.
+After the visual-reference correction, leaf litter is retained as an overlay
+over its actual supporting block. The extra cached per-chunk support queries
+raised import time from roughly 11.5-12.6 to 13.7-14.0 seconds; two corrected runs
+peaked at 374.1 and 406.7 MiB RSS. The lossless codec still round-trips every
+retained field. All 832 raw-block samples and all 66 reuse checks still pass.
 These are fresh archive extraction runs with cached assets and warm OS caches,
 not a disk-cache-flushed benchmark. Compilation and the initial approximately
 151 MB Mojang samples download are separate. The source archive is not modified.
@@ -57,10 +63,10 @@ Final five-second controlled-pan samples, after map data loaded:
 | Animation frames / submitted draws | 600 / 600 | 300 / 300 |
 | Median frame interval | 8.3 ms | 17 ms |
 | 95th percentile interval | 9.0 ms | 18 ms |
-| Maximum interval | 9.4 ms | 24 ms |
+| Maximum interval | 10.4 ms | 24 ms |
 | Approximate navigation cadence | 120 Hz | 60 Hz |
-| First populated frame, final run | 1,357 ms | 197 ms |
-| Accumulated worker decoding | 308 ms | 239 ms |
+| First populated frame, final run | 196 ms | 197 ms |
+| Accumulated worker decoding | 275 ms | 239 ms |
 | Resident map accounting | 204.55 MiB | 204.55 MiB |
 
 Frame intervals measure requestAnimationFrame navigation cadence while submitting
@@ -68,12 +74,18 @@ draws, NOT GPU timestamp-query execution time. This meets the requested short
 1080p DPR-1 navigation target in Chrome; it is not a guarantee for every browser,
 long-duration workload or hardware configuration. Safari used a larger backing
 resolution, so those frame-time rows are not an equal-resolution comparison.
+Chrome was rerun after the leaf-litter import correction with all 64 regions and
+no page errors. Safari's timings predate that data-only correction; its corrected
+dataset was subsequently checked visually in native Safari without enabling
+remote automation again.
 
 First-frame latency starts at frontend module initialization and ends at the
 next animation frame after wgpu reports completion of the first populated draw.
 It excludes navigation/module transfer before initialization and is not a
 physical display scanout measurement. Browser/OS shader and file caches were
-not flushed; Safari reused an existing browser process. Earlier upload-only
+not flushed; Safari reused an existing browser process. An earlier Chrome run
+took 1,357 ms to first populated frame, so the final 196 ms warm result is not a
+promise of cold-start latency. Earlier upload-only
 latency readings were discarded as overly optimistic.
 
 Validation included real textures, water/depth appearance, canopy surfaces,
@@ -92,9 +104,10 @@ Safari remote automation was enabled temporarily for the test and restored off.
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
-- Ten Rust tests: exact constant/mixed codec round trips, negative coordinates,
+- Eleven Rust tests: exact constant/mixed codec round trips, negative coordinates,
   missing coverage, corrupt/truncated payloads, decompression/window bounds,
-  archive path/symlink rejection, CPU shadow geometry and GPU equivalence.
+  archive path/symlink rejection, leaf-litter support/overlay semantics, CPU
+  shadow geometry and GPU equivalence.
 - GPU fixtures independently compare flat terrain, isolated 10-block column,
   terraces, and a missing sample at a 256-column region boundary.
 - Six Playwright tests: expected terrain/water pixels, picking, drag/wheel,

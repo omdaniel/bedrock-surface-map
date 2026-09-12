@@ -2,8 +2,9 @@ use anyhow::{Context, Result, ensure};
 use bedrock_world::nbt::NbtTag;
 use bedrock_world::{
     BedrockWorld, BlockPos, BlockState, ChunkLoadOptions, Dimension, ExactSurfaceBiomeLoad,
-    ExactSurfaceSubchunkPolicy, OpenOptions, TerrainColumnBiome, WorldScanOptions,
-    WorldThreadingOptions,
+    ExactSurfaceSubchunkPolicy, OpenOptions, SubChunk, SubChunkDecodeMode, TerrainColumnBiome,
+    TerrainColumnOverlay, TerrainColumnSample, TerrainSurfaceRole, WorldScanOptions,
+    WorldThreadingOptions, terrain_surface_role,
 };
 use std::{collections::BTreeMap, path::Path};
 use surface_core::{Material, SurfaceRegion};
@@ -36,6 +37,9 @@ pub fn top_height(state: &BlockState, y: i16) -> Result<i16> {
     }
     if state.name.ends_with(":snow_layer") {
         fraction = 2 * (value(state, "height").parse::<i32>().unwrap_or(0) + 1).clamp(1, 8);
+    }
+    if state.name.ends_with(":leaf_litter") {
+        fraction = 1;
     }
     i16::try_from(y as i32 * 16 + fraction).context("surface height outside encoding range")
 }
@@ -93,12 +97,36 @@ fn interner(
         name: name.clone(),
         texture: name.clone(),
         tint,
-        approximate: name.contains("stairs") || name.contains("fence") || name.contains("glass"),
+        approximate: name.contains("stairs")
+            || name.contains("fence")
+            || name.contains("glass")
+            || name == "leaf_litter",
         uv: [0.; 4],
         average: [0.; 4],
     });
     ids.insert(key, id);
     Ok(id)
+}
+
+fn retain_leaf_litter(sample: &mut TerrainColumnSample, below: BlockState) -> Result<()> {
+    ensure!(
+        terrain_surface_role(&below.name) == TerrainSurfaceRole::Primary
+            && below.name != "minecraft:leaf_litter",
+        "leaf litter is not supported by a solid surface"
+    );
+    sample.overlay.get_or_insert(TerrainColumnOverlay {
+        y: sample.surface_y,
+        block_state: sample.surface_block_state.clone(),
+        source: sample.source,
+    });
+    sample.surface_y = sample
+        .surface_y
+        .checked_sub(1)
+        .context("leaf litter height underflow")?;
+    sample.surface_block_state = below.clone();
+    sample.relief_y = sample.surface_y;
+    sample.relief_block_state = below;
+    Ok(())
 }
 
 // Bounded vanilla-biome palette, not a claim of exact Minecraft climate blending.
@@ -185,10 +213,42 @@ pub fn extract(path: &Path) -> Result<Extraction> {
                 .entry((rx, rz))
                 .or_insert_with(|| SurfaceRegion::empty(rx, rz));
             let samples = chunk.column_samples.context("surface samples missing")?;
+            // Released 0.3.5 treats leaf litter as solid. Decode each needed layer
+            // once per chunk to retain the real supporting block under this overlay.
+            let mut layers = BTreeMap::<i16, SubChunk>::new();
             for z in 0..16u8 {
                 for x in 0..16u8 {
                     let Some(c) = samples.get(x, z) else {
                         continue;
+                    };
+                    let mut adjusted;
+                    let c = if c.surface_block_state.name == "minecraft:leaf_litter" {
+                        let y = c
+                            .surface_y
+                            .checked_sub(1)
+                            .context("leaf litter height underflow")?;
+                        let sy = y.div_euclid(16);
+                        if let std::collections::btree_map::Entry::Vacant(entry) = layers.entry(sy)
+                        {
+                            entry.insert(
+                                world
+                                    .get_subchunk_layer_blocking(
+                                        chunk.pos,
+                                        y as i32,
+                                        SubChunkDecodeMode::FullIndices,
+                                    )?
+                                    .context("leaf litter support subchunk missing")?,
+                            );
+                        }
+                        let below = layers[&sy]
+                            .block_state_at(x, y.rem_euclid(16) as u8, z)
+                            .context("leaf litter supporting block missing")?
+                            .clone();
+                        adjusted = c.clone();
+                        retain_leaf_litter(&mut adjusted, below)?;
+                        &adjusted
+                    } else {
+                        c
                     };
                     let ix = chunk.pos.x.rem_euclid(16) as usize * 16 + x as usize;
                     let iz = chunk.pos.z.rem_euclid(16) as usize * 16 + z as usize;
@@ -265,5 +325,34 @@ mod tests {
         assert_eq!(top_height(&state, -1).unwrap(), -8);
         assert_eq!((-1i32).div_euclid(16), -1);
         assert_eq!((-1i32).rem_euclid(16), 15);
+    }
+
+    #[test]
+    fn leaf_litter_retains_support_and_thin_overlay() {
+        let litter = BlockState {
+            name: "minecraft:leaf_litter".into(),
+            states: BTreeMap::new(),
+            version: None,
+        };
+        let below = BlockState {
+            name: "minecraft:grass_block".into(),
+            ..litter.clone()
+        };
+        let mut sample = TerrainColumnSample {
+            surface_y: -16,
+            surface_block_state: litter.clone(),
+            relief_y: -16,
+            relief_block_state: litter.clone(),
+            overlay: None,
+            water: None,
+            biome: None,
+            source: bedrock_world::TerrainSampleSource::Subchunk,
+        };
+        retain_leaf_litter(&mut sample, below.clone()).unwrap();
+        assert_eq!(sample.surface_y, -17);
+        assert_eq!(sample.surface_block_state, below);
+        assert_eq!(sample.overlay.as_ref().unwrap().block_state, litter);
+        assert_eq!(top_height(&litter, -16).unwrap(), -255);
+        assert!(retain_leaf_litter(&mut sample, litter).is_err());
     }
 }

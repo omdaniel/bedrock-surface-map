@@ -1,0 +1,10 @@
+{
+  "purpose": "Optional local visual reference only; not used by the app or CI",
+  "version": "0.20.8-dev+0ab4b8eb0ca4089c019007774d4d05744d641b2d",
+  "platform": "macOS ARM64",
+  "download_page": "https://unmined.net/downloads/",
+  "observed_download_url": "https://unmined.net/download/unmined-cli-macos-arm64-dev/?tmstv=1788133595",
+  "archive_sha256": "a7d6456a56ba0ca876665d76a6f027482d9200bf498a77db3ecf65afd80e1d1b",
+  "license": "https://unmined.net/license/",
+  "note": "The DEV download endpoint can change. Verify the hash; do not silently treat a newer binary as this measured reference. Do not redistribute the binary."
+}
