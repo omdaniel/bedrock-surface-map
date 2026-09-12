@@ -1,4 +1,4 @@
-import { system, world, type Block as GameBlock } from "@minecraft/server";
+import { system, world } from "@minecraft/server";
 import { variables, secrets } from "@minecraft/server-admin";
 import {
   http,
@@ -6,15 +6,9 @@ import {
   HttpRequest,
   HttpRequestMethod,
 } from "@minecraft/server-net";
-import {
-  scan,
-  WorkQueue,
-  Outbox,
-  UNKNOWN,
-  type Block,
-  type Sample,
-} from "./core.js";
+import { scan, WorkQueue, Outbox, UNKNOWN, type Sample } from "./core.js";
 import rules from "./rules.js";
+import { surfaceAccess } from "./api.js";
 
 const worldId = variables.get("world_id"),
   generation = variables.get("generation"),
@@ -49,13 +43,7 @@ let current:
   { job: Generator<void, Sample>; cx: number; cz: number } | undefined;
 let discovery: Array<[number, number]> = [],
   discoveryIndex = 0;
-const describe = (b: GameBlock | undefined): Block | undefined =>
-  b
-    ? {
-        y: b.y,
-        material: { name: b.typeId, states: b.permutation.getAllStates() },
-      }
-    : undefined;
+let reader: ReturnType<typeof surfaceAccess> | undefined;
 function mark(x: number, z: number) {
   queue.mark(Math.floor(x / 16), Math.floor(z / 16), Date.now(), true);
 }
@@ -118,44 +106,29 @@ system.runInterval(() => {
   if (!loaded) return;
   const begin = Date.now(),
     dimension = world.getDimension("overworld");
-  let calls = 0;
+  reader ??= surfaceAccess(dimension, rules);
+  reader.reset();
   try {
-    while (calls < 256 && Date.now() - begin < 1) {
+    while (reader.queries <= 253 && Date.now() - begin < 1) {
       if (!current) {
         const next = queue.take(Date.now(), ++work % 4 === 0);
         if (next)
           current = {
             cx: next.cx,
             cz: next.cz,
-            job: scan(
-              {
-                minimum: dimension.heightRange.min,
-                loaded: (x, z) => dimension.isChunkLoaded({ x, y: 64, z }),
-                top: (x, z) => describe(dimension.getTopmostBlock({ x, z })),
-                block: (x, y, z) => describe(dimension.getBlock({ x, y, z })),
-                biome: (x, y, z) => dimension.getBiome({ x, y, z }).id,
-              },
-              rules,
-              next.cx,
-              next.cz,
-              Date.now,
-            ),
+            job: scan(reader.access, rules, next.cx, next.cz, Date.now),
           };
         else if (discoveryIndex < discovery.length) {
           const [cx, cz] = discovery[discoveryIndex++],
             key = `${cx},${cz}`;
-          calls++;
-          reads++;
           if (
             (due.get(key) ?? 0) <= Date.now() &&
-            dimension.isChunkLoaded({ x: cx * 16, y: 64, z: cz * 16 })
+            reader.access.loaded(cx * 16, cz * 16)
           )
             queue.mark(cx, cz, Date.now());
           continue;
         } else break;
       }
-      calls++;
-      reads++;
       const result = current.job.next();
       if (result.done) {
         outbox.offer(result.value);
@@ -169,6 +142,7 @@ system.runInterval(() => {
     if (current) queue.mark(current.cx, current.cz, Date.now() + 5000);
     current = undefined;
   }
+  reads += reader.queries;
   void publish();
 }, 1);
 async function publish() {

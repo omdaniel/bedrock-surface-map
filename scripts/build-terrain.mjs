@@ -26,7 +26,7 @@ let probe = await readFile(
 );
 probe = probe.replaceAll("../../pack/src/", "./");
 await writeFile(".local/terrain/probe/scripts/main.js", probe);
-for (const file of ["core.js", "rules.js"])
+for (const file of ["core.js", "rules.js", "api.js"])
   await copyFile(
     `${output}/scripts/${file}`,
     `.local/terrain/probe/scripts/${file}`,

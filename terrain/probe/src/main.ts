@@ -6,7 +6,8 @@ import {
   HttpRequestMethod,
   HttpHeader,
 } from "@minecraft/server-net";
-import { scan, type Sample, type Block } from "../../pack/src/core.js";
+import { scan, type Sample } from "../../pack/src/core.js";
+import { surfaceAccess } from "../../pack/src/api.js";
 import rules from "../../pack/src/rules.js";
 
 const endpoint = variables.get("terrain_url"),
@@ -29,6 +30,7 @@ let sequence = 0,
   job: Generator<void, Sample> | undefined,
   last = 0,
   errors = 0;
+let reader: ReturnType<typeof surfaceAccess> | undefined;
 world.afterEvents.worldLoad.subscribe(() => {
   ready = true;
 });
@@ -36,28 +38,11 @@ system.runInterval(() => {
   if (!ready || busy || Date.now() - last < 2000) return;
   try {
     const d = world.getDimension("overworld");
-    const block = (b: ReturnType<typeof d.getBlock>): Block | undefined =>
-      b
-        ? {
-            y: b.y,
-            material: { name: b.typeId, states: b.permutation.getAllStates() },
-          }
-        : undefined;
-    job ??= scan(
-      {
-        minimum: d.heightRange.min,
-        loaded: (x, z) => d.isChunkLoaded({ x, y: 64, z }),
-        top: (x, z) => block(d.getTopmostBlock({ x, z })),
-        block: (x, y, z) => block(d.getBlock({ x, y, z })),
-        biome: (x, y, z) => d.getBiome({ x, y, z }).id,
-      },
-      rules,
-      0,
-      0,
-      Date.now,
-    );
+    reader ??= surfaceAccess(d, rules);
+    reader.reset();
+    job ??= scan(reader.access, rules, 0, 0, Date.now);
     const start = Date.now();
-    for (let i = 0; i < 256 && Date.now() - start < 1; i++) {
+    while (reader.queries <= 253 && Date.now() - start < 1) {
       const result = job.next();
       if (result.done) {
         job = undefined;
