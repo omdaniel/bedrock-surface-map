@@ -38,6 +38,37 @@ npm run dev
 Open `http://127.0.0.1:5173/?map=/maps/fixture/manifest.json` for the synthetic map.
 This route and the real map use exactly the same codec, worker and renderer.
 
+## LAN Preview
+
+WebGPU requires a secure context; plain HTTP on a LAN IP is not sufficient.
+For a temporary preview on a trusted home network, install
+[mkcert](https://github.com/FiloSottile/mkcert), build, and bind to this Mac's
+current LAN IPv4 address:
+
+```sh
+brew install mkcert
+npm run build
+npm run serve:lan -- --host 192.168.68.110
+```
+
+Open `https://192.168.68.110:8443/` from the same LAN. This serves only `web/dist`,
+not the development checkout, raw world, or `.local` directory. The ordinary
+loopback dev server can keep running. Rebuild and restart to publish source
+changes. The address may change with DHCP. Stop the LAN process with Ctrl+C.
+There is no login or public tunnel; any device that can reach this LAN address
+can download the derived map. Keep the Mac awake while viewing.
+
+Certificates are generated under ignored `.local/lan`, using a project-specific
+CA. The command does not install trust or modify any system trust store.
+On the viewing device, download the **public certificate only** from
+`http://192.168.68.110:8444/bedrock-surface-map-ca.crt` and trust it for HTTPS.
+For iPhone/iPad: install the downloaded profile in Settings, then enable its
+full trust under General > About > Certificate Trust Settings. Remove the
+profile when testing is finished. A desktop browser may instead offer a
+temporary certificate exception. Never distribute `rootCA-key.pem` or
+`server-key.pem`; neither is exposed by the server. Port 8444 serves only the
+public certificate, not the app or a directory listing.
+
 ## Interaction
 
 Drag to pan; wheel or pinch to zoom. The toolbar provides fit-world, spawn,

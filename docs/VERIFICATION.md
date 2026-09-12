@@ -336,6 +336,27 @@ checks but exposed a race in the existing idle test: a final queued draw arrived
 after its fixed 200 ms settling delay. The test now waits for region loading and
 two animation-frame boundaries before starting its unchanged zero-redraw check.
 
+## LAN HTTPS Preview, September 12, 2026
+
+Added opt-in `npm run serve:lan -- --host <private-LAN-IPv4>` using Vite's
+static preview server and mkcert 1.4.4. The existing loopback development server
+is unchanged. The preview binds only the explicitly supplied local RFC1918
+address, serves `web/dist` over HTTPS on 8443, and exposes only its public CA
+certificate on the separate HTTP bootstrap endpoint on 8444. Keys remain under
+ignored `.local/lan` with private directory/key permissions. No trust store is
+changed automatically.
+
+Verified the certificate chain with curl and Node using the generated public CA.
+Verified the real manifest contains 64 regions and that requests for private-key,
+raw-world and Git paths cannot retrieve those files (Vite returns the app HTML
+for unknown routes). The HTTP endpoint returns 404 for a private-key request.
+An isolated real Chrome session at 1024 x 768, DPR 1, with its certificate
+exception explicitly enabled, confirmed a secure context, WebGPU, all 64 regions
+resident, 2,072 distinct sampled canvas colors and zero page errors. The capture
+is ignored under `.local/lan`. This is not iPad hardware verification; iPad Safari
+requires installing and trusting the public CA before the user performs that
+test. Remove the certificate profile from the client when testing is finished.
+
 ## Remaining Limits
 
 No live updates, players, public hosting, authentication or homelab deployment.
