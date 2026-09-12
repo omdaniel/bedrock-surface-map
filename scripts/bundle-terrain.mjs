@@ -7,7 +7,7 @@ const run = (cmd, args, options = {}) =>
 if (run("git", ["status", "--porcelain"]).trim())
   throw Error("Bundle only a clean committed checkout");
 const commit = run("git", ["rev-parse", "HEAD"]).trim();
-if (!run("cargo", ["zigbuild", "--version"]).includes("0.20.1"))
+if (!run("cargo-zigbuild", ["--version"]).includes("0.20.1"))
   throw Error("cargo-zigbuild 0.20.1 required");
 const zig = process.env.CARGO_ZIGBUILD_ZIG_PATH ?? "python-zig";
 if (run(zig, ["version"]).trim() !== "0.15.2")
