@@ -27,10 +27,13 @@
     "timeout_ms": 1045
   },
   "full_candidate_seconds": 18.25,
-  "production_enabled": false,
+  "production_enabled": true,
+  "production_adopted_at": "2026-09-12T19:01:06Z",
   "retail_client_join_verified": true,
   "real_player_coordinates_verified": true,
-  "two_real_players_verified": false,
+  "two_real_players_verified": true,
+  "production_client_platforms": ["iPad", "iPhone"],
+  "production_switch_verified": false,
   "updater_integration_installed": true,
-  "production_adoption_verified": false
+  "production_adoption_verified": true
 }

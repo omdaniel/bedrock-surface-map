@@ -129,6 +129,76 @@ test("unbound snapshot has an honest player status and no requests", async ({
   await expect(page.locator(".players-status")).toContainText("No live feed");
   expect(requests).toBe(0);
 });
+test("unloaded terrain is distinct from a player outside the snapshot", async ({
+  page,
+}) => {
+  let sequence = 1;
+  await page.route("**/viewer-config.json", (route) =>
+    route.fulfill({
+      json: {
+        players: {
+          world_id: "fixture-world",
+          source_sha256: manifest.source_sha256,
+          url: "/api/v1/worlds/fixture-world/players",
+        },
+      },
+    }),
+  );
+  await page.route("**/*.bsm.zst", (route) =>
+    route.fulfill({ status: 503, body: "unavailable" }),
+  );
+  await page.route("**/api/v1/worlds/fixture-world/players", (route) => {
+    const snapshot = structuredClone(template);
+    snapshot.sequence = sequence++;
+    snapshot.sampled_at_ms = Date.now();
+    snapshot.players[0].position.x = -12;
+    snapshot.players[0].position.z = -12;
+    snapshot.players.push({
+      ...structuredClone(snapshot.players[0]),
+      id: "outside",
+      name: "OutsidePlayer",
+      position: { x: 1024, z: 1024, y: 64, heading: 0 },
+    });
+    return route.fulfill({
+      json: {
+        schema_version: 1,
+        world_id: "fixture-world",
+        status: "live",
+        age_ms: 0,
+        reason: null,
+        snapshot,
+      },
+    });
+  });
+  await page.goto("/?map=/maps/fixture/manifest.json");
+  await page.getByRole("button", { name: "Players", exact: true }).click();
+  await expect(page.locator(".player-detail").first()).toContainText(
+    "terrain not loaded",
+  );
+  await expect(page.locator(".player-detail").nth(1)).toContainText(
+    "outside mapped terrain",
+  );
+  for (const width of [1100, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    const message = await page.locator("#message").boundingBox();
+    const roster = await page.locator("#players-panel").boundingBox();
+    expect(message!.y + message!.height).toBeLessThanOrEqual(roster!.y);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page.screenshot({ path: "test-results/players-retry-mobile.png" });
+  await page.unroute("**/*.bsm.zst");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.locator(".player-detail").first()).not.toContainText(
+    "terrain not loaded",
+  );
+  await expect(page.locator(".player-detail").first()).not.toContainText(
+    "outside mapped terrain",
+  );
+});
 
 test("per-view disable never loads tracking configuration or positions", async ({
   page,

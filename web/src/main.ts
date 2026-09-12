@@ -66,6 +66,7 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("map");
 const main = canvas.parentElement!;
+app.insertBefore($("message"), main);
 let manifest: Manifest;
 let renderer: Renderer;
 let base: URL;
@@ -124,11 +125,19 @@ const playerLayer = new PlayerLayer({
     changed();
   },
   covered: (x, z) => {
-    const r = cache.get(`${Math.floor(x / 256)},${Math.floor(z / 256)}`);
+    const rx = Math.floor(x / 256),
+      rz = Math.floor(z / 256),
+      r = cache.get(`${rx},${rz}`);
+    if (!r)
+      return manifest?.regions.some(
+        (region) => region.rx === rx && region.rz === rz,
+      )
+        ? null
+        : false;
     const ix =
       (((Math.floor(z) % 256) + 256) % 256) * 256 +
       (((Math.floor(x) % 256) + 256) % 256);
-    return !!r && r.pick[ix * 2] !== -32768;
+    return r.pick[ix * 2] !== -32768;
   },
 });
 worker.onmessage = ({ data: r }: MessageEvent<DecodeReply>) => {

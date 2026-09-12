@@ -11,21 +11,31 @@ It tests BDS HTTP URI/body/concurrency limits and request timeout using a dispos
 fresh world. Deployment mounts only `bundle/pack` in Survival; never register the
 diagnostic pack there. Neither pack contains a token or reads inventories/chat.
 
-## Current Release Gate
+## Current Deployment
 
 The application implements a player roster, compass markers, click-to-center/zoom,
-follow and a read-only LAN proxy. It is **not yet connected to Survival**. The
-default `viewer-config.json` deliberately disables tracking; a lack of telemetry
-is not represented as an empty, healthy server. Production experiment activation
-still requires explicit owner approval. Updater and monitoring integration are
-installed but not yet adopted in Survival. A real retail iPad joined the restored
-copy and its owner confirmed matching map/game coordinates. Two-player/Switch
-acceptance and iPad performance measurements remain separate gates in `runproxmox`.
+follow and a read-only LAN proxy. It is **connected to Survival** on the Mac HTTPS
+viewer after explicit owner approval on September 12. Pack 1.0.1/application
+`71d8e2b97ddcfdb4faf5ad13cfb4d8d543e73876` passed guarded activation after a fresh
+stopped-world backup was independently copied and SHA-verified on the Mac.
+The world is now experimental; disabling tracking does not undo that metadata.
+Survival, cheats, allowlist and normal access paths were preserved.
+
+The default static `viewer-config.json` still disables tracking for unbound maps;
+the operator-configured preview binds this specific terrain snapshot to
+`bedrock-survival`. Missing telemetry is never treated as a healthy empty server.
+Two simultaneous production players were verified; the owner identified their
+clients as iPad and iPhone. Both roster entries passed browser click-to-center
+checks. Switch-specific acceptance and controlled iPad performance measurements
+remain separate checks in `runproxmox`.
 
 The Players button is the people icon at the right of the map toolbar. Select a
 gamertag to center and zoom; the target button toggles follow. Manual navigation
 cancels follow. Nether/End players remain in the roster without Overworld markers.
 The map is an offline terrain snapshot even while players move.
+Known regions not yet downloaded say "terrain not loaded", distinct from missing
+snapshot coverage. Loading errors occupy their own status row so Retry remains
+reachable with the roster open, including on narrow screens.
 
 ## Application Contract
 
@@ -147,6 +157,11 @@ September 12 restored-copy observations, not production load claims:
   separate from marker overhead. No M4 iPad off/on benchmark has been recorded.
 
 ## Verification Boundaries
+
+Production two-player observation: 26 fresh snapshots in one stationary minute,
+sample-to-browser p50 1,015 ms, p95 1,847 ms, maximum 1,949 ms, and zero terrain
+redraws. This is not measured in-game-action latency and depends on clock alignment.
+The two retail clients were iPad and iPhone; neither is a Switch acceptance result.
 
 Local synthetic checks cover protocol rejection/expiry/restarts, pack cadence and
 failed reads, proxy boundaries, safe labels, center/follow/navigation, mobile

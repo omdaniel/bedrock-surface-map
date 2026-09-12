@@ -27,7 +27,7 @@ interface Options {
   nav: HTMLElement;
   camera: () => Camera;
   center: (x: number, z: number, zoom: boolean) => void;
-  covered: (x: number, z: number) => boolean;
+  covered: (x: number, z: number) => boolean | null;
 }
 interface Entry {
   player: LivePlayer;
@@ -341,8 +341,18 @@ export class PlayerLayer {
         p.dimension?.replace("minecraft:", "").replaceAll("_", " ") ??
         "unknown dimension";
       const pos = p.position;
+      const coverage =
+        pos && p.dimension === "minecraft:overworld"
+          ? this.options.covered(pos.x, pos.z)
+          : true;
+      const terrain =
+        coverage === null
+          ? " / terrain not loaded"
+          : coverage === false
+            ? " / outside mapped terrain"
+            : "";
       e.detail.textContent = pos
-        ? `${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)} / ${dim}${p.dimension === "minecraft:overworld" && !this.options.covered(pos.x, pos.z) ? " / outside mapped terrain" : ""}`
+        ? `${Math.floor(pos.x)}, ${Math.floor(pos.y)}, ${Math.floor(pos.z)} / ${dim}${terrain}`
         : "Position unavailable";
       e.follow.disabled = !pos || p.dimension !== "minecraft:overworld";
       e.name.disabled = !pos || p.dimension !== "minecraft:overworld";
