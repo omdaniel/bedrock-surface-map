@@ -2,9 +2,9 @@ use anyhow::{Context, Result, ensure};
 use bedrock_world::nbt::NbtTag;
 use bedrock_world::{
     BedrockWorld, BlockPos, BlockState, ChunkLoadOptions, Dimension, ExactSurfaceBiomeLoad,
-    ExactSurfaceSubchunkPolicy, OpenOptions, SubChunk, SubChunkDecodeMode, TerrainColumnBiome,
-    TerrainColumnOverlay, TerrainColumnSample, TerrainSurfaceRole, WorldScanOptions,
-    WorldThreadingOptions, terrain_surface_role,
+    ExactSurfaceSubchunkPolicy, OpenOptions, ParsedBiomeStorage, SubChunk, SubChunkDecodeMode,
+    TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample, TerrainSurfaceRole,
+    WorldScanOptions, WorldThreadingOptions, terrain_surface_role,
 };
 use std::{collections::BTreeMap, path::Path};
 use surface_core::{Material, SurfaceRegion};
@@ -150,6 +150,40 @@ fn biome_tint(biome: u32) -> u32 {
         .map_or(&rules["default_tint"], |t| &t["rgb"])
         .as_u64()
         .unwrap() as u32
+}
+
+fn surface_biome(
+    storages: &BTreeMap<i32, ParsedBiomeStorage>,
+    sample: &TerrainColumnSample,
+    x: u8,
+    z: u8,
+) -> u32 {
+    let y = i32::from(
+        sample
+            .water
+            .as_ref()
+            .and_then(|w| w.underwater_y)
+            .unwrap_or(sample.relief_y),
+    );
+    let storage = storages
+        .get(&(y.div_euclid(16) * 16))
+        .or_else(|| storages.values().find(|s| s.y.is_none()));
+    // bedrock-world 0.3.5's surface helper filters ID 0, which is valid ocean.
+    // Read the already-decoded storage at the support height without that filter.
+    if let Some(s) = storage {
+        let local_y = s.y.map_or(0, |base| (y - base) as u8);
+        if let Some(id) = s.biome_id_at(x, local_y, z) {
+            return id;
+        }
+        if s.indices.is_none() && s.palette.len() == 1 {
+            return s.palette[0];
+        }
+        return u32::MAX;
+    }
+    match sample.biome {
+        Some(TerrainColumnBiome::Legacy(value)) => u32::from(value.biome_id),
+        _ => u32::MAX,
+    }
 }
 
 pub fn extract(path: &Path) -> Result<Extraction> {
@@ -311,10 +345,7 @@ fn extract_selected(
                     region.heights[i] = top_height(&c.surface_block_state, c.surface_y)?;
                     region.materials[i] =
                         interner(&c.surface_block_state, &mut ids, &mut materials)?;
-                    let biome = match c.biome {
-                        Some(TerrainColumnBiome::Id(id)) => id,
-                        _ => u32::MAX,
-                    };
+                    let biome = surface_biome(&chunk.biome_data, c, x, z);
                     region.biomes[i] = biome;
                     region.tints[i] = biome_tint(biome);
                     region.supports[i] = interner(&c.relief_block_state, &mut ids, &mut materials)?;
@@ -411,5 +442,35 @@ mod tests {
         assert_eq!(sample.overlay.as_ref().unwrap().block_state, litter);
         assert_eq!(top_height(&litter, -16).unwrap(), -255);
         assert!(retain_leaf_litter(&mut sample, litter).is_err());
+    }
+
+    #[test]
+    fn ocean_zero_is_valid_and_support_height_selects_the_biome_layer() {
+        let block = BlockState {
+            name: "minecraft:stone".into(),
+            states: BTreeMap::new(),
+            version: None,
+        };
+        let sample = TerrainColumnSample {
+            surface_y: 200,
+            surface_block_state: block.clone(),
+            relief_y: 200,
+            relief_block_state: block,
+            overlay: None,
+            water: None,
+            biome: Some(TerrainColumnBiome::Id(1)),
+            source: bedrock_world::TerrainSampleSource::Subchunk,
+        };
+        let storage = ParsedBiomeStorage {
+            y: Some(192),
+            palette: vec![0],
+            indices: Some(vec![0; 4096]),
+            counts: vec![4096],
+        };
+        assert_eq!(
+            surface_biome(&BTreeMap::from([(192, storage)]), &sample, 12, 0),
+            0
+        );
+        assert_eq!(surface_biome(&BTreeMap::new(), &sample, 12, 0), u32::MAX);
     }
 }

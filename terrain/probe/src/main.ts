@@ -51,8 +51,12 @@ system.runInterval(() => {
         break;
       }
     }
-  } catch {
+  } catch (error) {
     errors++;
+    if (errors <= 6)
+      console.warn(
+        "SURFACE_TERRAIN_PROBE read error: " + String(error).slice(0, 240),
+      );
     job = undefined;
     last = Date.now();
   }
