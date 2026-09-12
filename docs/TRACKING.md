@@ -84,7 +84,11 @@ on both a fresh world and the verified September 11 Survival export. Empty
 heartbeats, authentication, a 35-second collector outage/recovery, a real iPad
 join and matching positions passed. The disposable diagnostic pack also proved
 actual BDS URI/body/concurrency rejection and a 1.045-second timeout. The full
-fresh-world candidate gate, including those checks, took 19.46 seconds.
+fresh-world candidate gate, including those checks, took 19.46 seconds for pack
+1.0.0. Pack 1.0.1 adds disconnect-race isolation, passed the same gate in 18.25
+seconds, and restarted on the restored copy with fresh heartbeats. The reported
+retail iPad acceptance used 1.0.0; subsequent empty-copy checks are not another
+retail-client test. Artifact/source revisions are recorded separately.
 
 BDS 1.26.20 [renamed the permission to `force_tls`](https://learn.microsoft.com/en-us/minecraft/creator/documents/update1.26.20?view=minecraft-bedrock-stable).
 In the tested 1.26.45.1 runtime, including it with `false` still raised

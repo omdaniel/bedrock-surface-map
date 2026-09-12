@@ -2,8 +2,9 @@
   "audited_on": "2026-09-12",
   "bds_version": "1.26.45.1",
   "bds_zip_sha256": "b0db86098ee418a9bb226f6f3f51ff2be36542236839375627b29aef3dfa5cda",
-  "application_commit_tested": "0ec1de463bba1af850c0677cfcfaf704a8c632ff",
-  "pack_version": "1.0.0",
+  "application_commit_tested": "71d8e2b97ddcfdb4faf5ad13cfb4d8d543e73876",
+  "pack_version": "1.0.1",
+  "retail_copy_application_commit": "3a0269c0f5ed2166930dae2fb71cac8e7d107f15",
   "npm_declarations": {
     "@minecraft/server": "2.9.0",
     "@minecraft/server-net": "1.0.0-beta.1.26.40-stable",
@@ -25,7 +26,7 @@
     "timeout": "InternalHttpRequestError",
     "timeout_ms": 1045
   },
-  "full_candidate_seconds": 19.46,
+  "full_candidate_seconds": 18.25,
   "production_enabled": false,
   "retail_client_join_verified": true,
   "real_player_coordinates_verified": true,
