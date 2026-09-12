@@ -6,11 +6,22 @@ import { networkInterfaces } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { preview } from "vite";
+import { trackerProxy } from "./tracker-proxy.mjs";
 
 const { values } = parseArgs({
-  options: { host: { type: "string" } },
+  options: {
+    host: { type: "string" },
+    "players-origin": { type: "string" },
+    "world-id": { type: "string" },
+    "map-fingerprint": { type: "string" },
+  },
 });
 const host = values.host;
+const playerProxy = trackerProxy({
+  origin: values["players-origin"],
+  world: values["world-id"],
+  fingerprint: values["map-fingerprint"],
+});
 const localAddresses = Object.values(networkInterfaces())
   .flat()
   .filter(Boolean)
@@ -68,6 +79,16 @@ const certificateServer = createServer((request, response) => {
 });
 const viewer = await preview({
   configFile: resolve("vite.config.ts"),
+  plugins: playerProxy
+    ? [
+        {
+          name: "read-only-player-proxy",
+          configurePreviewServer(server) {
+            server.middlewares.use(playerProxy);
+          },
+        },
+      ]
+    : [],
   preview: {
     host,
     port: 8443,

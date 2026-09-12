@@ -14,6 +14,7 @@ import {
 } from "lucide";
 import type { Manifest, RegionRef, DecodeRequest, DecodeReply } from "./types";
 import { bindSunDial } from "./sun-dial";
+import { PlayerLayer } from "./players";
 import "./style.css";
 
 const DEFAULT_SUN_AZIMUTH = 330;
@@ -102,6 +103,33 @@ const pending = new Map<
 >();
 const worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), {
   type: "module",
+});
+const playerLayer = new PlayerLayer({
+  main,
+  nav: document.querySelector("nav")!,
+  camera: () => ({
+    cx,
+    cz,
+    scale,
+    width: main.clientWidth,
+    height: main.clientHeight,
+  }),
+  center: (x, z, close) => {
+    if (!renderer) return;
+    const targetScale = close ? Math.max(scale, 3) : scale;
+    if (cx === x && cz === z && targetScale === scale) return;
+    cx = x;
+    cz = z;
+    scale = targetScale;
+    changed();
+  },
+  covered: (x, z) => {
+    const r = cache.get(`${Math.floor(x / 256)},${Math.floor(z / 256)}`);
+    const ix =
+      (((Math.floor(z) % 256) + 256) % 256) * 256 +
+      (((Math.floor(x) % 256) + 256) % 256);
+    return !!r && r.pick[ix * 2] !== -32768;
+  },
 });
 worker.onmessage = ({ data: r }: MessageEvent<DecodeReply>) => {
   const p = pending.get(r.id);
@@ -287,6 +315,7 @@ function requestDraw() {
         reliefWidth,
       );
       draws++;
+      playerLayer.project();
       updateScale();
       updateMetrics();
     } catch (e) {
@@ -301,6 +330,7 @@ function changed() {
   requestDraw();
 }
 function fit() {
+  playerLayer.manualNavigation();
   if (!manifest) return;
   const [x, z, xx, zz] = manifest.bounds;
   cx = (x + xx) / 2;
@@ -316,6 +346,7 @@ function zoom(
   x = main.clientWidth / 2,
   y = main.clientHeight / 2,
 ) {
+  playerLayer.manualNavigation();
   const wx = cx + (x - main.clientWidth / 2) / scale,
     wz = cz + (y - main.clientHeight / 2) / scale;
   scale = Math.max(0.025, Math.min(80, scale * factor));
@@ -324,6 +355,7 @@ function zoom(
   changed();
 }
 function spawn() {
+  playerLayer.manualNavigation();
   cx = manifest.spawn[0];
   cz = manifest.spawn[2];
   scale = 3;
@@ -361,6 +393,7 @@ function centroid() {
   };
 }
 canvas.onpointerdown = (e) => {
+  playerLayer.manualNavigation();
   canvas.setPointerCapture(e.pointerId);
   points.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
   previous = centroid();
@@ -396,6 +429,7 @@ canvas.addEventListener(
   { passive: false },
 );
 canvas.onkeydown = (e) => {
+  playerLayer.manualNavigation();
   const delta = 80 / scale;
   if (e.key === "ArrowLeft") cx -= delta;
   else if (e.key === "ArrowRight") cx += delta;
@@ -422,6 +456,7 @@ $("sun").onclick = () => {
   requestDraw();
 };
 $("lighting-toggle").onclick = () => {
+  playerLayer.close();
   const show = $("lighting").hidden;
   $("lighting").hidden = !show;
   $("lighting-toggle").setAttribute("aria-expanded", String(show));
@@ -465,6 +500,7 @@ $("color-treatment").onchange = () => {
 };
 $("stats").onclick = () => {
   const show = $("diagnostics").hidden;
+  if (show) playerLayer.close();
   $("diagnostics").hidden = !show;
   $("stats").setAttribute("aria-pressed", String(show));
   if (show) {
@@ -489,6 +525,7 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) requestDraw();
 });
 window.addEventListener("pagehide", () => {
+  playerLayer.destroy();
   disposed = true;
   worker.terminate();
   renderer?.free();
@@ -590,6 +627,7 @@ window.__map = {
     renderer.simulate_device_loss();
   },
   pan: (x, z) => {
+    playerLayer.manualNavigation();
     cx += x;
     cz += z;
     changed();
@@ -707,6 +745,7 @@ async function boot() {
   );
   window.__map.ready = true;
   fit();
+  void playerLayer.configure(manifest.source_sha256);
 }
 void boot().catch((e) => {
   message(String(e), true);

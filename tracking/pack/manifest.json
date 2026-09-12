@@ -1,0 +1,24 @@
+{
+  "format_version": 2,
+  "header": {
+    "name": "Surface Map Player Positions",
+    "description": "Server-only current player position export",
+    "uuid": "f65ed125-b319-4a16-975a-f7556db11360",
+    "version": [1, 0, 0],
+    "min_engine_version": [1, 26, 40]
+  },
+  "modules": [
+    {
+      "type": "script",
+      "language": "javascript",
+      "uuid": "9b918705-25a3-430e-9a4f-c4cd7abbfcda",
+      "version": [1, 0, 0],
+      "entry": "scripts/main.js"
+    }
+  ],
+  "dependencies": [
+    { "module_name": "@minecraft/server", "version": "2.9.0" },
+    { "module_name": "@minecraft/server-net", "version": "1.0.0-beta" },
+    { "module_name": "@minecraft/server-admin", "version": "1.0.0-beta" }
+  ]
+}

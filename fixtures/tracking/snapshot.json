@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "world_id": "fixture-world",
+  "instance_id": "fixture-instance",
+  "started_at_ms": 1789200000000,
+  "sequence": 1,
+  "sampled_at_ms": 1789200002000,
+  "pack_version": "1.0.0",
+  "players": [{
+    "id": "p1",
+    "name": "ExamplePlayer",
+    "dimension": "minecraft:overworld",
+    "position": {"x": -12.25, "y": 64.5, "z": -48.75, "heading": 90},
+    "discontinuity": false
+  }]
+}
