@@ -30,6 +30,10 @@ const view = Math.min(
   16,
   Math.max(4, Number(variables.get("view_distance") ?? 16)),
 );
+const configuredBudget = Number(variables.get("scan_budget_ms") ?? 1);
+const scanBudget = Number.isFinite(configuredBudget)
+  ? Math.max(1, Math.min(4, configuredBudget))
+  : 1;
 let sequence = 0,
   loaded = false,
   inFlight = false,
@@ -109,7 +113,7 @@ system.runInterval(() => {
   reader ??= surfaceAccess(dimension);
   reader.reset();
   try {
-    while (reader.queries <= 252 && Date.now() - begin < 1) {
+    while (reader.queries <= 252 && Date.now() - begin < scanBudget) {
       if (!current) {
         const next = queue.take(Date.now(), ++work % 4 === 0);
         if (next)

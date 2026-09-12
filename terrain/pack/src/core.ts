@@ -107,6 +107,14 @@ export function* scan(
       rules.canonical_state_defaults?.[m.name] ?? {},
     ))
       if (m.states[key] === value) delete m.states[key];
+    const half = m.states["minecraft:vertical_half"];
+    const slot = m.states.top_slot_bit;
+    if (
+      m.name.includes("slab") &&
+      ((half === "top" && (slot === 1 || slot === true)) ||
+        (half === "bottom" && (slot === 0 || slot === false)))
+    )
+      delete m.states.top_slot_bit;
     const key = materialKey(m),
       existing = ids.get(key);
     if (existing !== undefined) return existing;

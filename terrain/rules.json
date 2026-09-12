@@ -2,7 +2,13 @@
   "version": 1,
   "canonical_state_defaults": {
     "minecraft:stone": { "stone_type": "stone" },
-    "minecraft:short_grass": { "tall_grass_type": "default" }
+    "minecraft:short_grass": { "tall_grass_type": "default" },
+    "minecraft:oak_slab": { "wood_type": "oak" },
+    "minecraft:spruce_slab": { "wood_type": "spruce" },
+    "minecraft:birch_slab": { "wood_type": "birch" },
+    "minecraft:jungle_slab": { "wood_type": "jungle" },
+    "minecraft:acacia_slab": { "wood_type": "acacia" },
+    "minecraft:dark_oak_slab": { "wood_type": "dark_oak" }
   },
   "air": [
     "air",

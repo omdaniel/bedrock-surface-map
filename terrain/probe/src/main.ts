@@ -24,6 +24,10 @@ const url = endpoint,
   gen = generation;
 const started = Date.now(),
   producer = `probe-${started}`;
+const configuredBudget = Number(variables.get("scan_budget_ms") ?? 1);
+const scanBudget = Number.isFinite(configuredBudget)
+  ? Math.max(1, Math.min(4, configuredBudget))
+  : 1;
 let sequence = 0,
   ready = false,
   busy = false,
@@ -42,7 +46,7 @@ system.runInterval(() => {
     reader.reset();
     job ??= scan(reader.access, rules, 0, 0, Date.now);
     const start = Date.now();
-    while (reader.queries <= 252 && Date.now() - start < 1) {
+    while (reader.queries <= 252 && Date.now() - start < scanBudget) {
       const result = job.next();
       if (result.done) {
         job = undefined;
@@ -102,6 +106,7 @@ async function send(sample: Sample) {
           scan_ms: sample.end - sample.start,
           errors,
           height_range: world.getDimension("overworld").heightRange,
+          budget_ms: scanBudget,
         }),
     );
   } catch {

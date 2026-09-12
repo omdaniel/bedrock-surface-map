@@ -151,6 +151,24 @@ impl MaterialSpec {
                 }
             }
         }
+        if self.name.contains("slab") {
+            let top = match result.states.get("top_slot_bit") {
+                Some(Value::Bool(v)) => Some(*v),
+                Some(Value::Number(v)) if v.as_i64() == Some(0) => Some(false),
+                Some(Value::Number(v)) if v.as_i64() == Some(1) => Some(true),
+                _ => None,
+            };
+            let half = result
+                .states
+                .get("minecraft:vertical_half")
+                .and_then(Value::as_str);
+            if matches!(
+                (top, half),
+                (Some(true), Some("top")) | (Some(false), Some("bottom"))
+            ) {
+                result.states.remove("top_slot_bit");
+            }
+        }
         result
     }
 

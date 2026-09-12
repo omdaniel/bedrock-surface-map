@@ -88,6 +88,20 @@ test("redundant legacy API states normalize without dropping other permutation f
     fixture({ 0: material("stone", { stone_type: "granite" }) }),
   );
   assert.deepEqual(distinct.materials[1].states, { stone_type: "granite" });
+  for (const half of ["top", "bottom"]) {
+    const slab = finish(
+      fixture({
+        0: material("oak_slab", {
+          "minecraft:vertical_half": half,
+          top_slot_bit: half === "top",
+          wood_type: "oak",
+        }),
+      }),
+    );
+    assert.deepEqual(slab.materials[1].states, {
+      "minecraft:vertical_half": half,
+    });
+  }
 });
 test("latest pending sample survives an older in-flight acknowledgement", () => {
   const a = finish(fixture({ 0: material("stone") })),
