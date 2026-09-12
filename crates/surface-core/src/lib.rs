@@ -268,13 +268,63 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
         data.len() <= 64 * 1024 * 1024 && limit <= 64 * 1024 * 1024,
         "compressed payload limit"
     );
-    let decoder =
+    // Preflight the small Zstd frame header before ruzstd allocates its window.
+    ensure!(
+        data.len() >= 6 && data[..4] == [0x28, 0xb5, 0x2f, 0xfd],
+        "invalid zstd frame"
+    );
+    let descriptor = data[4];
+    ensure!(
+        descriptor & 0x1b == 0,
+        "unsupported zstd flags or dictionary"
+    );
+    let single = descriptor & 0x20 != 0;
+    let mut cursor = 5;
+    let mut window = 0u64;
+    if !single {
+        let wd = data[cursor];
+        cursor += 1;
+        let base = 1u64 << (10 + (wd >> 3));
+        window = base + (base / 8) * u64::from(wd & 7);
+    }
+    let count = match descriptor >> 6 {
+        0 => usize::from(single),
+        1 => 2,
+        2 => 4,
+        _ => 8,
+    };
+    if count > 0 {
+        let bytes = data
+            .get(cursor..cursor + count)
+            .context("truncated zstd header")?;
+        let mut n = [0u8; 8];
+        n[..count].copy_from_slice(bytes);
+        let size = u64::from_le_bytes(n) + if count == 2 { 256 } else { 0 };
+        ensure!(size <= limit as u64, "zstd content size limit");
+        if single {
+            window = size;
+        }
+    }
+    ensure!(window <= 64 * 1024 * 1024, "zstd window limit");
+    let mut decoder =
         ruzstd::decoding::StreamingDecoder::new(data).map_err(|e| anyhow::anyhow!("zstd: {e}"))?;
     let mut result = Vec::new();
-    decoder.take(limit as u64 + 1).read_to_end(&mut result)?;
+    (&mut decoder)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut result)?;
     if result.len() > limit {
         bail!("decompression limit exceeded");
     }
+    if let Some(expected) = decoder.decoder.get_checksum_from_data() {
+        ensure!(
+            decoder.decoder.get_calculated_checksum() == Some(expected),
+            "zstd checksum mismatch"
+        );
+    }
+    ensure!(
+        decoder.into_inner().is_empty(),
+        "trailing zstd frames or data"
+    );
     Ok(result)
 }
 
@@ -346,6 +396,10 @@ mod tests {
         let packed = zstd::encode_all(vec![0u8; 10000].as_slice(), 3).unwrap();
         assert!(decompress(&packed, 100).is_err());
         assert!(decompress(b"bad", 100).is_err());
+        assert!(decompress(&[0x28, 0xb5, 0x2f, 0xfd, 0, 255], 100).is_err());
+        let mut trailing = packed.clone();
+        trailing.extend_from_slice(b"extra");
+        assert!(decompress(&trailing, 10000).is_err());
     }
     #[test]
     fn flat_and_column_shadows() {
