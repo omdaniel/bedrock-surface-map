@@ -1,8 +1,9 @@
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -13,6 +14,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use subtle::ConstantTimeEq;
+use tokio::sync::Semaphore;
 
 pub const MAX_BODY: usize = 16 * 1024;
 pub const STALE_MS: u64 = 10_000;
@@ -131,6 +133,7 @@ pub struct Store {
     transport_age_ms: u64,
     high_water: Option<(u64, String, u64, u64)>,
     disabled: bool,
+    last_pack_version: Option<String>,
     pub accepted: u64,
     pub rejected: u64,
 }
@@ -143,6 +146,7 @@ impl Store {
             transport_age_ms: 0,
             high_water: None,
             disabled,
+            last_pack_version: None,
             accepted: 0,
             rejected: 0,
         }
@@ -174,6 +178,7 @@ impl Store {
             snapshot.sampled_at_ms,
         ));
         self.received = Some(instant);
+        self.last_pack_version = Some(snapshot.pack_version.clone());
         self.latest = Some(snapshot);
         self.accepted = self.accepted.saturating_add(1);
         Ok(())
@@ -203,7 +208,9 @@ impl Store {
             schema_version: 1,
             world_id: self.world.clone(),
             status,
-            reason: self.disabled.then_some("compatibility"),
+            reason: self
+                .disabled
+                .then_some("disabled_by_operator_or_compatibility_policy"),
             age_ms: age,
             snapshot: self.latest.clone(),
         }
@@ -213,6 +220,8 @@ impl Store {
 pub struct App {
     pub store: Arc<Mutex<Store>>,
     token: Arc<Vec<u8>>,
+    ingest_slots: Arc<Semaphore>,
+    read_slots: Arc<Semaphore>,
 }
 impl App {
     pub fn new(world: String, token: Vec<u8>, disabled: bool) -> Result<Self, &'static str> {
@@ -222,6 +231,8 @@ impl App {
         Ok(Self {
             store: Arc::new(Mutex::new(Store::new(world, disabled))),
             token: Arc::new(token),
+            ingest_slots: Arc::new(Semaphore::new(1)),
+            read_slots: Arc::new(Semaphore::new(16)),
         })
     }
 }
@@ -241,14 +252,32 @@ fn response(status: StatusCode, body: impl IntoResponse) -> Response {
         .insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
     response
 }
-async fn ingest(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
-    let token = headers
+async fn ingest_guard(State(app): State<App>, request: Request, next: Next) -> Response {
+    let token = request
+        .headers()
         .get("x-tracker-token")
         .map(|h| h.as_bytes())
         .unwrap_or_default();
     if !bool::from(token.ct_eq(&app.token)) {
         return response(StatusCode::UNAUTHORIZED, "unauthorized");
     }
+    let Ok(_permit) = app.ingest_slots.try_acquire() else {
+        return response(StatusCode::TOO_MANY_REQUESTS, "request in flight");
+    };
+    // Include body collection in the deadline, not just the handler itself.
+    tokio::time::timeout(Duration::from_secs(2), next.run(request))
+        .await
+        .unwrap_or_else(|_| response(StatusCode::REQUEST_TIMEOUT, "request timeout"))
+}
+async fn read_guard(State(app): State<App>, request: Request, next: Next) -> Response {
+    let Ok(_permit) = app.read_slots.try_acquire() else {
+        return response(StatusCode::TOO_MANY_REQUESTS, "reader limit");
+    };
+    tokio::time::timeout(Duration::from_secs(2), next.run(request))
+        .await
+        .unwrap_or_else(|_| response(StatusCode::REQUEST_TIMEOUT, "request timeout"))
+}
+async fn ingest(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
     if headers
         .get(header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
@@ -284,7 +313,7 @@ async fn health(State(app): State<App>) -> Response {
         Json(serde_json::json!({
             "service": "surface-tracker", "version": env!("CARGO_PKG_VERSION"),
             "status": view.status, "reason": view.reason, "age_ms": view.age_ms,
-            "pack_version": view.snapshot.as_ref().map(|s| &s.pack_version),
+            "pack_version": store.last_pack_version,
             "accepted": store.accepted, "rejected": store.rejected
         })),
     )
@@ -293,12 +322,14 @@ pub fn ingest_router(app: App) -> Router {
     Router::new()
         .route("/ingest/v1/snapshot", post(ingest))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::from_fn_with_state(app.clone(), ingest_guard))
         .with_state(app)
 }
 pub fn read_router(app: App) -> Router {
     Router::new()
         .route("/api/v1/worlds/{world}/players", get(players))
         .route("/healthz", get(health))
+        .layer(middleware::from_fn_with_state(app.clone(), read_guard))
         .with_state(app)
 }
 
@@ -449,5 +480,56 @@ mod tests {
         let text = String::from_utf8(body.to_vec()).unwrap();
         assert!(text.contains("ExamplePlayer"));
         assert!(!text.contains(&"a".repeat(64)));
+    }
+
+    #[tokio::test]
+    async fn authentication_precedes_body_and_concurrency_is_bounded() {
+        let app = App::new("fixture-world".into(), vec![b'a'; 64], false).unwrap();
+        let request = |token: &str| {
+            Request::post("/ingest/v1/snapshot")
+                .header("x-tracker-token", token)
+                .body(Body::from(vec![b'x'; MAX_BODY + 1]))
+                .unwrap()
+        };
+        assert_eq!(
+            ingest_router(app.clone())
+                .oneshot(request("wrong"))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let _permit = app.ingest_slots.acquire().await.unwrap();
+        assert_eq!(
+            ingest_router(app.clone())
+                .oneshot(request(&"a".repeat(64)))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+
+    #[tokio::test]
+    async fn slow_requests_expire_and_release_their_slot() {
+        let app = App::new("fixture-world".into(), vec![b'a'; 64], false).unwrap();
+        let router = Router::new()
+            .route(
+                "/slow",
+                post(|| async {
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                    StatusCode::NO_CONTENT
+                }),
+            )
+            .layer(middleware::from_fn_with_state(app.clone(), ingest_guard));
+        let request = Request::post("/slow")
+            .header("x-tracker-token", "a".repeat(64))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            router.oneshot(request).await.unwrap().status(),
+            StatusCode::REQUEST_TIMEOUT
+        );
+        assert_eq!(app.ingest_slots.available_permits(), 1);
     }
 }

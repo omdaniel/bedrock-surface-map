@@ -1,5 +1,11 @@
 # Live Player Tracking
 
+Collector hardening: authentication runs before body collection; ingestion has one
+request slot and a two-second body/handler deadline. The read listener has sixteen
+request slots and the same deadline. Slow/oversized/unauthorized requests do not
+replace the current roster. Health retains only the last pack version and aggregate
+counters after positions expire, never player history.
+
 ## Current Release Gate
 
 The application implements a player roster, compass markers, click-to-center/zoom,
