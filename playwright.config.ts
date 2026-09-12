@@ -8,13 +8,16 @@ export default defineConfig({
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 1,
     channel: process.env.CI ? undefined : "chrome",
-    headless: true,
+    headless: !process.env.CI,
     launchOptions: {
       args: process.env.CI
         ? [
             "--enable-unsafe-webgpu",
-            "--use-angle=swiftshader",
             "--enable-features=Vulkan",
+            "--use-angle=vulkan",
+            "--use-vulkan=swiftshader",
+            "--use-webgpu-adapter=swiftshader",
+            "--disable-vulkan-surface",
           ]
         : [],
     },

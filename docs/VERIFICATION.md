@@ -117,6 +117,14 @@ root on each platform. CI uses the SHA-verified official wasm-bindgen 0.2.127
 binary and the already-tested debug CLI for fixture generation, avoiding redundant
 tool and native-release compilation. Real import benchmarks still use release.
 
+For Linux screenshot presentation, CI uses headed bundled Chromium under Xvfb
+and an explicit SwiftShader/Vulkan adapter with Vulkan surfaces disabled. This
+follows the [first-hand VGPU validation recipe](https://github.com/vercel-labs/vgpu/issues/109)
+and [Chrome's headless GPU guidance](https://developer.chrome.com/blog/supercharge-web-ai-testing).
+Page-side GPU completion alone is not accepted as evidence of visible pixels.
+These isolated synthetic-CI flags are not applied to ordinary Mac browsing and
+are not hardware acceleration benchmarks.
+
 ## Remaining Limits
 
 No live updates, players, public hosting, authentication or homelab deployment.
