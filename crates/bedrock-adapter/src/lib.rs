@@ -165,6 +165,24 @@ pub fn extract(path: &Path) -> Result<Extraction> {
 /// Emit completed regions, retaining only one region plus a bounded chunk batch.
 pub fn extract_stream(
     path: &Path,
+    consume: impl FnMut(SurfaceRegion) -> Result<()>,
+) -> Result<Extraction> {
+    extract_selected(path, None, consume)
+}
+
+pub fn extract_chunk(path: &Path, x: i32, z: i32) -> Result<Extraction> {
+    let mut regions = BTreeMap::new();
+    let mut result = extract_selected(path, Some([x, z]), |r| {
+        regions.insert((r.rx, r.rz), r);
+        Ok(())
+    })?;
+    result.regions = regions;
+    Ok(result)
+}
+
+fn extract_selected(
+    path: &Path,
+    selection: Option<[i32; 2]>,
     mut consume: impl FnMut(SurfaceRegion) -> Result<()>,
 ) -> Result<Extraction> {
     let document = bedrock_world::read_level_dat(&path.join("level.dat"))?;
@@ -192,6 +210,9 @@ pub fn extract_stream(
         ..Default::default()
     })?;
     positions.retain(|p| p.dimension == Dimension::Overworld);
+    if let Some([x, z]) = selection {
+        positions.retain(|p| p.x == x && p.z == z);
+    }
     ensure!(
         positions
             .iter()

@@ -17,6 +17,14 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    Sample {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, allow_hyphen_values = true)]
+        x: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        z: i32,
+    },
     AssetLibrary {
         #[arg(long, default_value = ".local/assets/bedrock-samples.zip")]
         assets: PathBuf,
@@ -305,6 +313,40 @@ fn main() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     match Args::parse().command {
+        Command::Sample { input, x, z } => {
+            let source = file_hash(&input)?;
+            let cache = PathBuf::from(format!(
+                ".local/worlds/{source}-sample-{}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&cache)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(".local", fs::Permissions::from_mode(0o700))?;
+            }
+            unpack(&input, &cache)?;
+            let extracted = bedrock_adapter::extract_chunk(&cache, x, z)?;
+            let region = extracted
+                .regions
+                .values()
+                .next()
+                .context("sample region missing")?;
+            let chunk = terrain::SurfaceChunk::from_region(region, x, z)?;
+            let mut materials = vec![terrain::MaterialSpec {
+                name: "surface:unknown".into(),
+                states: Default::default(),
+            }];
+            for m in extracted.materials.iter().skip(1) {
+                materials.push(terrain::MaterialSpec::from_saved_key(&m.key)?);
+            }
+            ensure!(file_hash(&input)? == source, "sample input changed");
+            println!(
+                "{}",
+                serde_json::json!({"source_sha256":source,"chunk":chunk,"materials":materials,"verified_samples":extracted.verified_samples})
+            );
+            fs::remove_dir_all(cache)?;
+        }
         Command::AssetLibrary { assets, output } => {
             let result = assets::library(&assets, &output)?;
             println!(

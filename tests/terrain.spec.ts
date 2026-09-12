@@ -97,10 +97,57 @@ test("live chunks update picking and shadows without resetting the camera", asyn
     .toBe(3);
   await page.evaluate(() => window.__map.pan(1160, 140));
   await expect
-    .poll(() => page.evaluate(() => window.__map.state().cached), {
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const s = window.__map.state(),
+            w = s.terrain?.window;
+          return (
+            !!w &&
+            w[0] <= s.cx &&
+            w[1] <= s.cz &&
+            w[2] > s.cx &&
+            w[3] > s.cz &&
+            !s.terrain?.busy &&
+            s.pending === 0
+          );
+        }),
+      {
+        timeout: 15000,
+      },
+    )
+    .toBe(true);
+  await page.mouse.move(box.x + box.width / 2 + 1, box.y + box.height / 2 + 1);
+  await expect(page.locator("#block-pos")).toContainText("5");
+  step = 3;
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().terrain?.revision), {
       timeout: 15000,
     })
-    .toBeGreaterThan(0);
+    .toBe(4);
+  await page.evaluate(() => window.__map.pan(3072, 4092));
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const s = window.__map.state(),
+            w = s.terrain?.window;
+          return (
+            !!w &&
+            w[0] <= s.cx &&
+            w[1] <= s.cz &&
+            w[2] > s.cx &&
+            w[3] > s.cz &&
+            !s.terrain?.busy &&
+            s.pending === 0
+          );
+        }),
+      { timeout: 15000 },
+    )
+    .toBe(true);
+  await page.mouse.move(box.x + box.width / 2 + 2, box.y + box.height / 2 + 2);
+  await expect(page.locator("#block-pos")).toContainText("10");
+  await page.screenshot({ path: "test-results/terrain-growth.png" });
   expect(
     (await page.evaluate(() => window.__map.state())).memory,
   ).toBeLessThanOrEqual(256 * 1024 * 1024);
