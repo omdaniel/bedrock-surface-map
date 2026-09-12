@@ -62,11 +62,20 @@ thin vegetation alpha-blends over its supporting top surface. Snow layers and
 slabs preserve fractional top height. No model geometry is reconstructed.
 
 The orthographic north-up camera uses parallel sunlight. Elevation defaults to
-45 degrees (range 15-75); azimuth defaults to 120 degrees (range 0-360 in 1-degree
-steps). The direction towards the sun in X/Z is `(cos(azimuth), -sin(azimuth))`:
-east=0/360, north=90, west=180, south=270. Cardinal components are snapped to exact
+45 degrees (range 15-75); azimuth defaults to 330 degrees, measured clockwise from
+north: north=0/360, east=90, south=180, west=270. The core `sun_direction` function
+directly constructs `(sin(azimuth), -cos(azimuth))` in map X/Z (+X east, +Z south),
+after converting degrees to radians. This same vector drives cast shadows, relief
+and overview shading; there is no UI-only or legacy-angle conversion.
+The cyclic dial displays 0-359 degrees in whole-degree steps and wraps freely;
+the rendering API also accepts 360 as exactly north. Cardinal components are snapped to exact
 zero to avoid drift; intermediate angles use their actual direction, not blends
 between presets.
+
+Azimuth is session state, not an attribute of `SurfaceRegion` or `MapManifest`.
+No data migration or reimport is required when changing the angular convention.
+Diagnostic state identifies `azimuthConvention: "north-clockwise"` so newly
+recorded measurements cannot be mistaken for older, untagged east-origin angles.
 
 A direction-independent max-height pyramid replaces the northwest-only horizon
 sweep. Rust/WASM builds it once from the complete decoded heightfield. Its GPU

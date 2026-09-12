@@ -5,6 +5,11 @@ These are prototype measurements, not a speed comparison against uNmINeD.
 The separate [visual comparison](VISUAL-COMPARISON.md) records geographic and
 appearance checks against uNmINeD and the user's BedrockMap render.
 
+Azimuth labels below use clockwise-from-north compass bearings throughout.
+Historical tables have had only their angle labels converted, not their timings
+or physical light directions. Older ignored JSON reports without a convention
+tag retain their original east-origin angles and are not application input.
+
 ## Checkpoints
 
 1. `21e30b8`: Rust 1.92.0 workspace, exact codec and CPU shadow fixtures.
@@ -139,20 +144,20 @@ The source archive's SHA-256 was rechecked unchanged; no reimport was needed.
 
 The full 0-360 degree control replaces the NW-only shadow recurrence with a
 direction-independent max-height hierarchy and accelerated per-sample ray
-queries. The compass convention is east=0/360, north=90, west=180, south=270;
-default northwest is 135. Surface format and imported data are unchanged.
+queries. Expressed in today's clockwise-from-north convention, that checkpoint's
+default northwest bearing was 315. Surface format and imported data are unchanged.
 
 Chrome 152.0.7977.83, 1920x1080 DPR1, 45-degree elevation, real beach centered at
 X -284, Z -114, four pixels per block; all 64 regions resident:
 
 | Azimuth | Frames in 5 seconds | Median / p95 / max interval (ms) |
 | --- | ---: | ---: |
-| 0 | 600 | 8.3 / 9.0 / 9.3 |
-| 90 | 600 | 8.3 / 9.1 / 9.4 |
-| 135 | 601 | 8.3 / 9.0 / 9.4 |
-| 217 | 600 | 8.3 / 9.1 / 9.4 |
-| 270 | 591 | 8.3 / 9.2 / 17.6 |
-| 360 | 600 | 8.3 / 9.0 / 9.4 |
+| 90 | 600 | 8.3 / 9.0 / 9.3 |
+| 0 | 600 | 8.3 / 9.1 / 9.4 |
+| 315 | 601 | 8.3 / 9.0 / 9.4 |
+| 233 | 600 | 8.3 / 9.1 / 9.4 |
+| 180 | 591 | 8.3 / 9.2 / 17.6 |
+| 90 (wrapped) | 600 | 8.3 / 9.0 / 9.4 |
 
 Resident accounting is 221,562,576 bytes (211.30 MiB), including the full hierarchy.
 First populated frame was 251 ms in this warm run. An earlier new-build run at
@@ -167,7 +172,7 @@ than the previous special-case exact NW area integration.
 No page/console errors or horizontal overflow were recorded in the six-angle
 run. Desktop captures and a 390x844 lighting-panel screenshot are under ignored
 `.local/azimuth/`; reproduce with `node scripts/check-azimuth.mjs`. Native Safari
-was observed rendering the current build at 117 degrees with its controls open;
+was observed rendering that build at a 333-degree compass bearing with its controls open;
 the user's camera and 60% shadow-strength setting were left unchanged. This was
 a visual check, not a new Safari performance run. The matched NW beach reference
 images were also refreshed with the current algorithm.
@@ -184,10 +189,10 @@ Chrome 152.0.7977.83, real beach at X -284, Z -114, four pixels/block,
 
 | Azimuth | Relief | Frames in 5 seconds | Median / p95 / max interval (ms) |
 | --- | --- | ---: | ---: |
-| 120 | Off | 600 | 8.3 / 8.8 / 9.3 |
-| 120 | 100% | 600 | 8.3 / 8.9 / 9.7 |
-| 300 | Off | 601 | 8.3 / 9.0 / 9.4 |
-| 300 | 100% | 600 | 8.3 / 9.1 / 9.3 |
+| 330 | Off | 600 | 8.3 / 8.8 / 9.3 |
+| 330 | 100% | 600 | 8.3 / 8.9 / 9.7 |
+| 150 | Off | 601 | 8.3 / 9.0 / 9.4 |
+| 150 | 100% | 600 | 8.3 / 9.1 / 9.3 |
 
 These are rAF navigation intervals, not isolated GPU execution costs or proof of
 zero overhead. Shader/file caches were not flushed. First populated frame was
@@ -212,18 +217,64 @@ was changed. The original Safari tab was preserved.
 
 ### Sand Contrast and Default Follow-Up
 
-At the user's request, the default azimuth is now 120 degrees in both the UI and
-initial GPU uniform. Historical angle measurements above retain their original
-settings. Ordinary exposed sand in Vivid is 12% darker before rim composition;
+At the user's request, the default was changed to 30 degrees west of north
+(330 degrees in the current convention) in both the UI and initial GPU uniform.
+Historical measurements above retain their original physical light direction.
+Ordinary exposed sand in Vivid is 12% darker before rim composition;
 other material grades, water blending and Original mode are unchanged. A browser
 regression renders both classifications of the same synthetic scene and checks
 the sand/edge contrast and non-sand pixel invariance. The matched real-beach
 comparison is refreshed under `.local/relief/`; no world reimport is needed.
 
+### Compass Dial Follow-Up
+
+The implementation now takes clockwise-from-north bearings end to end, with a
+330-degree default preserving the previous physical lighting. The CPU direction
+function directly computes `(sin(a), -cos(a))` in X/Z; GPU passes consume that
+shared vector. No old-angle UI adapter remains. Diagnostics name the convention.
+The former linear range is replaced by a pointer-captured cyclic compass dial.
+
+All 17 Rust tests and 13 Chrome browser tests passed locally. New independent
+compass assertions cover cardinals, diagonals, the default, and multiple positive
+and negative turns. Rendered pixels check explicit cardinal shadow directions.
+Dial tests include three clockwise and two counterclockwise mouse revolutions,
+dragging outside the control, center/right-click exclusion, touch rotation across
+north, cancellation/restart, keyboard wrapping, and an unchanged map camera.
+Touch events were injected in desktop Chrome, not tested on physical iPad hardware.
+
+Before editing, the six 768x768 beach/close-up PNGs from checkpoint `749891b`
+were retained under ignored `.local/azimuth-migration/before/`. After re-rendering
+with equivalent compass bearings, **every decoded RGBA channel matched exactly**
+in all six images, including relief off/on and reversed illumination. This is a
+self-regression check, not a claim of pixel equivalence with uNmINeD.
+
+Chrome 152.0.7977.83, matched real beach, 1920x1080 DPR1, warm caches:
+
+| Azimuth | Relief | Frames in 5 seconds | Median / p95 / max interval (ms) |
+| --- | --- | ---: | ---: |
+| 330 | Off | 600 | 8.3 / 9.0 / 9.4 |
+| 330 | 100% | 600 | 8.3 / 8.9 / 9.4 |
+| 150 | Off | 600 | 8.3 / 8.9 / 9.2 |
+| 150 | 100% | 601 | 8.3 / 9.0 / 9.5 |
+
+First populated frame was 295 ms; worker decoding 281 ms. Map accounting remains
+211.30 MiB. The separate eight-angle sweep recorded medians 8.3-8.4 ms,
+p95 9.0-16.7 ms, and a 25 ms maximum while the Mac was also being used for Safari
+inspection. These are observed navigation intervals, not isolated GPU timings
+or an uncontended performance comparison. Both runs had no page/console errors.
+Desktop, 390x844 and 844x390 captures showed a nonblank map, legible dial, no
+horizontal overflow, and a scrollable settings panel in the short viewport.
+
+Native Safari displayed the new dial and textured terrain at the user's current
+331-degree bearing, 40-degree elevation and 65% shadow strength. Its accessibility
+tree exposed the bearing and clockwise-from-north value description. The camera
+and controls were left unchanged; this was a visual/accessibility check, not a
+new automated Safari gesture or performance benchmark.
+
 ## Automated Checks
 
 - Rust formatting and both native/WASM Clippy with warnings denied.
-- Sixteen Rust tests: exact constant/mixed codec round trips, negative coordinates,
+- Seventeen Rust tests: exact constant/mixed codec round trips, negative coordinates,
   missing coverage, corrupt/truncated payloads, decompression/window bounds,
   archive path/symlink rejection, leaf-litter support/overlay semantics, CPU
   shadow geometry and GPU equivalence.
@@ -236,14 +287,15 @@ comparison is refreshed under `.local/relief/`; no world reimport is needed.
   at three widths, subpixel/whole-cell footprints, negative/missing heights and
   region boundaries. CPU tests check stronger corners, partial-height steps,
   flat interiors, direction rotation and analytic band coverage.
-- Ten Playwright tests: expected terrain/water pixels, fractional ledge shadows,
+- Thirteen Playwright tests: expected terrain/water pixels, fractional ledge shadows,
   sun azimuth/elevation/strength/color controls, exact 0/360 equivalence, shadow
-  direction at cardinal/intermediate angles, 1-degree keyboard steps, picking, drag/wheel,
+  direction at cardinal/intermediate angles, full dial rotations with mouse/touch,
+  touch cancellation/restart, pointer capture, 1-degree keyboard wrapping, picking, drag/wheel,
   negative coordinates, idle redraw, resize, toggles, device-loss recovery,
   download retry, checksum rejection, missing WebGPU, invalid manifests and raw
   world path denial.
 - Relief pixel checks verify brighter corners, no interior plateau lines,
-  opposite-side contact shade, 120-degree weighting, one/four-pixel bands at
+  opposite-side contact shade, 330-degree weighting, one/four-pixel bands at
   4/16 pixels per block, width/strength controls, overview invalidation, and
   water-step exclusion plus portrait/short-landscape panel fit. Cast-shadow tests disable independent
   relief so the two effects cannot mask each other's failures.

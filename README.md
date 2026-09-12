@@ -42,9 +42,12 @@ This route and the real map use exactly the same codec, worker and renderer.
 
 Drag to pan; wheel or pinch to zoom. The toolbar provides fit-world, spawn,
 block borders, shadows, lighting/color settings and diagnostics. Sun elevation
-defaults to 45 degrees from the northwest and is adjustable from 15 to 75 degrees.
-Sun azimuth spans 0-360 degrees in 1-degree steps: east=0/360, north=90,
-west=180, south=270. Its default is 120 degrees (west of north).
+defaults to 45 degrees above the horizon and is adjustable from 15 to 75 degrees.
+The sun-azimuth dial uses compass bearings clockwise from north: north=0/360,
+east=90, south=180, west=270. Its default is 330 degrees (30 degrees west of north).
+Drag around the dial with a mouse, pen or touch; rotations wrap without endpoints.
+Arrow keys change one degree, Page Up/Down change 15, and Home points north.
+The displayed bearing is 0-359 degrees; continuing past 359 returns to 0.
 Shadow strength defaults to 55%; Vivid/Original selects the color treatment.
 Vivid sand has a slightly darker base to preserve contrast with its bright rims;
 the adjustment does not affect other materials or Original mode.

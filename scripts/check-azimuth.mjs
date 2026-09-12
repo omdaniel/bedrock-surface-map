@@ -1,5 +1,6 @@
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
+import { setSunAzimuth } from "./browser-controls.mjs";
 
 const browser = await chromium.launch({ channel: "chrome", headless: false });
 try {
@@ -28,14 +29,11 @@ try {
     .click();
   await mkdir(".local/azimuth", { recursive: true });
   const results = [];
-  for (const angle of [0, 90, 135, 217, 270, 360]) {
+  for (const angle of [0, 90, 180, 233, 270, 315, 330, 360]) {
     await page
       .getByRole("button", { name: "Lighting and color", exact: true })
       .click();
-    await page.getByLabel("Sun azimuth").evaluate((el, value) => {
-      el.value = String(value);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    }, angle);
+    await setSunAzimuth(page, angle);
     await page
       .getByRole("button", { name: "Lighting and color", exact: true })
       .click();
@@ -58,6 +56,7 @@ try {
     () => document.documentElement.scrollWidth > innerWidth,
   );
   const report = {
+    azimuthConvention: "north-clockwise",
     browser: await browser.version(),
     results,
     errors,

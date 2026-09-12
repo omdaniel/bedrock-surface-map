@@ -4,6 +4,19 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 const fixture = "/?map=/maps/fixture/manifest.json";
+async function setAzimuth(
+  page: import("@playwright/test").Page,
+  angle: number,
+) {
+  const dial = page.getByRole("slider", { name: "Sun azimuth" });
+  await dial.press("Home");
+  const bearing = ((angle % 360) + 360) % 360;
+  const delta = bearing > 180 ? bearing - 360 : bearing;
+  for (let i = 0; i < Math.floor(Math.abs(delta) / 15); i++)
+    await dial.press(delta < 0 ? "PageDown" : "PageUp");
+  for (let i = 0; i < Math.abs(delta) % 15; i++)
+    await dial.press(delta < 0 ? "ArrowLeft" : "ArrowRight");
+}
 async function ready(page: import("@playwright/test").Page) {
   await page.waitForFunction(() => window.__map?.ready);
   await page.waitForFunction(() => {
@@ -154,10 +167,7 @@ test("one-block sand ledge has partial shadows and elevation changes their reach
   await controls.click();
   // Isolate physically traced cast shadows from the independent contact accents.
   await page.getByLabel("Terrain relief").press("Home");
-  await page.getByLabel("Sun azimuth").evaluate((input) => {
-    (input as HTMLInputElement).value = "135";
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
+  await setAzimuth(page, 315);
   await page.getByLabel("Color treatment").selectOption("original");
   await controls.click();
   const sample = async (u: number, v: number) => {
@@ -205,7 +215,7 @@ test("one-block sand ledge has partial shadows and elevation changes their reach
   ).toBe(true);
   await page.screenshot({ path: "test-results/lighting-mobile.png" });
 });
-test("sun azimuth follows the compass, supports intermediate angles and wraps at 360", async ({
+test("sun azimuth is clockwise from north in rendered pixels and raw application state", async ({
   page,
 }) => {
   const errors: string[] = [];
@@ -223,19 +233,30 @@ test("sun azimuth follows the compass, supports intermediate angles and wraps at
   await page
     .getByRole("button", { name: "Lighting and color", exact: true })
     .click();
-  const slider = page.getByLabel("Sun azimuth");
-  await expect(slider).toHaveValue("120");
-  await expect(page.locator("#azimuth-value")).toHaveText("120°");
-  await expect(slider).toHaveAttribute("min", "0");
-  await expect(slider).toHaveAttribute("max", "360");
-  await expect(slider).toHaveAttribute("step", "1");
+  const dial = page.getByRole("slider", { name: "Sun azimuth" });
+  await expect(dial).toHaveAttribute("aria-valuenow", "330");
+  await expect(page.locator("#azimuth-value")).toHaveText("330°");
+  await expect(dial).toHaveAttribute("aria-valuemin", "0");
+  await expect(dial).toHaveAttribute("aria-valuemax", "359");
   const shots = new Map<number, PNG>();
-  for (const angle of [0, 90, 180, 270, 17, 45, 135, 225, 315, 359, 360]) {
-    await slider.evaluate((input, value) => {
-      (input as HTMLInputElement).value = String(value);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    }, angle);
-    await expect(page.locator("#azimuth-value")).toHaveText(`${angle}°`);
+  // Explicit down-sun offsets independently encode the four compass expectations.
+  const cardinalShadows = new Map([
+    [0, [0, 2.5]], // North sun casts south.
+    [90, [-2.5, 0]], // East sun casts west.
+    [180, [0, -2.5]], // South sun casts north.
+    [270, [2.5, 0]], // West sun casts east.
+    [360, [0, 2.5]],
+  ]);
+  for (const angle of [0, 90, 180, 270, 17, 45, 135, 225, 315, 330, 359, 360]) {
+    if (angle === 360) {
+      await dial.press("End");
+      await dial.press("ArrowRight");
+    } else await setAzimuth(page, angle);
+    await expect(page.locator("#azimuth-value")).toHaveText(`${angle % 360}°`);
+    expect(await page.evaluate(() => window.__map.state())).toMatchObject({
+      azimuth: angle % 360,
+      azimuthConvention: "north-clockwise",
+    });
     await page.evaluate(
       () =>
         new Promise((resolve) =>
@@ -245,8 +266,10 @@ test("sun azimuth follows the compass, supports intermediate angles and wraps at
     const bytes = await page.locator("canvas").screenshot();
     const png = PNG.sync.read(bytes);
     const radians = (angle * Math.PI) / 180;
-    const dx = -Math.cos(radians) * 2.5,
-      dz = Math.sin(radians) * 2.5;
+    const [dx, dz] = cardinalShadows.get(angle) ?? [
+      -Math.sin(radians) * 2.5,
+      Math.cos(radians) * 2.5,
+    ];
     const sample = (sign: number) => {
       const x = Math.floor(png.width / 2 + dx * 40 * sign);
       const y = Math.floor(png.height / 2 + dz * 40 * sign);
@@ -270,13 +293,13 @@ test("sun azimuth follows the compass, supports intermediate angles and wraps at
         .data.subarray((y * width + 500) * 4, (y * width + 750) * 4),
     );
   }
-  await slider.press("Home");
-  await slider.press("ArrowRight");
+  await dial.press("Home");
+  await dial.press("ArrowRight");
   await expect(page.locator("#azimuth-value")).toHaveText("1°");
-  await slider.press("End");
-  await expect(page.locator("#azimuth-value")).toHaveText("360°");
+  await dial.press("End");
+  await expect(page.locator("#azimuth-value")).toHaveText("359°");
   await page.setViewportSize({ width: 390, height: 844 });
-  await expect(slider).toBeVisible();
+  await expect(dial).toBeVisible();
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -300,6 +323,7 @@ test("terrain relief follows height boundaries and sunlight, with block-scaled w
     .click();
   await page.getByLabel("Color treatment").selectOption("original");
   const set = async (label: string, value: number) => {
+    if (label === "Sun azimuth") return setAzimuth(page, value);
     await page.getByLabel(label).evaluate((input, v) => {
       (input as HTMLInputElement).value = String(v);
       input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -339,7 +363,7 @@ test("terrain relief follows height boundaries and sunlight, with block-scaled w
       return [...png.data.subarray(i, i + 3)].reduce((a, b) => a + b, 0) / 3;
     };
   };
-  await set("Sun azimuth", 135);
+  await set("Sun azimuth", 315);
   await aim(-224, -224, 16);
   let sample = await shot();
   const base = sample(-223.5, -223.5);
@@ -350,23 +374,23 @@ test("terrain relief follows height boundaries and sunlight, with block-scaled w
   // The next block is on the same plateau: neither an interior line nor a false rim.
   expect(Math.abs(sample(-222.9375, -223.5) - base)).toBeLessThan(2);
   expect(Math.abs(sample(-224.125, -223.5) - base)).toBeLessThan(2);
-  await set("Sun azimuth", 120);
+  await set("Sun azimuth", 330);
   sample = await shot();
   expect(sample(-223.5, -223.875)).toBeGreaterThan(
     sample(-223.875, -223.5) + 6,
   );
-  await set("Sun azimuth", 315);
+  await set("Sun azimuth", 135);
   sample = await shot();
   expect(Math.abs(sample(-223.875, -223.875) - base)).toBeLessThan(2);
   expect(base - sample(-224.125, -223.5)).toBeGreaterThan(25);
   await aim(-200, -200, 16);
   sample = await shot();
   expect(sample(-200.125, -200.125) - base).toBeGreaterThan(20);
-  await set("Sun azimuth", 135);
+  await set("Sun azimuth", 315);
   sample = await shot();
   expect(base - sample(-199.875, -200.5)).toBeGreaterThan(25);
   await aim(-224, -220, 16);
-  await set("Sun azimuth", 180);
+  await set("Sun azimuth", 270);
   for (const scale of [4, 16]) {
     await aim(-224, -220, scale);
     sample = await shot();

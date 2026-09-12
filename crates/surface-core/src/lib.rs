@@ -361,10 +361,11 @@ pub fn height_pyramid(heights: &[f32], width: usize, height: usize) -> Vec<u32> 
     words
 }
 
-/// Direction towards the sun in map X/Z: east=0, north=90, west=180, south=270.
-pub fn sun_direction(azimuth: f32) -> [f32; 2] {
-    let angle = (azimuth.rem_euclid(360.) as f64).to_radians();
-    [angle.cos(), -angle.sin()].map(|v| if v.abs() < 1e-7 { 0. } else { v as f32 })
+/// Unit horizontal direction towards the sun, with +X east and +Z south.
+/// Azimuth is degrees clockwise from north: N=0/360, E=90, S=180, W=270.
+pub fn sun_direction(azimuth_degrees: f32) -> [f32; 2] {
+    let angle = (azimuth_degrees.rem_euclid(360.) as f64).to_radians();
+    [angle.sin(), -angle.cos()].map(|v| if v.abs() < 1e-7 { 0. } else { v as f32 })
 }
 
 /// Area-integrated artistic rim/contact lighting; neighbors are west/east/north/south.
@@ -566,7 +567,7 @@ mod tests {
 
     #[test]
     fn relief_only_at_steps_with_brighter_corners() {
-        let nw = sun_direction(135.);
+        let nw = sun_direction(315.);
         let point = |neighbors, uv: [f32; 2]| {
             edge_relief_reference(1., neighbors, nw, uv, uv.map(|v| v + 0.01), 0.25)
         };
@@ -587,7 +588,7 @@ mod tests {
 
     #[test]
     fn relief_rotates_and_integrates_subpixel_width() {
-        for azimuth in [0., 90., 120., 135., 180., 225., 270., 315., 360.] {
+        for azimuth in [0., 90., 135., 150., 180., 225., 270., 315., 330., 360.] {
             let d = sun_direction(azimuth);
             let opposite = sun_direction(azimuth + 180.);
             let a = edge_relief_reference(1., [0.; 4], d, [0.1; 2], [0.11; 2], 0.25);
@@ -596,12 +597,12 @@ mod tests {
         }
         for width in [0.05, 0.1, 0.25, 0.5] {
             let full =
-                edge_relief_reference(1., [0.; 4], sun_direction(180.), [0.; 2], [1.; 2], width);
+                edge_relief_reference(1., [0.; 4], sun_direction(270.), [0.; 2], [1.; 2], width);
             assert!((full[0] - 0.55 * width).abs() < 1e-6);
             let outside = edge_relief_reference(
                 1.,
                 [0.; 4],
-                sun_direction(180.),
+                sun_direction(270.),
                 [width, 0.],
                 [1.; 2],
                 width,
@@ -611,7 +612,7 @@ mod tests {
         let north = edge_relief_reference(
             1.,
             [0.; 4],
-            sun_direction(120.),
+            sun_direction(330.),
             [0.5, 0.1],
             [0.51, 0.11],
             0.25,
@@ -619,7 +620,7 @@ mod tests {
         let west = edge_relief_reference(
             1.,
             [0.; 4],
-            sun_direction(120.),
+            sun_direction(330.),
             [0.1, 0.5],
             [0.11, 0.51],
             0.25,
@@ -628,16 +629,37 @@ mod tests {
     }
 
     #[test]
-    fn compass_and_height_tree() {
+    fn azimuth_is_clockwise_from_north() {
         for (azimuth, expected) in [
-            (0., [1., 0.]),
-            (90., [0., -1.]),
-            (180., [-1., 0.]),
-            (270., [0., 1.]),
-            (360., [1., 0.]),
+            (0., [0., -1.]),
+            (90., [1., 0.]),
+            (180., [0., 1.]),
+            (270., [-1., 0.]),
+            (360., [0., -1.]),
         ] {
             assert_eq!(sun_direction(azimuth), expected);
         }
+        let diagonal = std::f32::consts::FRAC_1_SQRT_2;
+        for (azimuth, expected) in [
+            (45., [diagonal, -diagonal]),
+            (135., [diagonal, diagonal]),
+            (225., [-diagonal, diagonal]),
+            (315., [-diagonal, -diagonal]),
+            (330., [-0.5, -3f32.sqrt() / 2.]),
+        ] {
+            for (actual, expected) in sun_direction(azimuth).into_iter().zip(expected) {
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+        for angle in [0., 1., 90., 180., 270., 315., 330., 359.] {
+            for turns in [-3., -1., 1., 3.] {
+                assert_eq!(sun_direction(angle), sun_direction(angle + turns * 360.));
+            }
+        }
+    }
+
+    #[test]
+    fn height_tree_and_shadow_reach() {
         let values: Vec<f32> = (0..17 * 11)
             .map(|i| {
                 if i % 7 == 0 {
@@ -671,15 +693,15 @@ mod tests {
         ledge[16] = 10.;
         let slope = 60f32.to_radians().tan();
         assert_eq!(
-            ray_shadow_reference(&ledge, [32, 1], [10.3, 0.5], 0., sun_direction(0.), slope),
+            ray_shadow_reference(&ledge, [32, 1], [10.3, 0.5], 0., sun_direction(90.), slope),
             1.
         );
         assert_eq!(
-            ray_shadow_reference(&ledge, [32, 1], [10.1, 0.5], 0., sun_direction(0.), slope),
+            ray_shadow_reference(&ledge, [32, 1], [10.1, 0.5], 0., sun_direction(90.), slope),
             0.
         );
         assert_eq!(
-            ray_shadow_reference(&ledge, [32, 1], [10.3, 0.5], 0., sun_direction(180.), slope),
+            ray_shadow_reference(&ledge, [32, 1], [10.3, 0.5], 0., sun_direction(270.), slope),
             0.
         );
     }

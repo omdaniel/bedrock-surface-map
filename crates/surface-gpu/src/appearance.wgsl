@@ -1,3 +1,5 @@
+// lighting.zw is the horizontal direction TOWARDS the sun: +X east, +Z south.
+// Rust converts clockwise-from-north azimuth once; all GPU passes share this vector.
 struct Params { camera:vec4f, screen:vec4f, bounds:vec4f, lighting:vec4f, relief:vec4f }
 struct Material { uv:vec4f, average:vec4f, flags:vec4f }
 struct Cell { height:u32, material:u32, tint:u32, overlay:u32, depth:u32, support:u32, overlay_height:u32, covered:u32 }

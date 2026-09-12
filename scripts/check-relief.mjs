@@ -1,6 +1,7 @@
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { PNG } from "pngjs";
+import { setSunAzimuth } from "./browser-controls.mjs";
 
 const browser = await chromium.launch({ channel: "chrome", headless: false });
 try {
@@ -29,10 +30,12 @@ try {
   });
   const set = async (label, value) => {
     await controls.click();
-    await page.getByLabel(label).evaluate((el, v) => {
-      el.value = String(v);
-      el.dispatchEvent(new Event("input", { bubbles: true }));
-    }, value);
+    if (label === "Sun azimuth") await setSunAzimuth(page, value);
+    else
+      await page.getByLabel(label).evaluate((el, v) => {
+        el.value = String(v);
+        el.dispatchEvent(new Event("input", { bubbles: true }));
+      }, value);
     await controls.click();
   };
   const aim = async (cx, cz, scale) => {
@@ -48,7 +51,7 @@ try {
   await page
     .getByRole("button", { name: "Block borders", exact: true })
     .click();
-  await set("Sun azimuth", 120);
+  await set("Sun azimuth", 330);
   await mkdir(".local/relief", { recursive: true });
   const captures = [];
   const capture = async (name) => {
@@ -79,20 +82,20 @@ try {
   await capture("beach-before");
   await set("Terrain relief", 100);
   await capture("beach-after");
-  await set("Sun azimuth", 300);
+  await set("Sun azimuth", 150);
   await capture("beach-opposite");
-  await set("Sun azimuth", 120);
+  await set("Sun azimuth", 330);
   await aim(-320, -90, 16);
   await set("Terrain relief", 0);
   await capture("close-before");
   await set("Terrain relief", 100);
   await capture("close-after");
-  await set("Sun azimuth", 300);
+  await set("Sun azimuth", 150);
   await capture("close-opposite");
   await page.setViewportSize({ width: 1920, height: 1176 });
   await aim(-284, -114, 4);
   const measurements = [];
-  for (const angle of [120, 300]) {
+  for (const angle of [330, 150]) {
     await set("Sun azimuth", angle);
     for (const strength of [0, 100]) {
       await set("Terrain relief", strength);
@@ -105,7 +108,7 @@ try {
       });
     }
   }
-  await set("Sun azimuth", 120);
+  await set("Sun azimuth", 330);
   await controls.click();
   await page.screenshot({ path: ".local/relief/desktop-controls.png" });
   const layouts = [];
@@ -127,6 +130,7 @@ try {
     });
   }
   const report = {
+    azimuthConvention: "north-clockwise",
     browser: await browser.version(),
     initial,
     captures,
@@ -139,9 +143,9 @@ try {
     ".local/relief/index.html",
     `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Terrain edge relief comparison</title><style>*{box-sizing:border-box}body{margin:0;background:#f2f4f5;color:#222;font:14px system-ui}header{padding:16px}h1{font-size:20px;margin:0 0 8px}main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:#c7cdd0}figure{margin:0;background:white}figcaption{padding:12px;font-weight:600}img{display:block;width:100%;aspect-ratio:1}a{color:#176399}@media(max-width:800px){main{grid-template-columns:1fr}}</style>
-<header><h1>Central beach: terrain-edge relief</h1><p>Top row: same 192-block crop at 4 pixels/block. wgpu sun 120 degrees azimuth, 45 degrees elevation, 55% cast shadows. Relief 100%, quarter-block width. uNmINeD is a visual reference, not an identical lighting model.</p><a href="http://127.0.0.1:5173/">Interactive viewer</a></header>
+<header><h1>Central beach: terrain-edge relief</h1><p>Top row: same 192-block crop at 4 pixels/block. wgpu sun 330 degrees azimuth (clockwise from north), 45 degrees elevation, 55% cast shadows. Relief 100%, quarter-block width. uNmINeD is a visual reference, not an identical lighting model.</p><a href="http://127.0.0.1:5173/">Interactive viewer</a></header>
 <main><figure><figcaption>wgpu: relief off</figcaption><img src="beach-before.png" alt="Beach without local edge relief"></figure><figure><figcaption>wgpu: relief on</figcaption><img src="beach-after.png" alt="Beach with highlighted steps and contact shading"></figure><figure><figcaption>uNmINeD reference</figcaption><img src="../appearance/unmined-beach.png" alt="uNmINeD beach reference"></figure>
-<figure><figcaption>16 pixels/block: relief off</figcaption><img src="close-before.png" alt="Unaccented close terrain"></figure><figure><figcaption>16 pixels/block: four-pixel bands</figcaption><img src="close-after.png" alt="Close terrain with scaled relief bands"></figure><figure><figcaption>Same relief, sun rotated to 300 degrees</figcaption><img src="close-opposite.png" alt="Relief and shadows following southeast illumination"></figure></main></html>`,
+<figure><figcaption>16 pixels/block: relief off</figcaption><img src="close-before.png" alt="Unaccented close terrain"></figure><figure><figcaption>16 pixels/block: four-pixel bands</figcaption><img src="close-after.png" alt="Close terrain with scaled relief bands"></figure><figure><figcaption>Same relief, sun rotated to 150 degrees</figcaption><img src="close-opposite.png" alt="Relief and shadows following southeast illumination"></figure></main></html>`,
   );
   console.log(JSON.stringify(report, null, 2));
   if (errors.length) process.exitCode = 1;

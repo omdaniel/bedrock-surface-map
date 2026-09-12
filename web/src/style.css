@@ -291,6 +291,115 @@ pre {
   margin: 0;
   accent-color: #b0d28c;
 }
+.azimuth-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.azimuth-label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+#lighting .azimuth-label output {
+  text-align: left;
+  font-size: 24px;
+  color: #e9cd87;
+}
+.sun-dial {
+  position: relative;
+  width: 112px;
+  height: 112px;
+  flex: 0 0 112px;
+  border-radius: 50%;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sun-dial:focus-visible {
+  outline: 2px solid #b8d38b;
+  outline-offset: 3px;
+}
+.sun-dial.dragging {
+  cursor: grabbing;
+}
+.sun-dial > * {
+  pointer-events: none;
+}
+.dial-cardinal {
+  position: absolute;
+  font-size: 10px;
+  line-height: 12px;
+  color: #b6c4bc;
+}
+.dial-north,
+.dial-south {
+  left: 50%;
+  transform: translateX(-50%);
+}
+.dial-north {
+  top: 0;
+}
+.dial-south {
+  bottom: 0;
+}
+.dial-east,
+.dial-west {
+  top: 50%;
+  transform: translateY(-50%);
+}
+.dial-east {
+  right: 1px;
+}
+.dial-west {
+  left: 1px;
+}
+.dial-track {
+  position: absolute;
+  inset: 18px;
+  border: 1px solid #7d897f;
+  border-radius: 50%;
+}
+.sun-dial:hover .dial-track {
+  border-color: #b8c4bb;
+}
+.dial-hand {
+  position: absolute;
+  inset: 18px;
+  transform: rotate(var(--bearing));
+}
+.dial-hand::before {
+  content: "";
+  position: absolute;
+  width: 2px;
+  height: 50%;
+  left: calc(50% - 1px);
+  background: #e9cd87;
+}
+.dial-hand > span {
+  position: absolute;
+  top: -9px;
+  left: calc(50% - 9px);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  color: #f0d088;
+  background: #202724;
+  border-radius: 50%;
+}
+.dial-hub {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  left: calc(50% - 3px);
+  top: calc(50% - 3px);
+  border-radius: 50%;
+  background: #e9cd87;
+}
 #lighting select {
   font: inherit;
   color: #e8eded;

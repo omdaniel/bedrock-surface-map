@@ -168,7 +168,7 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let direction = surface_core::sun_direction(120.);
+        let direction = surface_core::sun_direction(330.);
         let values = [
             0.,
             0.,
@@ -506,7 +506,7 @@ impl Renderer {
         grid: bool,
         shadows: bool,
         elevation: f32,
-        azimuth: f32,
+        azimuth_degrees: f32,
         shadow_strength: f32,
         vivid: bool,
         relief_strength: f32,
@@ -520,8 +520,8 @@ impl Renderer {
         }
         if !elevation.is_finite()
             || !(15.0..=75.0).contains(&elevation)
-            || !azimuth.is_finite()
-            || !(0.0..=360.0).contains(&azimuth)
+            || !azimuth_degrees.is_finite()
+            || !(0.0..=360.0).contains(&azimuth_degrees)
             || !shadow_strength.is_finite()
             || !(0.0..=0.8).contains(&shadow_strength)
             || !relief_strength.is_finite()
@@ -537,7 +537,7 @@ impl Renderer {
             self.surface.configure(&self.device, &self.config);
         }
         let slope = elevation.to_radians().tan();
-        let direction = surface_core::sun_direction(azimuth);
+        let direction = surface_core::sun_direction(azimuth_degrees);
         let sun_changed = self.values[7] != slope || self.values[14..16] != direction;
         let changed = sun_changed
             || self.values[6] != (shadows as u32 as f32)

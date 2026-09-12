@@ -2,9 +2,9 @@
 
 Follow-up to the initial visual comparison. The user authorized varying the
 original fixed 60-degree sun to approximate uNmINeD's stronger beach relief.
-Default: 45 degrees elevation, 120 degrees azimuth (west of north), 55% shadow strength,
-Vivid color. The controls allow 15-75 degrees elevation, 0-360 degrees azimuth in
-1-degree steps, 0-80% shadow strength, Vivid/Original color, 0-100% terrain relief
+Default: 45 degrees elevation, 330 degrees azimuth (west of north), 55% shadow strength,
+Vivid color. The controls allow 15-75 degrees elevation, a continuously wrapping
+azimuth dial in 1-degree steps, 0-80% shadow strength, Vivid/Original color, 0-100% terrain relief
 (default 100%), and 0.05-0.50 block edge width (default 0.25). They
 are session-local; changing them does not modify the imported dataset.
 
@@ -30,9 +30,26 @@ azimuths without approximation or direction snapping.
 
 ## Full Azimuth
 
-The user requested east=0/360, north=90, west=180, south=270. The direction towards
-the sun is `(cos(azimuth), -sin(azimuth))` in map X/Z. Shadows extend oppositely.
-The UI displays 360 independently but the renderer normalizes it to exactly 0.
+Azimuth follows the [NOAA convention](https://gml.noaa.gov/grad/solcalc/glossary.html):
+clockwise from north, with north=0/360, east=90, south=180, west=270. In map X/Z,
++X is east and +Z is south, so the direction towards the sun is directly
+`(sin(azimuth), -cos(azimuth))`. Shadows extend oppositely. Rust constructs this
+vector once; CPU references, GPU cast shadows, relief and overviews share it.
+
+The circular compass control uses the same bearing directly, not a translation
+to the former convention. Mouse, pen and touch use pointer capture, so a drag
+can circle repeatedly in either direction or continue outside the control.
+The undefined bearing at the center is ignored. Arrow keys adjust one degree,
+Page Up/Down adjust 15, Home selects 0 and End selects 359; adjustments wrap.
+The accessible slider role exposes the current bearing and units. There is no
+CSS rotation transition that could animate a long reverse sweep at north.
+The UI canonicalizes 360 to 0; the renderer accepts either as exactly north.
+
+Migration note: the former east-origin, counterclockwise default of 120 degrees
+is the same physical direction as 330 in this convention. This equivalence is
+recorded only for historical interpretation; no legacy conversion remains in
+the application. Angle settings were never persisted in map files. New diagnostic
+reports explicitly tag their azimuth convention as `north-clockwise`.
 
 A max-height hierarchy now accelerates ray/block intersections at any azimuth.
 It is built once per snapshot, retains missing coverage as non-occluding, and
@@ -67,7 +84,7 @@ The user's reference observation is a narrow lightened upper rim, extra corner
 highlight, and a dark band on the neighboring lower surface, in addition to
 cast shadows. This is an artistic depth cue, not another physical sun or a
 claim about uNmINeD's implementation. The matched follow-up crop uses the user's
-estimated 120-degree azimuth; this is now also the app default at the user's request.
+estimated 330-degree compass bearing; this is also the app default at the user's request.
 
 For each land column, the shader reads its two up-sun neighbors from the complete
 heightfield. Height differences create bands; material differences or block
@@ -78,9 +95,9 @@ support changes. Slabs and snow-layer steps contribute proportionally up to a
 one-block height difference; larger cliffs do not widen the accent.
 
 The light vector's absolute X/Z components, divided by their maximum, weight
-the two edges continuously. At 135 degrees, north and west contribute equally;
-at 120, north is stronger than west. At 0, only east-facing rims are bright;
-at 270, only south-facing rims are bright. Rotating through a cardinal direction
+the two edges continuously. At 315 degrees, north and west contribute equally;
+at 330, north is stronger than west. At 90, only east-facing rims are bright;
+at 180, only south-facing rims are bright. Rotating through a cardinal direction
 fades one band to zero before bringing it up on the opposite side. Corners where
 two lit edges meet receive an additional highlight. Lower contact shade follows
 the same compass, independent of the main cast-shadow toggle or strength.
@@ -145,7 +162,7 @@ grass/stone/water/Original pixels.
   enumeration of the four band intersections, at three widths and all 15 angles.
   They include missing heights and cross-region lookups, with tolerance 1e-5.
 - CPU checks cover flat interiors, missing neighbors, stronger corners,
-  fractional step heights, 120-degree weighting, opposite directions and
+  fractional step heights, 330-degree weighting, opposite directions and
   whole-block integration. Chrome pixel tests cover rotating highlights/contact
   shade, width in actual pixels at two zoom levels, disabled relief, overview
   invalidation, and scrollable controls in short landscape layouts.
@@ -171,14 +188,14 @@ in [VISUAL-COMPARISON.md](VISUAL-COMPARISON.md):
 The comparison page uses that reference alongside 45- and 60-degree wgpu views.
 Private reference images are not committed, uploaded or included in CI artifacts.
 
-`node scripts/check-azimuth.mjs` adds six real-map azimuth captures, controlled-pan
+`node scripts/check-azimuth.mjs` adds eight real-map azimuth captures, controlled-pan
 measurements at 1920x1080 DPR1, and a mobile-layout screenshot under ignored
 `.local/azimuth/`. The current algorithm's northwest beach comparisons can be
 refreshed with the original `check-appearance.mjs` command.
 
 `node scripts/check-relief.mjs` creates ignored `.local/relief/index.html` with
-matched 120-degree before/after/uNmINeD beach views, 16-pixel/block close-ups,
-and a 300-degree opposite-light view. It uses the optional reference image above.
+matched 330-degree before/after/uNmINeD beach views, 16-pixel/block close-ups,
+and a 150-degree opposite-light view. It uses the optional reference image above.
 It also records real-Chrome 1080p navigation with relief off/on, nonblank pixel
 checks, and portrait/short-landscape control screenshots. No private images or
 downloaded textures enter source control or CI.

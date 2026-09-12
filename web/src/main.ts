@@ -13,8 +13,10 @@ import {
   SlidersHorizontal,
 } from "lucide";
 import type { Manifest, RegionRef, DecodeRequest, DecodeReply } from "./types";
+import { bindSunDial } from "./sun-dial";
 import "./style.css";
 
+const DEFAULT_SUN_AZIMUTH = 330;
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `<header><div class="identity"><span class="brand-mark" aria-hidden="true"></span><div><strong>Bedrock Survival</strong><span class="subtitle">OVERWORLD <span class="separator">/</span> SNAPSHOT</span></div></div><nav aria-label="Map tools"><button id="fit" title="Fit world" aria-label="Fit world"><i data-lucide="maximize"></i></button><button id="spawn" title="World spawn" aria-label="World spawn"><i data-lucide="map-pin"></i></button><span class="divider"></span><button id="grid" title="Block borders" aria-label="Block borders" aria-pressed="true"><i data-lucide="grid-2-x2"></i></button><button id="sun" title="Sun shadows" aria-label="Sun shadows" aria-pressed="true"><i data-lucide="sun"></i></button><button id="stats" title="Performance" aria-label="Performance" aria-pressed="false"><i data-lucide="activity"></i></button></nav></header><main><canvas id="map" aria-label="Interactive Bedrock world map" tabindex="0"></canvas><div id="message" role="status"><span id="message-text">Opening world...</span><button id="retry" hidden>Retry</button></div><div class="zoom"><button id="in" title="Zoom in" aria-label="Zoom in"><i data-lucide="plus"></i></button><button id="out" title="Zoom out" aria-label="Zoom out"><i data-lucide="minus"></i></button></div><div class="north" title="North">N<span aria-hidden="true">↑</span></div><section id="inspect" hidden><span class="eyebrow">SURFACE</span><strong id="block-name"></strong><span id="block-pos"></span><span id="block-detail"></span></section><section id="diagnostics" hidden><strong>Performance</strong><pre id="metrics"></pre><button id="measure">Measure 5 seconds</button></section><div id="scale"><div></div><span></span></div></main><footer><span id="coordinates">X — &nbsp; Z —</span><span id="load-state">Preparing renderer</span><span class="local-state"><b></b> Local snapshot</span></footer>`;
 app
@@ -27,8 +29,13 @@ app.querySelector("main")!.insertAdjacentHTML(
   "beforeend",
   `<section id="lighting" aria-label="Lighting and color settings" hidden>
   <strong>Lighting and color</strong>
-  <div class="setting-label"><label for="azimuth">Sun azimuth</label><output id="azimuth-value" for="azimuth">120&deg;</output></div>
-  <input id="azimuth" type="range" min="0" max="360" step="1" value="120">
+  <div class="azimuth-setting">
+    <div class="azimuth-label"><span id="azimuth-label">Sun azimuth</span><output id="azimuth-value" for="azimuth">${DEFAULT_SUN_AZIMUTH}&deg;</output></div>
+    <div id="azimuth" class="sun-dial" role="slider" tabindex="0" aria-labelledby="azimuth-label" aria-valuemin="0" aria-valuemax="359" aria-valuenow="${DEFAULT_SUN_AZIMUTH}" title="Sun bearing: N 0°, E 90°, S 180°, W 270°" style="--bearing:${DEFAULT_SUN_AZIMUTH}deg">
+      <span class="dial-cardinal dial-north" aria-hidden="true">N</span><span class="dial-cardinal dial-east" aria-hidden="true">E</span><span class="dial-cardinal dial-south" aria-hidden="true">S</span><span class="dial-cardinal dial-west" aria-hidden="true">W</span>
+      <span class="dial-track" aria-hidden="true"></span><span class="dial-hand" aria-hidden="true"><span><i data-lucide="sun"></i></span></span><span class="dial-hub" aria-hidden="true"></span>
+    </div>
+  </div>
   <div class="setting-label"><label for="elevation">Sun elevation</label><output id="elevation-value" for="elevation">45&deg;</output></div>
   <input id="elevation" type="range" min="15" max="75" step="5" value="45">
   <div class="setting-label"><label for="shadow-strength">Shadow strength</label><output id="strength-value" for="shadow-strength">55%</output></div>
@@ -67,7 +74,7 @@ let cx = 0,
   grid = true,
   sun = true,
   elevation = 45,
-  azimuth = 120,
+  azimuth = DEFAULT_SUN_AZIMUTH,
   shadowStrength = 0.55,
   vivid = true,
   reliefStrength = 1,
@@ -423,11 +430,15 @@ $("lighting-toggle").onclick = () => {
     $("stats").setAttribute("aria-pressed", "false");
   }
 };
-$("azimuth").oninput = () => {
-  azimuth = Number($<HTMLInputElement>("azimuth").value);
-  $("azimuth-value").textContent = `${azimuth}\u00b0`;
-  requestDraw();
-};
+bindSunDial(
+  $("azimuth"),
+  $<HTMLOutputElement>("azimuth-value"),
+  azimuth,
+  (value) => {
+    azimuth = value;
+    requestDraw();
+  },
+);
 $("elevation").oninput = () => {
   elevation = Number($<HTMLInputElement>("elevation").value);
   $("elevation-value").textContent = `${elevation}\u00b0`;
@@ -558,6 +569,7 @@ window.__map = {
     scale,
     elevation,
     azimuth,
+    azimuthConvention: "north-clockwise",
     shadowStrength,
     vivid,
     reliefStrength,
