@@ -8,11 +8,25 @@ reserves Mojang's rights and makes the files subject to the
 [Minecraft EULA](https://www.minecraft.net/en-us/eula).
 
 The original `LICENSE.md` and a provenance notice are retained beside the local
-atlas. The asset archive, atlas, imported world and rendered screenshots are NOT
-included in Git or CI artifacts. This private prototype does not grant permission
-to redistribute Mojang assets. Review the EULA before any future public hosting.
+atlas. The Mojang asset archive, atlas and imported world are NOT included in Git
+or CI artifacts. This project does not grant permission to redistribute Mojang
+assets. Review the EULA before publishing a map using those assets.
 The synthetic test fixture uses application-generated solid colors, not Minecraft
 textures.
+
+## Public demo
+
+The Pages demo uses an owner-approved surface-only excerpt and independently
+generated procedural textures, not Mojang texture pixels. Its two named players
+are fictional. Original demo texture artwork is dedicated under
+[CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/); this does not license
+the terrain, Minecraft names, application source, or third-party rights. Terrain
+edits are also fictional. The versioned release contains only derived map
+objects and scenario metadata; no player records, world database, or server access
+is provided. See [the release provenance](sources/demo.json) and
+[demo maintenance](docs/PUBLIC_DEMO.md). Reviewed promotional screenshots depict
+this same demo. The public demo packet and those screenshots are the explicit
+exception to the otherwise private-artifact policy.
 
 ## Software
 
