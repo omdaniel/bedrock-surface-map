@@ -1,0 +1,199 @@
+# Player Tracking Technical Reference
+
+Build commands, protocol details and recorded verification for operators and
+contributors. For everyday use and requirements, start with the
+[player tracking guide](TRACKING.md).
+
+## Collector and Diagnostic Pack
+
+Collector hardening: authentication runs before body collection; ingestion has one
+request slot and a two-second body/handler deadline. The read listener has sixteen
+request slots and the same deadline. Slow/oversized/unauthorized requests do not
+replace the current roster. Health retains only the last pack version and aggregate
+counters after positions expire, never player history.
+
+The bundle also contains `probe/`, a separate diagnostic pack with different UUIDs.
+It tests BDS HTTP URI/body/concurrency limits and request timeout using a disposable
+fresh world. Deployment mounts only `bundle/pack` in Survival; never register the
+diagnostic pack there. Neither pack contains a token or reads inventories/chat.
+
+## Initial Activation Record (September 12, 2026)
+
+Player tracking was connected to Survival through a Mac-hosted HTTPS preview
+after explicit owner approval on September 12. This is a historical test record,
+not a requirement to host the viewer on a Mac. Pack 1.0.1/application
+`71d8e2b97ddcfdb4faf5ad13cfb4d8d543e73876` passed guarded activation after a fresh
+stopped-world backup was independently copied and SHA-verified on the Mac.
+Activation marked the world experimental; disabling tracking does not undo that metadata.
+Survival, cheats, allowlist and normal access paths were preserved.
+
+The default static `viewer-config.json` still disables tracking for unbound maps;
+the operator-configured preview bound that specific terrain snapshot to
+`bedrock-survival`. Missing telemetry is never treated as a healthy empty server.
+Two simultaneous production players were verified; the owner identified their
+clients as iPad and iPhone. Both roster entries passed browser click-to-center
+checks. Switch-specific acceptance and controlled iPad performance measurements
+remain separate checks in `runproxmox`.
+
+Tracking does not itself update terrain. The viewer can use an offline snapshot
+or the independent [terrain synchronization pipeline](TERRAIN-SYNC.md).
+Known regions not yet downloaded say "terrain not loaded", distinct from missing
+snapshot coverage. Loading errors occupy their own status row so Retry remains
+reachable with the roster open, including on narrow screens.
+
+## Application Contract
+
+`surface-tracker` stores one bounded full-roster snapshot in memory. Write requests
+go only to the private ingest listener at `/ingest/v1/snapshot`, with the
+`x-tracker-token` secret header. The independent read listener exposes
+`GET/HEAD /api/v1/worlds/{world_id}/players` and `/healthz`. Responses are `no-store`.
+No database, world files, XUIDs, chat, inventories or movement history are used.
+
+Schema 1 is defined by the Rust types and `fixtures/tracking/snapshot.json`.
+Ingest is capped at 16 KiB/32 players. Producer epoch, sequence and sample-time
+checks reject obsolete data. Coordinates expire after 30 seconds, including in
+the collector's memory. A separate high-water mark retains ordering metadata
+without player positions. Gamertags are untrusted text, never HTML.
+
+The pack samples every 40 ticks, coalesces roster events, and permits only one
+two-second HTTP request at once. Failures retain no backlog and retry fresh data
+with a 30-second maximum backoff. Empty-roster heartbeats distinguish idle from
+broken. The sampler currently has an installation-specific service-account
+exclusion; review the [roster implementation](../tracking/pack/src/core.ts)
+before using it with another server. Bedrock yaw is converted with
+`(yaw + 180) mod 360` to north-zero clockwise heading.
+
+The browser polls every two seconds while visible. A stationary but old sample
+becomes stale at ten seconds and loses markers at thirty, even when HTTP succeeds.
+Markers use CSS pixels and the terrain camera's coordinate transform. Ordinary
+movement interpolates for 250 ms without prediction; teleport/respawn/dimension
+changes snap. Marker-only changes do not request a terrain frame. Follow must
+move the camera and therefore does redraw terrain.
+
+## Build and Test
+
+```sh
+npm ci
+npm run tracking:build
+npm run tracking:test
+cargo test --locked -p surface-tracker
+npm test
+rustup target add x86_64-unknown-linux-musl --toolchain 1.92.0
+# Requires a clean committed checkout; uses Rust's bundled linker.
+npm run tracking:bundle
+```
+
+The ignored `.local/tracking/bundle` contains the static Linux collector, pack and
+per-file SHA-256 manifest tied to the exact application commit. It contains no
+credentials or world data. Deployment must verify all hashes and the expected
+commit before consuming it. The collector host does not need a Rust compiler.
+
+Candidate declarations are pinned in `package-lock.json`: server `2.9.0`, net/admin
+`1.0.0-beta.1.26.40-stable`. Runtime manifest versions are separately `2.9.0` and
+`1.0.0-beta`; an npm declaration version is not proof of binary compatibility.
+No automatic beta-tag upgrades. See the deployment compatibility record for
+actual tested BDS versions.
+
+The [audited compatibility record](../tracking/compatibility.json) now confirms
+these exact dependencies load on BDS 1.26.45.1 with the Beta APIs experiment,
+on both a fresh world and the verified September 11 Survival export. Empty
+heartbeats, authentication, a 35-second collector outage/recovery, a real iPad
+join and matching positions passed. The disposable diagnostic pack also proved
+actual BDS URI/body/concurrency rejection and a 1.045-second timeout. The full
+fresh-world candidate gate, including those checks, took 19.46 seconds for pack
+1.0.0. Pack 1.0.1 adds disconnect-race isolation, passed the same gate in 18.25
+seconds, and restarted on the restored copy with fresh heartbeats. The reported
+retail iPad acceptance used 1.0.0; subsequent empty-copy checks are not another
+retail-client test. Artifact/source revisions are recorded separately.
+
+BDS 1.26.20 [renamed the permission to `force_tls`](https://learn.microsoft.com/en-us/minecraft/creator/documents/update1.26.20?view=minecraft-bedrock-stable).
+In the tested 1.26.45.1 runtime, including it with `false` still raised
+`TLSOnlyError`. Omitting the optional enforcement setting permits the planned
+private-network HTTP transport; keep URI/body/concurrency limits. This behavior
+must be rechecked for future candidates, not generalized to every beta release.
+
+## Offline-Snapshot LAN Preview
+
+After the deployment gate, set `VIEWER_LAN_IP`, `COLLECTOR_ORIGIN`, `WORLD_ID`
+and `MAP_FINGERPRINT` for your installation. The collector origin is its private
+read-listener HTTP URL; never use the ingest listener. With HTTPS prerequisites
+from [Getting Started](GETTING_STARTED.md#temporary-lan-preview) in place:
+
+```sh
+npm run build
+npm run serve:lan -- --host "$VIEWER_LAN_IP" \
+  --players-origin "$COLLECTOR_ORIGIN" \
+  --world-id "$WORLD_ID" \
+  --map-fingerprint "$MAP_FINGERPRINT"
+```
+
+This is an operator-configured fixed-destination proxy, not an arbitrary proxy.
+Only the exact player GET/HEAD path is relayed, with no client cookies/credentials
+forwarded. Request bodies, alternate paths, redirects and ingest are refused.
+Neither the world fingerprint nor world ID is a secret. The binding must be
+explicitly updated when replacing an offline terrain snapshot. Live terrain uses
+an explicit world/generation binding instead, so routine terrain repairs do not
+unbind players. This preview does not add login or public hosting; an internet
+URL without access control would expose player names and current positions.
+
+To independently disable tracking for one view, open `/?players=off`. This skips
+configuration and position requests and creates no polling timer. To disable it
+for all viewers, omit the three tracking arguments and restart the preview.
+Neither action alters the world or removes its experiment state.
+
+## Local Measurement
+
+`node scripts/check-live-tracking.mjs` observes one minute of the current LAN feed
+and writes aggregate latency/draw-count statistics under ignored `.local/tracking`.
+It never writes player payloads. `node scripts/check-tracking-performance.mjs
+--browser chrome` runs controlled-pan ABBA tracking-off/on comparisons. For real
+Mac Safari, start `/usr/bin/safaridriver -p 4444` separately and use `--browser safari`;
+the script does not change Safari automation permissions. Close other GPU workloads
+before measuring. Results are frame intervals, not GPU execution timestamps.
+
+September 12 restored-copy observations, not production load claims:
+
+- One live player: 22 fresh snapshots in a stationary minute; sample-to-browser
+  p50 713 ms, p95 1,536 ms, maximum 1,632 ms. Terrain redraw count stayed zero.
+  This depends on Mac/server clock alignment and is not action-to-display latency.
+- Chrome 152 at 1920x984 physical pixels, DPR 1: off p95 16.7/16.7 ms;
+  on with one player 16.8/16.8 ms. At the exact 1920x1080 target, the player had
+  disconnected: off p95 33.3/33.4 ms, on empty-roster 33.3/16.8 ms. Do not present
+  the latter as a live-marker performance result or a guaranteed 60 FPS result.
+- Mac Safari 26.3 at 1920x1080 physical pixels, native DPR 2: off p95 18/21 ms;
+  on with one player 17/19 ms. These small samples overlap; they do not prove a
+  statistically bounded five-percent regression budget.
+- A larger Safari 3840x2056 Retina canvas was substantially slower with tracking
+  both off and on (p95 51-136 ms off, 58-60 ms on). Keep resolution/load effects
+  separate from marker overhead. No M4 iPad off/on benchmark has been recorded.
+
+## Verification Boundaries
+
+Production two-player observation: 26 fresh snapshots in one stationary minute,
+sample-to-browser p50 1,015 ms, p95 1,847 ms, maximum 1,949 ms, and zero terrain
+redraws. This is not measured in-game-action latency and depends on clock alignment.
+The two retail clients were iPad and iPhone; neither is a Switch acceptance result.
+
+The production collector was then stopped for 390 seconds using the guarded VM
+test. The observer saw stale positions expire 19,999 ms after the stale state,
+with zero terrain redraws. It recovered to a fresh empty roster without reloading
+(the real players had disconnected). This proves feed recovery, not a new real
+player join. Bedrock retained its process identity and passed 78 health checks.
+Existing Telegram monitoring recorded one warning after five minutes, no duplicate
+on the next check, and one recovery. No location history was saved.
+
+`node scripts/check-tracking-outage.mjs` is a read-only browser observer for that
+test. Start it with a live player before the separately authorized VM test; it
+does not stop services itself. Deployment's `tracking/OPERATIONS.md` documents
+the guarded collector stop, independent recovery timer and notification checks.
+
+Local synthetic checks cover protocol rejection/expiry/restarts, pack cadence and
+failed reads, proxy boundaries, safe labels, center/follow/navigation, mobile
+layout and stationary terrain draw counts. The full existing renderer suite also
+runs. Synthetic players are injected only in browser tests, never at the LAN
+endpoint. Synthetic tests do not establish retail-client compatibility, two-player
+latency, server tick impact or M4 iPad performance.
+
+References: [BDS module configuration](https://learn.microsoft.com/en-us/minecraft/creator/documents/bedrockserver/scripting?view=minecraft-bedrock-stable),
+[HTTP permissions](https://learn.microsoft.com/en-us/minecraft/creator/documents/update1.26.10?view=minecraft-bedrock-stable),
+[experimental worlds](https://learn.microsoft.com/en-us/minecraft/creator/documents/experimentalfeaturestoggle?view=minecraft-bedrock-stable).
