@@ -67,8 +67,9 @@ UDP fence, stopped backup, health checks and independent recovery timer.
 Outage tests require separately authorized service control and a recovery plan.
 The read-only `scripts/check-tracking-outage.mjs` observer supports
 `--service tracking` or `--service terrain`; it does not stop services.
-It and `check-live-tracking.mjs` have installation-specific URL/dataset assumptions.
-Review those source settings before use; they are not portable deployment tools.
+It and `check-live-tracking.mjs` take their viewer URL and output location from
+[operator configuration](CONFIGURATION.md). They observe the configured feed,
+not a hard-coded world, and do not require a fixed region count.
 
 ## Browser and Growth Measurement
 
@@ -80,8 +81,9 @@ node scripts/check-tracking-performance.mjs --url http://127.0.0.1:5173/ --scope
 node scripts/check-terrain-growth.mjs
 ```
 
-The performance script accepts loopback origins and an installation-specific LAN
-origin. Native Safari requires an explicitly enabled WebDriver on port 4444 and
+The performance script accepts configured HTTPS viewers or HTTP loopback origins.
+Native Safari requires an explicitly enabled loopback WebDriver (configurable,
+default port 4444) and
 a foreground window. Combined scope compares offline/players-off with
 live-terrain/players-on at the same camera and physical canvas size. Record the
 actual player count and edit load: idle-feed timing does not measure active edits.

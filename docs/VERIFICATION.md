@@ -45,6 +45,9 @@ appearance plausibility without treating another renderer as an exact oracle.
 ## Native Browser Checks
 
 With the local viewer running and the relevant map loaded:
+set `MAP_URL` or use [operator configuration](CONFIGURATION.md) to select the
+viewer and report directory. HTTPS targets can use any operator-selected hostname
+or LAN address; there is no homelab-specific URL allowlist.
 
 ```sh
 node scripts/check-browser.mjs

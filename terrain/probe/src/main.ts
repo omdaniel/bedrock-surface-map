@@ -9,14 +9,17 @@ import {
 import { scan, type Sample } from "../../pack/src/core.js";
 import { surfaceAccess } from "../../pack/src/api.js";
 import rules from "../../pack/src/rules.js";
+import { validTerrainUrl } from "../../pack/src/config.js";
 
 const endpoint = variables.get("terrain_url"),
   identity = variables.get("world_id"),
   generation = variables.get("generation");
 if (
-  identity !== "terrain-candidate" ||
-  typeof generation !== "string" ||
-  endpoint !== "http://surface-terrain-candidate:8082/ingest/v1/terrain"
+  variables.get("allow_test_probe") !== true ||
+  ![identity, generation].every(
+    (v) => typeof v === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(v),
+  ) ||
+  !validTerrainUrl(endpoint)
 )
   throw Error("Disposable candidate configuration required");
 const url = endpoint,

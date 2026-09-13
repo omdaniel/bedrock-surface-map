@@ -1,8 +1,14 @@
+import {
+  verificationConfig,
+  waitForMap,
+  aimView,
+} from "./verification-config.mjs";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { PNG } from "pngjs";
 import { setSunAzimuth } from "./browser-controls.mjs";
 
+const config = verificationConfig({ output: ".local/relief" });
 const browser = await chromium.launch({ channel: "chrome", headless: false });
 try {
   const page = await browser.newPage({
@@ -14,15 +20,8 @@ try {
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
   });
-  await page.goto("http://127.0.0.1:5173/");
-  await page.waitForFunction(
-    () =>
-      window.__map?.ready &&
-      window.__map.state().cached === 64 &&
-      window.__map.state().pending === 0,
-    {},
-    { timeout: 90000 },
-  );
+  await page.goto(config.url);
+  await waitForMap(page, config);
   const initial = await page.evaluate(() => window.__map.state());
   const controls = page.getByRole("button", {
     name: "Lighting and color",
@@ -38,21 +37,11 @@ try {
       }, value);
     await controls.click();
   };
-  const aim = async (cx, cz, scale) => {
-    await page.evaluate(
-      ({ cx, cz, scale }) => {
-        const s = window.__map.state();
-        window.__map.pan(cx - s.cx, cz - s.cz);
-        window.__map.zoom(scale / s.scale);
-      },
-      { cx, cz, scale },
-    );
-  };
   await page
     .getByRole("button", { name: "Block borders", exact: true })
     .click();
   await set("Sun azimuth", 330);
-  await mkdir(".local/relief", { recursive: true });
+  await mkdir(config.output, { recursive: true });
   const captures = [];
   const capture = async (name) => {
     await page.evaluate(
@@ -62,7 +51,7 @@ try {
         ),
     );
     const bytes = await page.locator("canvas").screenshot({
-      path: `.local/relief/${name}.png`,
+      path: `${config.output}/${name}.png`,
       style: "#scale,.north,.zoom,#inspect {visibility:hidden}",
     });
     const png = PNG.sync.read(bytes);
@@ -77,7 +66,7 @@ try {
       state: await page.evaluate(() => window.__map.state()),
     });
   };
-  await aim(-284, -114, 4);
+  await aimView(page, config);
   await set("Terrain relief", 0);
   await capture("beach-before");
   await set("Terrain relief", 100);
@@ -85,7 +74,7 @@ try {
   await set("Sun azimuth", 150);
   await capture("beach-opposite");
   await set("Sun azimuth", 330);
-  await aim(-320, -90, 16);
+  await aimView(page, config, "detailView", 16);
   await set("Terrain relief", 0);
   await capture("close-before");
   await set("Terrain relief", 100);
@@ -93,7 +82,7 @@ try {
   await set("Sun azimuth", 150);
   await capture("close-opposite");
   await page.setViewportSize({ width: 1920, height: 1176 });
-  await aim(-284, -114, 4);
+  await aimView(page, config);
   const measurements = [];
   for (const angle of [330, 150]) {
     await set("Sun azimuth", angle);
@@ -110,7 +99,7 @@ try {
   }
   await set("Sun azimuth", 330);
   await controls.click();
-  await page.screenshot({ path: ".local/relief/desktop-controls.png" });
+  await page.screenshot({ path: config.output + "/desktop-controls.png" });
   const layouts = [];
   for (const viewport of [
     { width: 390, height: 844 },
@@ -126,7 +115,7 @@ try {
     if (overflow || panel.y + panel.height > viewport.height - 30)
       throw new Error("Lighting panel overflow");
     await page.screenshot({
-      path: `.local/relief/controls-${viewport.width}.png`,
+      path: `${config.output}/controls-${viewport.width}.png`,
     });
   }
   const report = {
@@ -138,12 +127,15 @@ try {
     layouts,
     errors,
   };
-  await writeFile(".local/relief/report.json", JSON.stringify(report, null, 2));
   await writeFile(
-    ".local/relief/index.html",
+    config.output + "/report.json",
+    JSON.stringify(report, null, 2),
+  );
+  await writeFile(
+    config.output + "/index.html",
     `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Terrain edge relief comparison</title><style>*{box-sizing:border-box}body{margin:0;background:#f2f4f5;color:#222;font:14px system-ui}header{padding:16px}h1{font-size:20px;margin:0 0 8px}main{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:#c7cdd0}figure{margin:0;background:white}figcaption{padding:12px;font-weight:600}img{display:block;width:100%;aspect-ratio:1}a{color:#176399}@media(max-width:800px){main{grid-template-columns:1fr}}</style>
-<header><h1>Central beach: terrain-edge relief</h1><p>Top row: same 192-block crop at 4 pixels/block. wgpu sun 330 degrees azimuth (clockwise from north), 45 degrees elevation, 55% cast shadows. Relief 100%, quarter-block width. uNmINeD is a visual reference, not an identical lighting model.</p><a href="http://127.0.0.1:5173/">Interactive viewer</a></header>
+<header><h1>Terrain-edge relief</h1><p>Same configured view, with relief off and on. wgpu sun 330 degrees azimuth (clockwise from north), 45 degrees elevation, 55% cast shadows. Relief 100%, quarter-block width. uNmINeD is a visual reference, not an identical lighting model.</p><a href="${config.url}">Interactive viewer</a></header>
 <main><figure><figcaption>wgpu: relief off</figcaption><img src="beach-before.png" alt="Beach without local edge relief"></figure><figure><figcaption>wgpu: relief on</figcaption><img src="beach-after.png" alt="Beach with highlighted steps and contact shading"></figure><figure><figcaption>uNmINeD reference</figcaption><img src="../appearance/unmined-beach.png" alt="uNmINeD beach reference"></figure>
 <figure><figcaption>16 pixels/block: relief off</figcaption><img src="close-before.png" alt="Unaccented close terrain"></figure><figure><figcaption>16 pixels/block: four-pixel bands</figcaption><img src="close-after.png" alt="Close terrain with scaled relief bands"></figure><figure><figcaption>Same relief, sun rotated to 150 degrees</figcaption><img src="close-opposite.png" alt="Relief and shadows following southeast illumination"></figure></main></html>`,
   );

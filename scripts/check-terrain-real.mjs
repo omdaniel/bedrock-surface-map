@@ -2,17 +2,36 @@ import { chromium } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { readFile, mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-const state = resolve(".local/terrain/real-state");
+import { verificationConfig, waitForMap } from "./verification-config.mjs";
+const config = verificationConfig({
+  output: ".local/terrain/verification",
+  options: {
+    state: { type: "string" },
+    "world-id": { type: "string" },
+    generation: { type: "string" },
+    cli: { type: "string", default: "target/release/surface-sync" },
+  },
+});
+if (
+  !config.state ||
+  ![config["world-id"], config.generation].every(
+    (v) => typeof v === "string" && /^[A-Za-z0-9_-]{1,80}$/.test(v),
+  )
+)
+  throw Error(
+    "Configure state, world-id and generation for the derived terrain store",
+  );
+const state = resolve(config.state);
 const root = JSON.parse(
   execFileSync(
-    "target/release/surface-sync",
+    config.cli,
     [
       "--state",
       state,
       "--world",
-      "bedrock-survival",
+      config["world-id"],
       "--generation",
-      "bedrock-survival-20260912",
+      config.generation,
       "manifest",
     ],
     { encoding: "utf8" },
@@ -25,7 +44,7 @@ const report = {
     "offline snapshot through live format; no live-server acceptance implied",
   runs: [],
 };
-await mkdir(".local/terrain/verification", { recursive: true });
+await mkdir(config.output, { recursive: true });
 try {
   for (const live of [false, true]) {
     const context = await browser.newContext({
@@ -76,18 +95,17 @@ try {
       });
     }
     const start = performance.now();
-    await page.goto("http://127.0.0.1:5173/?players=off");
-    await page.waitForFunction(
-      () =>
-        window.__map?.ready &&
-        window.__map.state().cached > 0 &&
-        window.__map.state().pending === 0,
-      {},
-      { timeout: 90000 },
-    );
+    const url = new URL(config.url);
+    url.searchParams.set("players", "off");
+    if (live) {
+      url.searchParams.delete("map");
+      url.searchParams.delete("terrain");
+    } else url.searchParams.set("terrain", "off");
+    await page.goto(url.href);
+    await waitForMap(page, config);
     const firstVisible = performance.now() - start;
     await page.screenshot({
-      path: `.local/terrain/verification/chrome-${live ? "live" : "offline"}-overview.png`,
+      path: `${config.output}/chrome-${live ? "live" : "offline"}-overview.png`,
     });
     const overview = await page.evaluate(() => window.__map.state());
     await page.evaluate(() => window.__map.spawn());
@@ -96,7 +114,7 @@ try {
     for (let i = 0; i < 3; i++)
       timings.push(await page.evaluate(() => window.__map.measure()));
     await page.screenshot({
-      path: `.local/terrain/verification/chrome-${live ? "live" : "offline"}-detail.png`,
+      path: `${config.output}/chrome-${live ? "live" : "offline"}-detail.png`,
     });
     report.runs.push({
       live,
@@ -109,7 +127,7 @@ try {
     await context.close();
   }
   await writeFile(
-    ".local/terrain/verification/chrome-real.json",
+    resolve(config.output, "chrome-real.json"),
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

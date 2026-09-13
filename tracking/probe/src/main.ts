@@ -8,7 +8,25 @@ import {
 } from "@minecraft/server-net";
 
 const base = variables.get("probe_url");
-if (typeof base !== "string" || !/^http:\/\/172\.\d+\.\d+\.\d+:\d+$/.test(base))
+const match =
+  typeof base === "string"
+    ? /^http:\/\/([0-9.]+):([0-9]{1,5})$/.exec(base)
+    : null;
+const octets = match?.[1].split(".").map(Number) ?? [];
+if (
+  variables.get("allow_test_probe") !== true ||
+  !match ||
+  octets.length !== 4 ||
+  !octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255) ||
+  !(
+    octets[0] === 127 ||
+    octets[0] === 10 ||
+    (octets[0] === 192 && octets[1] === 168) ||
+    (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+  ) ||
+  Number(match[2]) < 1 ||
+  Number(match[2]) > 65535
+)
   throw Error("Private test endpoint required");
 const endpoint = base;
 async function request(path: string, body = "", delay = 500, timeout = 2) {

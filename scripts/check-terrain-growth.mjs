@@ -1,3 +1,4 @@
+import { verificationConfig } from "./verification-config.mjs";
 import { chromium } from "@playwright/test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -8,6 +9,7 @@ execFileSync(
   ["run", "--locked", "-p", "surface-sync", "--example", "large_fixture"],
   { stdio: "inherit" },
 );
+const config = verificationConfig({ output: ".local/terrain-growth" });
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 const reports = [];
 try {
@@ -55,7 +57,7 @@ try {
       });
     });
     const started = performance.now();
-    await page.goto("http://127.0.0.1:5173/");
+    await page.goto(config.url);
     const settled = () =>
       page.waitForFunction(
         () =>
@@ -119,9 +121,9 @@ try {
     await page.waitForTimeout(2500);
     await settled();
     assert.deepEqual(errors, []);
-    await mkdir(".local/terrain/verification", { recursive: true });
+    await mkdir(config.output, { recursive: true });
     await page.screenshot({
-      path: `.local/terrain/verification/growth-${factor}x.png`,
+      path: `${config.output}/growth-${factor}x.png`,
     });
     reports.push({
       factor,
@@ -135,7 +137,7 @@ try {
     await page.close();
   }
   await writeFile(
-    ".local/terrain/verification/growth.json",
+    `${config.output}/growth.json`,
     JSON.stringify(reports, null, 2),
   );
   console.log(JSON.stringify(reports, null, 2));

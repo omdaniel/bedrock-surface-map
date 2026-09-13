@@ -1,12 +1,13 @@
 import { chromium } from "playwright";
 import { mkdir, writeFile } from "node:fs/promises";
-import { parseArgs } from "node:util";
+import { resolve } from "node:path";
+import { verificationConfig, mapReady } from "./verification-config.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 
-const { values } = parseArgs({
+const values = verificationConfig({
+  output: ".local/tracking",
   options: {
     browser: { type: "string", default: "chrome" },
-    url: { type: "string", default: "https://192.168.68.110:8443/" },
     scope: { type: "string", default: "players" },
   },
 });
@@ -14,10 +15,7 @@ if (!["chrome", "safari"].includes(values.browser))
   throw Error("Choose chrome or safari");
 if (!["players", "combined"].includes(values.scope))
   throw Error("Choose players or combined");
-const origin = new URL(values.url);
-if (!["192.168.68.110", "127.0.0.1", "localhost"].includes(origin.hostname))
-  throw Error("Local verification origin required");
-await mkdir(".local/tracking", { recursive: true });
+await mkdir(values.output, { recursive: true });
 
 let navigate, evaluate, close, screenshot;
 if (values.browser === "chrome") {
@@ -33,7 +31,7 @@ if (values.browser === "chrome") {
 } else {
   // Start safaridriver separately; never alter Safari's automation/security settings.
   const command = async (path, body, method = body ? "POST" : "GET") => {
-    const response = await fetch("http://127.0.0.1:4444" + path, {
+    const response = await fetch(values.webdriver + path, {
       method,
       headers: { "Content-Type": "application/json" },
       body: body ? JSON.stringify(body) : undefined,
@@ -93,9 +91,7 @@ try {
       url.searchParams.set("terrain", "off");
     await navigate(url.href);
     await wait("document.visibilityState === 'visible'");
-    await wait(
-      "window.__map?.ready && window.__map.state().cached > 0 && window.__map.state().pending === 0 && !window.__map.state().terrain?.busy",
-    );
+    await wait(`(${mapReady})(${values.expectedRegions})`);
     await evaluate(
       "(() => {window.__map.spawn(); window.__map.zoom(1/devicePixelRatio); return true})()",
     );
@@ -123,7 +119,10 @@ try {
     });
     if (mode === "on")
       await screenshot(
-        `.local/tracking/${values.browser}-${values.scope}-performance.png`,
+        resolve(
+          values.output,
+          `${values.browser}-${values.scope}-performance.png`,
+        ),
       );
   }
   const report = {
@@ -135,7 +134,10 @@ try {
     runs,
   };
   await writeFile(
-    `.local/tracking/${values.browser}-${values.scope}-performance.json`,
+    resolve(
+      values.output,
+      `${values.browser}-${values.scope}-performance.json`,
+    ),
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

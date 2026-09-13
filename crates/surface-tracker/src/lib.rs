@@ -86,7 +86,6 @@ impl Snapshot {
                 || p.name.is_empty()
                 || p.name.len() > 128
                 || p.name.chars().any(char::is_control)
-                || p.name.eq_ignore_ascii_case("PopCello8931")
             {
                 return Err("invalid player");
             }
@@ -404,7 +403,7 @@ mod tests {
                 2 => s.players[0].dimension = Some("other".into()),
                 3 => s.players[0].position.as_mut().unwrap().heading = 360.,
                 4 => s.players = vec![s.players[0].clone(); 33],
-                _ => s.players[0].name = "PopCello8931".into(),
+                _ => s.players[0].name = "invalid\nname".into(),
             }
             assert!(s.validate(&s.world_id, s.sampled_at_ms).is_err());
         }

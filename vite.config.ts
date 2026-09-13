@@ -5,6 +5,7 @@ const liveProxy = mapProxy({
   origin: process.env.SURFACE_PLAYERS_ORIGIN,
   world: process.env.SURFACE_WORLD_ID,
   fingerprint: process.env.SURFACE_FINGERPRINT,
+  map: process.env.SURFACE_MAP,
   terrainOrigin: process.env.SURFACE_TERRAIN_ORIGIN,
   generation: process.env.SURFACE_GENERATION,
 });

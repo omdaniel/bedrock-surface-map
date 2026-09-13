@@ -7,6 +7,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "config:test": "node --test scripts/verification-config.test.mjs scripts/private-origin.test.mjs scripts/proxy-integration.test.mjs",
     "demo:prepare": "node scripts/demo.mjs prepare",
     "demo:dev": "node scripts/demo.mjs dev",
     "demo:build": "node scripts/demo.mjs build",

@@ -1,12 +1,27 @@
+import { verificationConfig, waitForMap } from "./verification-config.mjs";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 
-// Fixed world-space crops make visual references comparable without pixel oracles.
-const areas = [
+const config = verificationConfig({ output: ".local/comparison" });
+const areas = config.areas ?? [
   { name: "origin-1000", x: 0, z: 0, blocks: 1000 },
-  { name: "islands-256", x: -160, z: -64, blocks: 256 },
-  { name: "river-256", x: -256, z: 336, blocks: 256 },
 ];
+if (
+  !Array.isArray(areas) ||
+  areas.length < 1 ||
+  areas.length > 16 ||
+  !areas.every(
+    (v) =>
+      v &&
+      /^[A-Za-z0-9_-]{1,80}$/.test(v.name) &&
+      [v.x, v.z, v.blocks].every(Number.isFinite) &&
+      v.blocks > 0 &&
+      v.blocks <= 4096,
+  )
+)
+  throw Error(
+    "Configure 1-16 comparison areas with name, x, z and positive blocks <=4096",
+  );
 const browser = await chromium.launch({ channel: "chrome", headless: false });
 try {
   const page = await browser.newPage({
@@ -15,9 +30,9 @@ try {
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
-  await page.goto("http://127.0.0.1:5173");
-  await page.waitForFunction(() => window.__map?.ready, {}, { timeout: 90000 });
-  await mkdir(".local/comparison", { recursive: true });
+  await page.goto(config.url);
+  await waitForMap(page, config);
+  await mkdir(config.output, { recursive: true });
   const results = [];
   for (const area of areas) {
     await page.evaluate(({ x, z, blocks }) => {
@@ -40,14 +55,14 @@ try {
     );
     await page
       .locator("canvas")
-      .screenshot({ path: `.local/comparison/wgpu-${area.name}.png` });
+      .screenshot({ path: `${config.output}/wgpu-${area.name}.png` });
     results.push({
       ...area,
       state: await page.evaluate(() => window.__map.state()),
     });
   }
   await writeFile(
-    ".local/comparison/wgpu.json",
+    config.output + "/wgpu.json",
     JSON.stringify(
       { browser: await browser.version(), results, errors },
       null,
@@ -55,7 +70,7 @@ try {
     ),
   );
   await writeFile(
-    ".local/comparison/index.html",
+    config.output + "/index.html",
     `<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bedrock map comparison</title><style>
@@ -65,12 +80,11 @@ p{margin:6px 0}main{display:grid;grid-template-columns:1fr 1fr;gap:1px;backgroun
 figure{margin:0;background:white;min-width:0}figcaption{padding:12px;font-weight:600}
 img{display:block;width:100%;aspect-ratio:1}a{color:#176399}
 @media(max-width:700px){main{grid-template-columns:1fr}}
-</style><header><h1>Bedrock Survival: visual comparison</h1>
-<p>X/Z -500 to +500, north up. Same offline snapshot; appearance reference, not a pixel oracle.</p>
-<p><a href="http://127.0.0.1:5173/">Interactive wgpu viewer</a> &middot;
-<a href="https://bedrockmap.net/map/world-416">User's BedrockMap reference</a></p></header>
-<main><figure><figcaption>wgpu prototype</figcaption><img src="wgpu-origin-1000.png" alt="Textured wgpu surface map"></figure>
-<figure><figcaption>uNmINeD 0.20.8-dev</figcaption><img src="unmined-origin-1000.png" alt="uNmINeD reference of the same coordinates"></figure></main></html>`,
+</style><header><h1>Surface map: visual comparison</h1>
+<p>Match the configured crop and offline snapshot in both renderers; appearance reference, not a pixel oracle.</p>
+<p><a href="${config.url}">Interactive wgpu viewer</a></p></header>
+<main><figure><figcaption>wgpu prototype</figcaption><img src="wgpu-${areas[0].name}.png" alt="Textured wgpu surface map"></figure>
+<figure><figcaption>uNmINeD reference</figcaption><img src="unmined-${areas[0].name}.png" alt="uNmINeD reference of the same coordinates"></figure></main></html>`,
   );
   if (errors.length) throw new Error(errors.join("\n"));
   console.log(JSON.stringify(results, null, 2));

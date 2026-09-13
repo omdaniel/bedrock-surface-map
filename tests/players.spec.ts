@@ -6,6 +6,32 @@ const manifest = JSON.parse(
 const template = JSON.parse(
   readFileSync("fixtures/tracking/snapshot.json", "utf8"),
 );
+test("operator-selected offline manifest loads without a deployment-specific default", async ({
+  page,
+}) => {
+  const requests: string[] = [];
+  page.on("request", (r) => requests.push(new URL(r.url()).pathname));
+  await page.route("**/viewer-config.json", (r) =>
+    r.fulfill({
+      json: {
+        players: null,
+        map: "maps/fixture/manifest.json",
+      },
+    }),
+  );
+  await page.goto("/?terrain=off");
+  await page.waitForFunction(
+    () => window.__map?.ready && window.__map.state().cached > 0,
+  );
+  expect(
+    requests.filter(
+      (url) => url.includes("/maps/") && url.endsWith("manifest.json"),
+    ),
+  ).toEqual(["/maps/fixture/manifest.json"]);
+  expect(await page.locator(".identity strong").textContent()).toBe(
+    manifest.name,
+  );
+});
 test("player roster, center/follow, overlay-only updates, expiry and mobile", async ({
   page,
 }) => {

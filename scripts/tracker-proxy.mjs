@@ -1,29 +1,22 @@
-import { isIP } from "node:net";
-export function trackerProxy({ origin, world, fingerprint }) {
-  if (!origin) return null;
-  const target = new URL(origin);
+import { privateReadOrigin } from "./private-origin.mjs";
+export function trackerProxy({ origin, world, fingerprint, map }) {
+  if (!origin && !map) return null;
+  const target = origin ? privateReadOrigin(origin) : null;
   if (
-    target.protocol !== "http:" ||
-    !["8110", "8112"].includes(target.port) ||
-    target.username ||
-    target.password ||
-    target.pathname !== "/" ||
-    target.search ||
-    target.hash ||
-    isIP(target.hostname) !== 4 ||
-    !/^(127\.0\.0\.1$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
-      target.hostname,
-    ) ||
-    !/^[A-Za-z0-9_-]{1,80}$/.test(world ?? "") ||
-    !/^[a-f0-9]{64}$/.test(fingerprint ?? "")
+    origin &&
+    (!/^[A-Za-z0-9_-]{1,80}$/.test(world ?? "") ||
+      !/^[a-f0-9]{64}$/.test(fingerprint ?? ""))
   ) {
     throw Error(
-      "Tracking requires a private IPv4 HTTP origin on port 8110 (production) or 8112 (pilot), a world ID and a SHA-256 map binding",
+      "Tracking requires an explicit world ID and SHA-256 map binding",
     );
   }
   const path = `/api/v1/worlds/${world}/players`;
   const config = JSON.stringify({
-    players: { world_id: world, source_sha256: fingerprint, url: path },
+    ...(map ? { map } : {}),
+    players: origin
+      ? { world_id: world, source_sha256: fingerprint, url: path }
+      : null,
   });
   return async (req, res, next) => {
     if (req.url !== "/viewer-config.json" && !req.url?.startsWith("/api/")) {
@@ -42,7 +35,7 @@ export function trackerProxy({ origin, world, fingerprint }) {
         .end(req.method === "HEAD" ? undefined : config);
       return;
     }
-    if (req.url !== path) {
+    if (!target || req.url !== path) {
       res.writeHead(404).end();
       return;
     }

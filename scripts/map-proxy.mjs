@@ -1,30 +1,16 @@
-import { isIP } from "node:net";
+import { privateReadOrigin } from "./private-origin.mjs";
 import { trackerProxy } from "./tracker-proxy.mjs";
 export function mapProxy(options) {
   const players = trackerProxy(options);
   if (!options.terrainOrigin) return players;
-  const target = new URL(options.terrainOrigin),
+  const target = privateReadOrigin(options.terrainOrigin),
     world = options.world,
     generation = options.generation;
-  if (
-    target.protocol !== "http:" ||
-    !["8111", "8113"].includes(target.port) ||
-    target.username ||
-    target.password ||
-    target.pathname !== "/" ||
-    target.search ||
-    target.hash ||
-    isIP(target.hostname) !== 4 ||
-    !/^(127\.0\.0\.1$|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(
-      target.hostname,
-    ) ||
-    ![world, generation].every((v) => /^[A-Za-z0-9_-]{1,80}$/.test(v ?? ""))
-  )
-    throw Error(
-      "Terrain requires an explicit private IPv4 origin on production port 8111 or pilot port 8113 and a world/generation binding",
-    );
+  if (![world, generation].every((v) => /^[A-Za-z0-9_-]{1,80}$/.test(v ?? "")))
+    throw Error("Terrain requires an explicit world/generation binding");
   const prefix = `/api/v1/worlds/${world}/terrain/`;
   const config = JSON.stringify({
+    ...(options.map ? { map: options.map } : {}),
     players: options.origin
       ? {
           world_id: world,

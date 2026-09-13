@@ -1,5 +1,13 @@
 import { chromium } from "playwright";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import {
+  verificationConfig,
+  waitForMap,
+  isPlayerResponse,
+} from "./verification-config.mjs";
+const config = verificationConfig({ output: ".local/tracking" });
+await mkdir(config.output, { recursive: true });
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 try {
@@ -10,7 +18,7 @@ try {
   let highestSequence = 0,
     maximumPlayers = 0;
   page.on("response", async (response) => {
-    if (!response.url().includes("/api/v1/worlds/")) return;
+    if (!isPlayerResponse(response.url(), config.url)) return;
     try {
       const view = await response.json();
       const s = view.snapshot;
@@ -26,13 +34,8 @@ try {
       /* Network failures contain no retained payload. */
     }
   });
-  await page.goto("https://192.168.68.110:8443/");
-  await page.waitForFunction(
-    () =>
-      window.__map?.ready &&
-      window.__map.state().pending === 0 &&
-      window.__map.state().cached === 64,
-  );
+  await page.goto(config.url);
+  await waitForMap(page, config);
   await page.getByRole("button", { name: "Players", exact: true }).click();
   await page.waitForTimeout(1000);
   const before = await page.evaluate(() => window.__map.state().draws);
@@ -50,7 +53,7 @@ try {
       "Snapshot-to-browser timing depends on server/Mac clock alignment; not in-game-action latency. No positions or names retained.",
   };
   await writeFile(
-    ".local/tracking/live-delivery.json",
+    resolve(config.output, "live-delivery.json"),
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));
