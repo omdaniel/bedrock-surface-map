@@ -84,8 +84,10 @@ world.afterEvents.blockExplode.subscribe((e) => {
 });
 world.afterEvents.pistonActivate.subscribe((e) => {
   if (e.dimension.id !== "minecraft:overworld") return;
+  mark(e.block.x, e.block.z);
   for (let z = -1; z <= 1; z++)
-    for (let x = -1; x <= 1; x++) mark(e.block.x + x * 16, e.block.z + z * 16);
+    for (let x = -1; x <= 1; x++)
+      if (x || z) mark(e.block.x + x * 16, e.block.z + z * 16);
 });
 world.afterEvents.worldLoad.subscribe(() => {
   loaded = true;

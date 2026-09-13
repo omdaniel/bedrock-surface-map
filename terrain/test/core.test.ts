@@ -127,6 +127,38 @@ test("latest pending sample survives an older in-flight acknowledgement", () => 
   box.offer(b);
   assert.ok(box.next());
 });
+test("bulk underwater lookup matches the linear reference, including air gaps and plants", () => {
+  for (const stack of [
+    { 0: material("sand"), 30: material("water") },
+    { 0: material("sand"), 10: material("seagrass"), 30: material("water") },
+    {
+      0: material("sand"),
+      15: material("light_block"),
+      20: material("water"),
+      30: material("water"),
+    },
+    { 319: material("water") },
+  ]) {
+    const reference = fixture(stack);
+    const bulk = fixture(stack);
+    bulk.belowWater = (_x, y) => {
+      const entries = Object.entries(stack).filter(
+        ([at, m]) =>
+          Number(at) <= y &&
+          ![
+            "minecraft:air",
+            "minecraft:water",
+            "minecraft:flowing_water",
+          ].includes(m.name),
+      );
+      entries.sort((a, b) => Number(b[0]) - Number(a[0]));
+      return entries.length
+        ? { y: Number(entries[0][0]), material: entries[0][1] }
+        : undefined;
+    };
+    assert.deepEqual(finish(bulk), finish(reference));
+  }
+});
 test("dirty queue coalesces edits and retains delayed retries", () => {
   const q = new WorkQueue();
   q.mark(-1, 0, 5);

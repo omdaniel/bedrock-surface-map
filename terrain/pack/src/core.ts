@@ -46,6 +46,7 @@ export interface Access {
   loaded(x: number, z: number): boolean;
   top(x: number, z: number): Block | undefined;
   block(x: number, y: number, z: number): Block | undefined;
+  belowWater?(x: number, y: number, z: number): Block | undefined;
   biome(x: number, y: number, z: number): string;
 }
 export const UNKNOWN: Material = { name: "surface:unknown", states: {} };
@@ -153,6 +154,15 @@ export function* scan(
         }
         if (kind === "water") {
           water ??= b;
+          if (access.belowWater) {
+            const next = access.belowWater(wx, y - 1, wz);
+            yield;
+            depth += y - (next?.y ?? access.minimum - 1);
+            if (!next) break;
+            y = next.y + 1;
+            b = next;
+            continue;
+          }
           depth++;
           continue;
         }
@@ -183,7 +193,7 @@ export function* scan(
         biome,
         overlay ? intern(overlay.material) : 0,
         overlay ? height(overlay) : -32768,
-        water ? depth : 0,
+        water ? Math.min(depth, 255) : 0,
         support ? intern(support.material) : 0,
         support ? height(support) : -32768,
       ]);

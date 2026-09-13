@@ -72,3 +72,31 @@ test("empty and unloading are distinct, including columns without a solid height
   unloading = true;
   assert.throws(() => reader.access.top(0, 0), /Unloaded/);
 });
+
+test("underwater native query is bounded and retains nonwater support", () => {
+  const reader = surfaceAccess({
+    heightRange: { min: -64, max: 320 },
+    getBlocks: (volume, filter, allowUnloaded) => {
+      assert.equal(volume.from.y, -64);
+      assert.equal(volume.to.y, 62);
+      assert.deepEqual(filter.excludeTypes, [
+        "minecraft:air",
+        "minecraft:water",
+        "minecraft:flowing_water",
+      ]);
+      assert.equal(allowUnloaded, false);
+      return {
+        getBlockLocationIterator: () => [{ y: 10 }, { y: 40 }, { y: 20 }],
+      };
+    },
+    getBlock: ({ y }) => ({
+      y,
+      typeId: "minecraft:seagrass",
+      permutation: { getAllStates: () => ({}) },
+    }),
+  } as never);
+  assert.equal(reader.access.belowWater!(0, 62, 0)?.y, 40);
+  assert.equal(reader.queries, 3);
+  assert.equal(reader.access.belowWater!(0, -65, 0), undefined);
+  assert.equal(reader.queries, 3);
+});

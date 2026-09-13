@@ -46,6 +46,27 @@ export function surfaceAccess(dimension: Dimension) {
       return describe(solid);
     },
     block: read,
+    belowWater: (x, y, z) => {
+      if (y < access.minimum) return undefined;
+      // One exact native query skips water/air; underwater plants remain support.
+      // Unloading throws, so a partial column can never replace published terrain.
+      queries++;
+      const blocks = dimension.getBlocks(
+        new BlockVolume({ x, y: access.minimum, z }, { x, y, z }),
+        {
+          excludeTypes: [
+            "minecraft:air",
+            "minecraft:water",
+            "minecraft:flowing_water",
+          ],
+        },
+        false,
+      );
+      let highest = -Infinity;
+      for (const location of blocks.getBlockLocationIterator())
+        highest = Math.max(highest, location.y);
+      return Number.isFinite(highest) ? read(x, highest, z) : undefined;
+    },
     biome: (x, y, z) => {
       queries++;
       return dimension.getBiome({ x, y, z }).id;

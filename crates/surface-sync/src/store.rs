@@ -720,7 +720,7 @@ impl Store {
             "live"
         };
         Ok(
-            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.1"}),
+            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2"}),
         )
     }
     pub fn disable(&self, disabled: bool, reason: &str) -> Result<()> {
