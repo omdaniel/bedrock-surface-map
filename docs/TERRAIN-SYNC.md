@@ -1,82 +1,102 @@
 # Incremental Terrain Synchronization
 
-Implementation of the September 12 accepted specification. This is separate from
-the already deployed player tracker. Source checkpoints are not production rollout
-or retail-client acceptance evidence.
+Terrain synchronization replaces changed 16x16 surface chunks without reloading
+the map. It retains Mojang's official Bedrock Dedicated Server and operates
+independently of [player tracking](TRACKING.md).
 
-## Contract
+## Detection and Extraction
 
-- One complete 16x16 surface chunk per replacement; no block-operation journal.
-- SurfaceChunk BSC1 uses the existing constant/palette/bit-packed channel encoding
-  and Zstandard. BSM2 retains the 256x256 region representation and adds coverage
-  value 2 (verified empty). BSM1 remains readable and retains its original bytes.
-- Column order: coverage, top in sixteenths, material, RGB tint, biome, overlay
-  material, overlay top, water depth, support material, support top. Coverage 0
-  remains unavailable, not air; -32768 is the absent-height sentinel.
-- Live manifests use format_version 2 and explicitly bind world_id and generation.
-  Material IDs append within that generation. Source hashes are provenance, not
-  player-binding identities. New/replaced worlds require a new generation/state.
-- Root manifests reference regional indexes, complete current region objects and
-  height-only objects. Regional indexes also reference current chunk objects.
-  Existing clients fetch changed chunks; cold loads use complete regions.
-- SQLite stores only current references, observation watermarks and bounded
-  producer tombstones. Objects are written and synced before references commit.
-  A newer accepted observation wins over a backup even if its content is unchanged.
+The separate `terrain/pack` uses block events as hints, then reads complete
+surface columns to establish their contents. A rotating queue scans loaded
+chunks around players for changes that events do not cover. It never reads live
+LevelDB, creates ticking areas or forces chunks to load.
 
-## Components and Security
+Every publication contains all 256 columns. Failed reads or unloading retain
+last-known terrain for retry, not empty replacements. Scanning spans ticks; it
+is not a globally atomic world snapshot. `terrain/rules.json` shares material,
+state and biome/tint rules with the offline adapter.
 
-`terrain/pack` is an independent read-only BDS script pack. `terrain/rules.json`
-declares the surface classification and biome/tint mapping. The pack uses existing
-2.9.0 server and 1.0.0-beta net/admin runtime dependencies, with the previously
-pinned npm declarations. Additional API compatibility still requires a BDS test.
+The native solid height map supplies a lower bound. Exact volume queries above
+it include skipped water and thin blocks; underwater queries exclude water/air
+while preserving plants and support. Fractional slab/snow heights and surface
+overlays use the same retained-field definitions as offline extraction.
 
-`surface-sync` has separate ingest/read routers; its intended VM100 publication is
-read-only LAN TCP8111. The private ingest uses x-terrain-token, a 256 KiB body limit,
-at most four complete chunks per request, and never logs payloads or credentials.
-Deployment and daily repair belong in runproxmox, not this application repository.
+The pack's cooperative `scan_budget_ms` defaults to 1 ms and is configurable
+from 1-4 ms. Its loop yields against an elapsed-time and query-count budget;
+individual native calls are not preemptible. Pending completed observations are
+bounded to 8 MiB, with only the latest per chunk. Health distinguishes unloads,
+scan errors, transport failures, overflow and delayed coverage.
 
-## Verification Stages
+## Publication and Storage
 
-- Protocol/extraction: exact codec round trips, unavailable/empty distinction,
-  roof removal, water/support, overlays, fractional heights, reordered uploads,
-  producer changes, material identity and backup/live conflicts.
-- Storage/viewer: immutable object validation, bounded storage, chunk GPU/picking
-  patches, shadow/overview invalidation, sparse world growth and cache bounds.
-- Operations: isolated fresh/copy tests, optional-pack update fallback, daily
-  04:45 local idle-only repair with the existing maintenance guards, failure
-  monitoring, explicit disable paths and tested production activation.
-- Real acceptance: edits, new terrain and outage repair visible in Chrome, Safari
-  and the iPad without reload. Five-second direct-edit latency and <5% controlled
-  pan p95 degradation are targets until measured, not claims from synthetic tests.
+- Each authenticated request carries world/generation, producer session, increasing
+  sequence, scan interval and up to four complete chunks, bounded to 256 KiB.
+  One request is in flight, with a two-second timeout and bounded backoff.
+- The producer suppresses unchanged acknowledged content. Accepted observations,
+  including unchanged ones, advance ordering metadata, not content revisions.
+- SQLite holds current references, stable material IDs, observation watermarks,
+  producer tombstones and reconciliation metadata. Immutable compressed objects
+  are written and synced before their references commit.
+- The root manifest references complete regions, height-only objects and regional
+  chunk indexes. New visitors load current regions; connected viewers fetch
+  changed chunks, without replaying an edit log.
+- Material IDs append within a generation. `surface-sync refresh-catalog` updates
+  descriptors without changing IDs or chunk hashes. Unknown materials stay visible
+  as diagnostics.
+- Backup reconciliation cannot overwrite a chunk with a post-boundary live
+  observation, even when that observation's content is unchanged. Restoring or
+  replacing a world requires an explicit new generation.
 
-Terrain synchronization never reads live LevelDB or forces chunks to load. It does
-not publish the map on the internet, collect inventories/chat, or retain movement
-history. Keep snapshots, terrain objects, textures and all credentials outside Git.
+See [Format and Rendering](FORMAT.md) for BSC1/BSM2 layouts, bounded height windows,
+atomic picking/GPU updates and shadow/overview invalidation. BSM1 offline maps
+remain supported.
 
-## Build and Local Validation
+## Interfaces and Isolation
+
+`surface-sync` has separate read and ingest listeners. The private ingest uses
+`x-terrain-token`; neither it nor credentials belong in browser configuration.
+The read API serves revalidated manifests/status and immutable hashed objects.
+A fixed-destination HTTPS proxy exposes only approved GET/HEAD routes.
+
+The pack uses server runtime `2.9.0` and net/admin runtime `1.0.0-beta`.
+Exact npm declaration pins are in `package-lock.json`; declarations do not
+establish BDS binary compatibility. Test candidate versions with the actual pack
+on isolated fresh/restored worlds.
+
+Deployment, secrets, resource limits, firewall, idle-only repair scheduling and
+optional-pack update fallback belong in the operator's deployment repository
+(`runproxmox` for the homelab), not in the application. The service needs only
+its derived-store volume, not world files or a Docker socket. Terrain failures
+must not interrupt gameplay or independent player delivery.
+
+## Build and Validate
+
+From a [bootstrapped checkout](GETTING_STARTED.md#run-the-demo-locally):
 
 ```sh
 uv tool install ziglang==0.15.2
 cargo install cargo-zigbuild --version 0.20.1 --locked
 npm run terrain:build
 npm run terrain:test
+cargo test --locked -p surface-sync
 node scripts/terrain-fixture.mjs
 npx playwright test tests/terrain.spec.ts
-# A clean, committed checkout is required; Linux binaries are built on the Mac.
+# Requires a clean committed checkout.
 npm run terrain:bundle
 ```
 
-The bundle contains static x86_64-musl binaries, packs and a synthetic seed only.
-The service image includes the importer for isolated repair workers. It does not
-contain Mojang textures or real terrain. The separate `asset-library` CLI command
-prepares the shared pinned texture atlas; `import --surface-only` emits bounded
-region-only repair data without allocating a world-sized shadow field.
+The bundle contains static x86_64-musl binaries, packs and a synthetic seed, with
+commit/hash verification metadata. Its importer supports isolated repair workers;
+it contains no real terrain or Mojang textures. `surface-cli asset-library`
+prepares the pinned shared atlas. `import --surface-only` emits region-streamed
+repair data without a world-sized heightfield.
 
-`?terrain=off` selects the retained offline snapshot. `?players=off` continues to
-disable positions independently. A live manifest requires an explicit matching
-world/generation binding in the fixed-origin proxy configuration.
+A live viewer requires a matching world/generation binding. Polling pauses while
+hidden and revalidates on return. Outages preserve last-known terrain with a
+separate freshness status. `?terrain=off` selects the offline snapshot;
+`?players=off` disables positions independently.
 
-Checkpoint 2 synthetic checks verify chunk replacement, matching picking records,
-camera preservation, no draws on unchanged polls, and movement into new regions.
-Native GPU reference tests still pass. These checks do not establish real BDS API
-compatibility or iPad terrain-update acceptance; those remain deployment gates.
+The [acceptance checklist](TERRAIN-ACCEPTANCE.md) covers real edits, exploration,
+outages and performance. Five-second direct edits, roughly sixty-second background
+coverage and under 5% controlled-pan p95 degradation are targets to measure on
+the deployment, not guarantees from synthetic tests.

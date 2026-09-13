@@ -45,7 +45,7 @@ timings, peak process RSS, sampled verification count and unresolved materials.
 Errors have a nonzero exit code and JSON stderr summary. Compiler time and the
 initial asset download are not included in import timings.
 
-The legacy offline export is limited to 65,536 chunks and a bounding rectangle
+The offline export is limited to 65,536 chunks and a bounding rectangle
 of at most 16 million columns. It carries a whole-dataset heightfield for shadows.
 For live-map repair, `--surface-only` uses bounded region streaming instead of
 building that heightfield; its output is repair input, not a directly viewable

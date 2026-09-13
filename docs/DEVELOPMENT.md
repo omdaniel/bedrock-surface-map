@@ -3,14 +3,14 @@
 The README is the short introduction. This page collects implementation and
 maintenance entry points without making the demo visitor read an operator guide.
 
-| Component | Responsibility |
-| --- | --- |
-| surface-core | Retained surface fields, lossless codecs, reference shadow calculations |
-| bedrock-adapter / surface-cli | Read-only archive extraction, assets, validation, import and repair exports |
-| surface-gpu | Rust/WASM renderer, bounded GPU cache, shadows, filtered overviews |
-| surface-tracker / tracking pack | Independent player sampling, collection and browser markers |
-| surface-sync / terrain pack | Chunk observations, durable current terrain, incremental delivery |
-| web | Worker decoding, navigation, picking, configuration and overlays |
+| Component                       | Responsibility                                                              |
+| ------------------------------- | --------------------------------------------------------------------------- |
+| surface-core                    | Retained surface fields, lossless codecs, reference shadow calculations     |
+| bedrock-adapter / surface-cli   | Read-only archive extraction, assets, validation, import and repair exports |
+| surface-gpu                     | Rust/WASM renderer, bounded GPU cache, shadows, filtered overviews          |
+| surface-tracker / tracking pack | Independent player sampling, collection and browser markers                 |
+| surface-sync / terrain pack     | Chunk observations, durable current terrain, incremental delivery           |
+| web                             | Worker decoding, navigation, picking, configuration and overlays            |
 
 Live terrain replaces chunks and patches resident height windows, overviews and
 picking data. It does not allocate a heightfield for an arbitrarily large world.
@@ -19,7 +19,7 @@ and graphics-driver overhead. Oversized views request zooming in.
 
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),
-[acceptance evidence](TERRAIN-ACCEPTANCE.md) and [public-demo maintenance](PUBLIC_DEMO.md).
+[acceptance checks](TERRAIN-ACCEPTANCE.md) and [public-demo maintenance](PUBLIC_DEMO.md).
 
 ## Controls and Appearance
 
@@ -31,8 +31,8 @@ change 15 degrees, Home points north. Vivid/Original selects color treatment.
 Relief strength defaults to 100% and edge width to a quarter block. Settings are
 session-local. Idle views stop drawing; player-only movement does not redraw terrain.
 
-See [appearance](APPEARANCE.md) and the historical
-[qualitative reference comparison](VISUAL-COMPARISON.md), not a speed benchmark.
+See [appearance](APPEARANCE.md) and the
+[visual comparison procedure](VISUAL-COMPARISON.md), not a speed benchmark.
 
 ## Verify
 
@@ -68,5 +68,8 @@ Use small tested commits on a `codex/` branch and open a PR. Dependency changes
 update lockfiles and require native/WASM and browser checks. Parser changes also
 require a fresh offline import verification. Keep old immutable dataset references
 for rollback; source rollback uses a new revert commit, not rewritten history.
+Documentation describes current behavior and limitations. Keep change narratives
+and dated measurements in commits or PRs; update the relevant reference when
+behavior changes rather than appending a follow-up section.
 Git is not the world backup. Operator-specific homelab deployment remains outside
 this repository; source changes do not authorize host or game-server changes.

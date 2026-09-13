@@ -1,181 +1,128 @@
 # Color, Shadows and Terrain Relief
 
-Follow-up to the initial visual comparison. The user authorized varying the
-original fixed 60-degree sun to approximate uNmINeD's stronger beach relief.
-Default: 45 degrees elevation, 330 degrees azimuth (west of north), 55% shadow strength,
-Vivid color. The controls allow 15-75 degrees elevation, a continuously wrapping
-azimuth dial in 1-degree steps, 0-80% shadow strength, Vivid/Original color, 0-100% terrain relief
-(default 100%), and 0.05-0.50 block edge width (default 0.25). They
-are session-local; changing them does not modify the imported dataset.
+The renderer combines textured top surfaces, directional cast shadows and
+stylized edge relief. Lighting and color settings are session-local; they do
+not modify the dataset.
 
-## Why the Original Relief Was Weak
+| Control         | Default     | Range                              |
+| --------------- | ----------- | ---------------------------------- |
+| Sun elevation   | 45 degrees  | 15-75 degrees                      |
+| Sun azimuth     | 330 degrees | Continuously wrapping compass dial |
+| Shadow strength | 55%         | 0-80%                              |
+| Color           | Vivid       | Vivid / Original                   |
+| Terrain relief  | 100%        | 0-100%                             |
+| Relief width    | 0.25 block  | 0.05-0.50 block                    |
 
-The previous compute pass reduced each column to a binary shadow sample. A
-one-block ledge under a 60-degree sun casts a 0.577-block shadow along the light
-direction, or 0.408 block across an east-facing ledge with northwest illumination.
-An all-or-nothing sample cannot display that narrow band correctly. Simply
-lowering the sun made shadows longer without fixing the missing detail.
+## Sun Direction and Cast Shadows
 
-The first relief follow-up retained a floating-point occlusion horizon. With
-`s = sqrt(2) * tan(elevation)`, each diagonal stores
-`H(x,z) = max(height(x,z), H(x-1,z-1) - s)`.
+Azimuth is clockwise from north: north=0/360, east=90, south=180, west=270.
+With +X east and +Z south, Rust constructs the direction towards the sun as
+`(sin(azimuth), -cos(azimuth))`. CPU references, GPU shadows, relief and
+overviews share that vector. Shadows extend in the opposite direction.
 
-Within a receiving block, a ray towards the northwest crosses west, north, and
-diagonal cells at different fractional distances. Their three horizon values
-defined clipping thresholds in block-local `(u,v)` coordinates. The shader split
-the footprint at `u=v` and integrated the lit area of both triangles analytically.
-This approach remains in the CPU reference tests, but is no longer the renderer's
-shadow algorithm because its diagonal recurrence cannot represent arbitrary
-azimuths without approximation or direction snapping.
+The dial supports repeated turns with mouse, pen or touch through pointer
+capture. It ignores the undefined bearing at its center. Arrows adjust one
+degree, Page Up/Down adjust 15, Home selects 0 and End selects 359. Values wrap;
+the UI displays 360 as 0. The accessible slider exposes the bearing and units.
 
-## Full Azimuth
+A max-height pyramid accelerates ray/block intersections at arbitrary azimuths.
+Nodes below an ascending ray are skipped; leaves use actual column heights.
+Missing coverage does not invent an occluder. Cardinal zero components are exact,
+and a coordinate-scaled boundary nudge prevents traversal from sticking to edges.
+Offline maps supply the complete dataset heightfield. Live maps and the demo
+supply a bounded height window with offscreen shadow coverage; see
+[height coverage and caching](FORMAT.md#height-coverage-and-caching).
 
-Azimuth follows the [NOAA convention](https://gml.noaa.gov/grad/solcalc/glossary.html):
-clockwise from north, with north=0/360, east=90, south=180, west=270. In map X/Z,
-+X is east and +Z is south, so the direction towards the sun is directly
-`(sin(azimuth), -cos(azimuth))`. Shadows extend oppositely. Rust constructs this
-vector once; CPU references, GPU cast shadows, relief and overviews share it.
+The detail pass takes four stratified samples in the clipped pixel footprint.
+The overview pass samples the whole block, then box-filters its mip chain.
+This preserves fractional-block shadows without per-block meshes. A height
+difference `H` casts a horizontal shadow of `H / tan(elevation)`: a ten-block
+column gives 5.7735 blocks at 60 degrees, or ten blocks at 45 degrees.
 
-The circular compass control uses the same bearing directly, not a translation
-to the former convention. Mouse, pen and touch use pointer capture, so a drag
-can circle repeatedly in either direction or continue outside the control.
-The undefined bearing at the center is ignored. Arrow keys adjust one degree,
-Page Up/Down adjust 15, Home selects 0 and End selects 359; adjustments wrap.
-The accessible slider role exposes the current bearing and units. There is no
-CSS rotation transition that could animate a long reverse sweep at north.
-The UI canonicalizes 360 to 0; the renderer accepts either as exactly north.
-
-Migration note: the former east-origin, counterclockwise default of 120 degrees
-is the same physical direction as 330 in this convention. This equivalence is
-recorded only for historical interpretation; no legacy conversion remains in
-the application. Angle settings were never persisted in map files. New diagnostic
-reports explicitly tag their azimuth convention as `north-clockwise`.
-
-A max-height hierarchy now accelerates ray/block intersections at any azimuth.
-It is built once per snapshot, retains missing coverage as non-occluding, and
-includes the entire dataset regardless of which regions are visible. Maxima
-conservatively skip blocks below the ascending ray. Leaves use actual block
-heights; this is not a blend of different compass-direction shadow images.
-Cardinal zero components are exact, and a small coordinate-scaled boundary nudge
-prevents floating-point traversal from getting stuck on a block edge.
-
-The detail pass uses four stratified samples in the clipped pixel footprint;
-the overview pass samples the whole block, then box-filters its mip chain. Thus
-partial-block shadows remain visible, but coverage is now sampled rather than
-analytically integrated. Fine boundaries can differ slightly from the earlier
-NW-only view. No per-block geometry or exported image-map tiles are introduced.
-
-The hierarchy and overview colors are cached. Changing either sun angle or the
-color controls regenerates resident overview colors; camera motion does not.
-Close-up fragments do perform accelerated ray queries on each redraw. Their cost
-depends on terrain and sun elevation, unlike the old constant-work formula.
-The real-browser multi-angle navigation measurements are in VERIFICATION.md.
-
-This is a hard, parallel-light top-heightfield approximation. Jagged block edges
-and geometric canopy shadows are expected. The separate terrain relief below
-approximates the observed edge highlights, not rounded canopy lighting,
-translucency or soft cast shadows. The comparison does not establish uNmINeD's
-actual sun angle. No contour geometry, image-map tiles or additional block
-meshes are introduced.
+This is hard, parallel-light heightfield shading. It does not simulate soft
+shadows, rounded canopy lighting, translucency or full block geometry. Close-up
+ray-query cost varies with terrain and sun elevation; overview shading is cached.
 
 ## Terrain-Edge Relief
 
-The user's reference observation is a narrow lightened upper rim, extra corner
-highlight, and a dark band on the neighboring lower surface, in addition to
-cast shadows. This is an artistic depth cue, not another physical sun or a
-claim about uNmINeD's implementation. The matched follow-up crop uses the user's
-estimated 330-degree compass bearing; this is also the app default at the user's request.
+Relief adds bright upper rims and corners, plus contact shade on neighboring
+lower surfaces. It is an artistic depth cue, not a second light source or a
+physical ambient-occlusion solver.
 
-For each land column, the shader reads its two up-sun neighbors from the complete
-heightfield. Height differences create bands; material differences or block
-boundaries inside an equal-height plateau do not. Higher receivers get bright
-rims, lower receivers get contact shade. Missing/out-of-bounds neighbors do not
-invent cliffs. Water receivers are excluded to avoid outlining underwater
-support changes. Slabs and snow-layer steps contribute proportionally up to a
-one-block height difference; larger cliffs do not widen the accent.
+Each land column reads its two up-sun neighbors. Height differences create bands;
+material differences and block boundaries within a flat plateau do not. Missing
+neighbors do not create cliffs. Water receivers are excluded. Slab and snow steps
+contribute proportionally up to a one-block height difference; taller cliffs do
+not widen the accent.
 
-The light vector's absolute X/Z components, divided by their maximum, weight
-the two edges continuously. At 315 degrees, north and west contribute equally;
-at 330, north is stronger than west. At 90, only east-facing rims are bright;
-at 180, only south-facing rims are bright. Rotating through a cardinal direction
-fades one band to zero before bringing it up on the opposite side. Corners where
-two lit edges meet receive an additional highlight. Lower contact shade follows
-the same compass, independent of the main cast-shadow toggle or strength.
+Absolute X/Z light components, divided by their maximum, weight the two edges.
+At 315 degrees, north and west contribute equally; at 330, north is stronger.
+At 90, only east-facing rims are bright. The bands fade continuously as the
+azimuth crosses a cardinal direction. Corners receive an additional highlight;
+lower contact shade follows the same direction independently of cast-shadow
+strength or its toggle.
 
-Default width is 0.25 block: one backing pixel at 4 pixels/block, four at 16,
-and a fractional contribution when zoomed out. Width is adjustable, not capped
-at one screen pixel. Exact analytical band/pixel overlap anti-aliases the rims;
-whole-cell coverage feeds the existing GPU-filtered overview levels. Corner
-overlap is accounted for without double-counting the two straight bands.
+Width is measured in blocks: 0.25 block spans one backing pixel at four
+pixels/block and four pixels at sixteen. Analytical band/pixel overlap
+anti-aliases the rims, including whole-cell coverage for filtered overviews.
+Corner overlap does not double-count the straight bands.
 
-The straight-rim coefficient is 0.55; corner overlap adds up to 0.25. These blend
-toward `min(base * 1.55 + 0.025, 1)`, preserving more foliage color than a white
-overlay. Straight contact shade is 0.28 with up to 0.10 extra at its corner.
-The Terrain relief control scales both. Main cast shadows still darken bright
-rims, so occluded highlights do not glow through terrain. This is not a physical
-ambient-occlusion solver. Multiplying separately averaged shadow/relief coverage
-and per-region overview filtering remain approximations at subpixel scales.
+The straight-rim coefficient is 0.55; its corner adds up to 0.25. Highlights
+blend towards `min(base * 1.55 + 0.025, 1)`. Contact shade uses 0.28 with up to
+0.10 at corners. Relief strength scales both. Cast shadows darken highlights
+before contact shade is applied, so shaded rims do not glow through terrain.
+Separately averaged shadow/relief coverage is a subpixel approximation.
 
-Detail and overview share `relief.wgsl` and the composition function. Two height
-lookups reuse the existing hierarchy; no new per-region GPU allocation is made.
-Azimuth, strength or width changes regenerate cached overview colors. Setting
-relief to zero skips its height lookups; it does not disable the primary shadows.
+Detail and overview share `relief.wgsl` and the lighting composition function.
+Relief reuses height storage and adds no per-region allocation. Setting its
+strength to zero skips neighbor lookups without disabling cast shadows.
 
 ## Color Treatment
 
-Vivid normalizes grayscale grass/foliage texture luminance before applying the
-biome color, retaining texture contrast instead of multiplying two dark values.
-Foliage uses a darker, greener base than grass. A restrained saturation/brightness
-adjustment and richer blue water complete the treatment. Detail and overview
-use shared WGSL functions. Original retains the earlier color formulas for A/B
-comparison, but benefits from the new shadow calculation. Biome colors, aquatic
-plants and multilayer transparency remain approximations.
+**Vivid** normalizes grayscale grass/foliage texture luminance before applying
+biome color, preserving texture contrast. Foliage has a darker, greener base
+than grass. Mild saturation/brightness grading and richer blue water complete
+the treatment. **Original** multiplies texture color directly by biome tint and
+uses an ungraded base with a lighter water blue. Both use the same shadows.
 
-Only ordinary exposed sand receives an additional 0.88 multiplier in Vivid,
-after color grading and before rim lighting. This lowers its base without
-increasing shadow strength or altering the other material palettes. Red sand,
-sandstone, grass/foliage, water/support blends and Original mode are unaffected.
-The shader uses an existing spare material flag, not an RGB-color heuristic.
-The browser regression compares the same synthetic scene with/without that
-classification, checking darker sand, increased rim contrast and unchanged
-grass/stone/water/Original pixels.
+Only exposed ordinary sand receives a 0.88 multiplier in Vivid after grading
+and before rim lighting. This leaves room for highlights without changing
+red sand, sandstone, grass, foliage, water/support blends or Original mode.
+A material flag identifies sand by catalog name, not by its RGB color.
 
-## Regression Tests
+Biome palettes, aquatic plants and multilayer transparency are approximations.
+See [visual comparison](VISUAL-COMPARISON.md) for evaluating appearance against
+another renderer without treating it as a pixel-identical oracle.
 
-- CPU one-block ledges at 30, 45 and 60 degrees: east-facing shadow coverage is
-  approximately 0.707 block at 45 degrees and 0.408 block at 60 degrees.
-- An independent grid-crossing ray walker supersamples randomized fields with
-  negative and missing heights, checking analytical coverage within 0.045.
-- Current GPU tests compare five samples per cell against an independent f64
-  block-by-block CPU DDA, using 15 azimuths and four elevations (15/45/60/75).
-  Fixtures cover flat terrain, a column, terraces, negative/missing random heights
-  and a 256-column boundary. Odd hierarchy dimensions and the compass convention
-  have explicit CPU tests.
-- The original 10-block/60-degree test still checks the 5.7735-block shadow reach.
-- A Chrome screenshot test checks that a point 0.55 block behind a sand ledge is
-  dark at 45 degrees and lit at 60, while a nearer point stays shaded. It also
-  checks zero shadow strength, color switching and the mobile control layout.
-- A second Chrome pixel test checks cast-shadow direction at cardinals and
-  intermediate azimuths, exact 0/360 pixel equivalence, 1-degree keyboard steps
-  and mobile-layout fit.
-- The same native GPU fixtures check relief against an independent CPU
-  enumeration of the four band intersections, at three widths and all 15 angles.
-  They include missing heights and cross-region lookups, with tolerance 1e-5.
-- CPU checks cover flat interiors, missing neighbors, stronger corners,
-  fractional step heights, 330-degree weighting, opposite directions and
-  whole-block integration. Chrome pixel tests cover rotating highlights/contact
-  shade, width in actual pixels at two zoom levels, disabled relief, overview
-  invalidation, and scrollable controls in short landscape layouts.
+## Tests and Local Inspection
 
-## Local Reference Crop
+Native GPU fixtures compare shadow samples against an independent f64 CPU
+grid walker over fifteen azimuths and four elevations. Relief fixtures compare
+GPU bands against CPU intersection calculations at three widths. Cases include
+negative/missing heights, fractional steps, corners and region boundaries.
+CPU tests also cover compass direction, odd pyramid dimensions and shadow reach.
 
-With the dev server running, `node scripts/check-appearance.mjs` captures
-X `[-380,-188)`, Z `[-210,-18)` at four pixels per block. Images, a JSON state/error
-report and comparison HTML are written under ignored `.local/appearance/`.
-It requires local Chrome and the already-imported real map, not CI credentials.
+Browser pixel tests check ledge shadows, rotating relief, sand contrast,
+water exclusion, zoom-scaled widths, disabled effects and overview invalidation.
+Dial tests cover pointer/touch rotation, keyboard wrapping and exact 0/360
+equivalence. These tests are in `tests/viewer.spec.ts` and `tests/dial.spec.ts`.
 
-The optional uNmINeD reference uses the separate offline world copy described
-in [VISUAL-COMPARISON.md](VISUAL-COMPARISON.md):
+With local Chrome, a running development viewer and an imported offline map:
+
+```sh
+node scripts/check-appearance.mjs
+node scripts/check-azimuth.mjs
+node scripts/check-relief.mjs
+```
+
+The scripts write ignored reports, screenshots and comparison pages under
+`.local/appearance`, `.local/azimuth` and `.local/relief`. The beach crop is
+X `[-380,-188)`, Z `[-210,-18)`. Azimuth and relief checks include navigation
+timings and desktop/mobile layouts. Relief comparisons use off/on views at
+330 degrees and reversed light at 150 degrees, not different application builds.
+
+For an optional matching uNmINeD image, prepare the separate offline copy in the
+[comparison guide](VISUAL-COMPARISON.md), then run:
 
 ```sh
 .local/comparison-tools/unmined-cli_0.20.8-dev_osx-arm64/unmined-cli image render \
@@ -185,17 +132,4 @@ in [VISUAL-COMPARISON.md](VISUAL-COMPARISON.md):
   --chunkprocessors=2 --log-level=warning
 ```
 
-The comparison page uses that reference alongside 45- and 60-degree wgpu views.
-Private reference images are not committed, uploaded or included in CI artifacts.
-
-`node scripts/check-azimuth.mjs` adds eight real-map azimuth captures, controlled-pan
-measurements at 1920x1080 DPR1, and a mobile-layout screenshot under ignored
-`.local/azimuth/`. The current algorithm's northwest beach comparisons can be
-refreshed with the original `check-appearance.mjs` command.
-
-`node scripts/check-relief.mjs` creates ignored `.local/relief/index.html` with
-matched 330-degree before/after/uNmINeD beach views, 16-pixel/block close-ups,
-and a 150-degree opposite-light view. It uses the optional reference image above.
-It also records real-Chrome 1080p navigation with relief off/on, nonblank pixel
-checks, and portrait/short-landscape control screenshots. No private images or
-downloaded textures enter source control or CI.
+Private comparison images and downloaded assets do not belong in Git or CI.
