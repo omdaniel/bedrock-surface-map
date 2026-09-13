@@ -1,0 +1,43 @@
+{
+  "audited_on": "2026-09-12",
+  "bds_version": "1.26.45.1",
+  "bds_zip_sha256": "b0db86098ee418a9bb226f6f3f51ff2be36542236839375627b29aef3dfa5cda",
+  "application_commit_tested": "71d8e2b97ddcfdb4faf5ad13cfb4d8d543e73876",
+  "pack_version": "1.0.1",
+  "retail_copy_application_commit": "3a0269c0f5ed2166930dae2fb71cac8e7d107f15",
+  "npm_declarations": {
+    "@minecraft/server": "2.9.0",
+    "@minecraft/server-net": "1.0.0-beta.1.26.40-stable",
+    "@minecraft/server-admin": "1.0.0-beta.1.26.40-stable"
+  },
+  "runtime_dependencies": {
+    "@minecraft/server": "2.9.0",
+    "@minecraft/server-net": "1.0.0-beta",
+    "@minecraft/server-admin": "1.0.0-beta"
+  },
+  "isolated_fresh_world": "authenticated empty heartbeats and restart/outage recovery verified",
+  "isolated_survival_export": "retail iPad join, matching map/game positions, empty roster after leave, restart and resumed heartbeats verified",
+  "http_permissions": "force_tls omitted; false still raised TLSOnlyError in this build",
+  "http_negative_tests": {
+    "forbidden_uri": "UriNotAllowedError",
+    "oversized_body": "RequestBodyTooLargeError",
+    "concurrent_request": "HttpRequestLimitExceededError",
+    "allowed_request_status": 204,
+    "timeout": "InternalHttpRequestError",
+    "timeout_ms": 1045
+  },
+  "full_candidate_seconds": 18.25,
+  "production_enabled": true,
+  "production_adopted_at": "2026-09-12T19:01:06Z",
+  "retail_client_join_verified": true,
+  "real_player_coordinates_verified": true,
+  "two_real_players_verified": true,
+  "production_client_platforms": ["iPad", "iPhone"],
+  "production_switch_verified": false,
+  "production_collector_outage_seconds": 390,
+  "production_outage_game_unchanged": true,
+  "production_outage_browser_recovered": true,
+  "production_alert_dedup_recovery_verified": true,
+  "updater_integration_installed": true,
+  "production_adoption_verified": true
+}

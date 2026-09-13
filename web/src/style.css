@@ -20,7 +20,7 @@ body {
 }
 #app {
   display: grid;
-  grid-template-rows: 64px minmax(0, 1fr) 32px;
+  grid-template-rows: 64px auto minmax(0, 1fr) 32px;
 }
 header {
   display: flex;
@@ -109,6 +109,7 @@ svg {
   stroke-width: 1.5;
 }
 main {
+  grid-row: 3;
   position: relative;
   min-height: 0;
   overflow: hidden;
@@ -152,6 +153,7 @@ canvas {
   font-size: 28px;
 }
 footer {
+  grid-row: 4;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -175,19 +177,20 @@ footer {
   background: #9ecb74;
 }
 #message {
-  position: absolute;
-  top: 18px;
-  left: 50%;
-  transform: translateX(-50%);
+  grid-row: 2;
   padding: 10px 14px;
-  background: #202724ee;
-  border: 1px solid #58614f;
-  border-radius: 5px;
-  max-width: min(520px, 80%);
+  background: #202724;
+  border-bottom: 1px solid #58614f;
   display: flex;
   gap: 12px;
   align-items: center;
   line-height: 1.5;
+  max-height: 25vh;
+  overflow: auto;
+}
+#message-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 #retry,
 #measure {
@@ -413,7 +416,7 @@ pre {
 }
 @media (max-width: 600px) {
   #app {
-    grid-template-rows: 58px minmax(0, 1fr) 30px;
+    grid-template-rows: 58px auto minmax(0, 1fr) 30px;
   }
   header {
     padding: 0 10px;
@@ -459,6 +462,5 @@ pre {
   }
   #message {
     font-size: 11px;
-    width: 80%;
   }
 }

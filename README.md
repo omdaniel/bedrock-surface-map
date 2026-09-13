@@ -2,8 +2,12 @@
 
 Local, offline Bedrock Overworld surface viewer. Rust extracts a snapshot into
 losslessly compressed surface attributes; WebAssembly and wgpu draw the map in
-the browser with WGSL. No Vello, image-map tiles, streaming desktop, live server
-connection or hosted service.
+the browser with WGSL. Optional live-player tracking uses a separate collector
+and DOM overlay; terrain stays offline. No Vello, image-map tiles or streaming desktop.
+
+The Players button is at the right of the toolbar. The operator-configured LAN
+HTTPS viewer now shows Survival's live roster and markers; other map snapshots
+remain unbound. See [tracking status and recovery boundaries](docs/TRACKING.md).
 
 ## Run on this Mac
 
@@ -101,7 +105,9 @@ the snapshot and recreates GPU resources.
 | `bedrock-adapter` | Pinned Bedrock parser; read-only extraction and material-state catalog |
 | `surface-cli` | Archive safeguards, import, atlas, atomic publication, inspect and benchmark |
 | `surface-gpu` | WASM ABI, GPU residency, compute shadows/overviews, WGSL drawing |
-| `web/src` | Worker transport, bounded visible-region cache, navigation, picking, diagnostics |
+| `surface-tracker` | Bounded in-memory player collector; separate read/write HTTP listeners |
+| `tracking/pack` | Server-only read-only position sampler, pinned Bedrock API declarations |
+| `web/src` | Worker transport, bounded cache, navigation, picking, diagnostics and player overlay |
 
 See [import safety and commands](docs/IMPORT.md), [format and rendering](docs/FORMAT.md),
 [verification results](docs/VERIFICATION.md) and the
@@ -146,7 +152,8 @@ are under ignored `test-results`. Commit summaries, not private artifacts.
 ## Boundaries and Maintenance
 
 - One snapshot, Overworld, top-surface representation. Not a replacement for a
-  full-world backup, arbitrary 3D Minecraft rendering, or multiplayer tracking.
+  full-world backup or arbitrary 3D Minecraft rendering. Live player coordinates
+  do not imply the underlying terrain snapshot is current.
 - Exact compression applies to retained fields, not the underground world.
 - Biome colors approximate vanilla palettes. Complex stairs/fences/glass,
   canopy cutouts and multiple translucent layers have explicit approximations.

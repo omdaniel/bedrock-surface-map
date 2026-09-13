@@ -1,0 +1,133 @@
+#players-toggle {
+  position: relative;
+}
+.players-count {
+  position: absolute;
+  right: 1px;
+  bottom: 0;
+  font-size: 9px;
+  line-height: 12px;
+}
+#player-markers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+.player-marker {
+  position: absolute;
+  left: -18px;
+  top: -18px;
+  width: 36px;
+  height: 36px;
+  padding: 7px;
+  border-radius: 50%;
+  pointer-events: auto;
+  color: var(--player-color);
+  background: #18201dec;
+  border: 1px solid currentColor;
+}
+.player-marker svg {
+  width: 20px;
+  height: 20px;
+  fill: currentColor;
+  stroke: #101610;
+}
+.player-marker.selected {
+  outline: 2px solid white;
+  outline-offset: 2px;
+  z-index: 1;
+}
+.player-label {
+  position: absolute;
+  top: 36px;
+  max-width: 180px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  color: #f0f4f0;
+  background: #17221eed;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+#player-markers.stale {
+  opacity: 0.5;
+}
+#players-panel {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  width: 300px;
+  max-width: calc(100% - 36px);
+  max-height: calc(100% - 28px);
+  overflow: auto;
+  border: 1px solid #687669;
+  border-radius: 5px;
+  background: #202724f7;
+  z-index: 3;
+}
+.players-heading {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 10px 4px 14px;
+}
+.players-heading strong {
+  flex: 1;
+  font-size: 13px;
+}
+.players-heading button,
+.player-follow {
+  width: 36px;
+  height: 36px;
+  flex: 0 0 36px;
+  display: grid;
+  place-items: center;
+}
+.players-status {
+  color: #bdc9c1;
+  margin: 6px 14px 12px;
+  font-size: 11px;
+}
+.player-row {
+  border-top: 1px solid #47534b;
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding: 5px;
+}
+.player-name {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  text-align: left;
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+}
+.player-name bdi {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.player-detail {
+  color: #b9c6be;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+@media (max-width: 600px) {
+  .identity strong {
+    max-width: 22vw;
+  }
+  .brand-mark {
+    display: none;
+  }
+}
