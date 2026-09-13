@@ -55,17 +55,24 @@ agree. `?terrain=off` uses the configured offline map independently of players.
 
 The temporary LAN preview accepts `--map`, `--players-origin`, `--terrain-origin`,
 `--world-id`, `--generation`, `--map-fingerprint`, `--host`, `--port` and `--ca-port`.
-Read origins allow operator-selected ports on private IPv4 HTTP(S) addresses.
+Read origins allow operator-selected ports on RFC1918 or loopback IPv4 HTTP(S)
+addresses.
 Use read listeners, not ingestion. Proxy destinations are fixed at startup;
 requests cannot select another host, path, query or write operation. Redirects,
 credentials and client cookies are not forwarded. DNS proxy targets are not
 supported; this prevents DNS rebinding outside the private-address boundary.
 
+The native collector listeners serve plain HTTP. An HTTPS read origin requires
+separate TLS termination and a certificate valid for the configured IP address
+and trusted by the Node proxy. This is independent of the browser-facing HTTPS
+certificate; enabling HTTPS on the preview does not add TLS to its upstreams.
+
 ## Server Services and Packs
 
 `surface-sync` requires `--world`/`TERRAIN_WORLD_ID` and
 `--generation`/`TERRAIN_GENERATION`. Bind listeners with `TERRAIN_READ_BIND` and
-`TERRAIN_INGEST_BIND`. The player collector uses `TRACKER_WORLD_ID`,
+`TERRAIN_INGEST_BIND`; `serve` requires `--token-file`/`TERRAIN_TOKEN_FILE`.
+The player collector uses `TRACKER_WORLD_ID`,
 `TRACKER_READ_BIND`, `TRACKER_INGEST_BIND` and `TRACKER_TOKEN_FILE`.
 Defaults bind only loopback; publish only read listeners through deployment rules.
 

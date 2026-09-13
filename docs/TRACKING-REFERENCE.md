@@ -88,8 +88,10 @@ undo experimental-world metadata.
 ## Offline-Snapshot LAN Preview
 
 After the deployment gate, set `VIEWER_LAN_IP`, `COLLECTOR_ORIGIN`, `WORLD_ID`
-and `MAP_FINGERPRINT`. The collector origin must be its read-listener HTTP URL,
-never ingest. With [HTTPS prerequisites](GETTING_STARTED.md#temporary-lan-preview):
+and `MAP_FINGERPRINT`. The collector origin must be a read-listener HTTP or HTTPS
+origin on a private or loopback IPv4 address, never ingest. Ports are operator-selected;
+see [origin and TLS requirements](CONFIGURATION.md#viewer-and-read-proxies).
+With [HTTPS prerequisites](GETTING_STARTED.md#temporary-lan-preview):
 
 ```sh
 npm run build
@@ -99,10 +101,13 @@ npm run serve:lan -- --host "$VIEWER_LAN_IP" \
   --map-fingerprint "$MAP_FINGERPRINT"
 ```
 
+The preview defaults to `maps/world/manifest.json`; pass `--map` to select a
+different served offline manifest. Its fingerprint must match `MAP_FINGERPRINT`.
+
 The fixed-destination proxy relays only the exact player GET/HEAD route, without
-client cookies or credentials. It refuses bodies, alternate paths, redirects
-and writes. No login is added: anyone able to open the map can read its names
-and positions. The Mac preview is a development option, not a hosting requirement.
+request bodies, client cookies or credentials. It rejects alternate paths,
+redirects and writes. No login is added: anyone able to open the map can read its
+names and positions. The Mac preview is a development option, not a hosting requirement.
 
 Update the fingerprint binding when replacing an offline snapshot. Live maps
 use world/generation binding so routine terrain repair does not disconnect players.
