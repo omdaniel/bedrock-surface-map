@@ -7,6 +7,8 @@ import type { Access, Block } from "./core.js";
 
 export function surfaceAccess(dimension: Dimension) {
   let queries = 0;
+  let lowerBound:
+    { x: number; z: number; block: GameBlock | undefined } | undefined;
   const describe = (b: GameBlock | undefined): Block | undefined => {
     if (!b) return undefined;
     queries++;
@@ -31,6 +33,7 @@ export function surfaceAccess(dimension: Dimension) {
       const ceiling = dimension.heightRange.max;
       queries++;
       const solid = dimension.getTopmostBlock({ x, z });
+      lowerBound = { x, z, block: solid };
       const floor = solid ? solid.y + 1 : access.minimum;
       if (floor >= ceiling) return describe(solid);
       queries++;
@@ -48,11 +51,21 @@ export function surfaceAccess(dimension: Dimension) {
     block: read,
     belowWater: (x, y, z) => {
       if (y < access.minimum) return undefined;
-      // One exact native query skips water/air; underwater plants remain support.
+      // Reuse the solid lower bound from this column's top query, so the exact
+      // water/air-filtered query never enumerates the entire underground column.
       // Unloading throws, so a partial column can never replace published terrain.
+      const solid =
+        lowerBound?.x === x &&
+        lowerBound.z === z &&
+        lowerBound.block &&
+        lowerBound.block.y <= y
+          ? lowerBound.block
+          : undefined;
+      const floor = solid ? solid.y + 1 : access.minimum;
+      if (floor > y) return describe(solid);
       queries++;
       const blocks = dimension.getBlocks(
-        new BlockVolume({ x, y: access.minimum, z }, { x, y, z }),
+        new BlockVolume({ x, y: floor, z }, { x, y, z }),
         {
           excludeTypes: [
             "minecraft:air",
@@ -65,7 +78,7 @@ export function surfaceAccess(dimension: Dimension) {
       let highest = -Infinity;
       for (const location of blocks.getBlockLocationIterator())
         highest = Math.max(highest, location.y);
-      return Number.isFinite(highest) ? read(x, highest, z) : undefined;
+      return Number.isFinite(highest) ? read(x, highest, z) : describe(solid);
     },
     biome: (x, y, z) => {
       queries++;

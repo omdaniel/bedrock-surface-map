@@ -100,3 +100,28 @@ test("underwater native query is bounded and retains nonwater support", () => {
   assert.equal(reader.access.belowWater!(0, -65, 0), undefined);
   assert.equal(reader.queries, 3);
 });
+
+test("water support query reuses the solid bound without hiding plants above it", () => {
+  const block = (y, typeId) => ({
+    y,
+    typeId,
+    permutation: { getAllStates: () => ({}) },
+  });
+  const reader = surfaceAccess({
+    heightRange: { min: -64, max: 320 },
+    getTopmostBlock: () => block(20, "minecraft:sand"),
+    getBlocks: (volume, filter) => {
+      assert.equal(volume.from.y, 21);
+      return {
+        getBlockLocationIterator: () => [
+          { y: filter.excludeTypes.length === 1 ? 63 : 40 },
+        ],
+      };
+    },
+    getBlock: ({ y }) =>
+      block(y, y === 63 ? "minecraft:water" : "minecraft:seagrass"),
+  } as never);
+  assert.equal(reader.access.top(0, 0)?.y, 63);
+  assert.equal(reader.access.belowWater!(0, 62, 0)?.y, 40);
+  assert.equal(reader.queries, 7);
+});
