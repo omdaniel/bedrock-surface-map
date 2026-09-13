@@ -1,7 +1,74 @@
 # Terrain Acceptance Record
 
-September 12, 2026. Implementation remains under review in PR 3; this is not a
-production rollout or complete device acceptance claim.
+September 12, 2026 (production activation September 13, 02:43 UTC). Implementation
+remains under review in PR 3. Production is active; complete real-client/device
+acceptance is not implied by the automated evidence below.
+
+## Production Integration
+
+- Production terrain pack 1.0.2 and service use application
+  `a4d2da69ea08a8879111dd1a4a66f989284d0e3d`. Player tracking remains independently
+  pinned to `71d8e2b97ddcfdb4faf5ad13cfb4d8d543e73876`, pack 1.0.1.
+- The ordinary HTTPS map at `https://192.168.68.110:8443/` binds both feeds to
+  `bedrock-survival` / `bedrock-survival-20260912`. Terrain is on VM100 TCP8111,
+  players on TCP8110. The separate Creative test copy remains on game UDP19134,
+  terrain TCP8113, players TCP8112 and viewer HTTPS8445.
+- Guarded activation reran both isolated candidates, admitted an idle minute,
+  fenced UDP and verified backup `20260913T024312-e0bc88c7` before registration.
+  No version upgrade, experiment toggle, game-mode or access-policy change.
+- Initial repair reused that stopped backup without another game restart. It
+  checked 13,157 chunks and refreshed 1,976 in 148.2 seconds including archive
+  preparation, low-priority extraction and publication. No live observation
+  needed protection in this empty-server run; backup/live races have unit coverage.
+  The derived snapshot fingerprint changed while player binding stayed valid.
+- Publication briefly caused five terrain HTTP retries; current heartbeats
+  recovered without a game or player-collector restart. These cumulative errors
+  are not ongoing scan failures. Daily idle-only repair and five-minute degraded
+  health monitoring are enabled; the host health evaluator reported no issues.
+- Both services passed deployed non-root/read-only/capability/mount checks.
+  Ingestion is unpublished on separate internal networks, wrong tokens return401,
+  read listeners reject ingestion, and the HTTPS proxy rejects writes/wrong worlds.
+- Guarded 35-second production terrain outage: seven unchanged healthy-game
+  checks and independent player health passed. Chrome recovered without reload,
+  retained camera/cache, produced zero terrain draws, and reported92 fresh player
+  UI checks. All31 observable player response bodies were fresh; Chrome's debugger
+  could not retrieve14 already-consumed streamed bodies, which are recorded as
+  missing capture evidence rather than stale responses. Independent HTTPS sampling
+  returned15/15 live responses, maximum sample age1989ms. No player movement was
+  synthesized. The independent restart watchdog was disarmed after restoration.
+- Pause the empty acceptance game before resource-heavy isolated candidate gates;
+  it temporarily reduced VM100 headroom below the existing 850 MiB admission
+  threshold. The gate did not change production. No memory limit was weakened.
+
+### Repeatable Browser Measurement
+
+Run these serially, with Safari foreground and its existing WebDriver on4444:
+
+```sh
+node scripts/check-tracking-performance.mjs --scope combined --browser chrome
+node scripts/check-tracking-performance.mjs --scope combined --browser safari
+```
+
+The ABBA check compares offline-viewer/players-off with live-terrain/players-on at
+the same camera and physical canvas size. It records p50/p95/max frame intervals,
+map allocations, unchanged-poll draws and roster count. This compares the two
+reader paths; it is not a controlled eight-player or continuous-edit benchmark.
+Private JSON/screenshots stay in `.local/tracking`. Never run competing GPU
+benchmarks concurrently. A background-window timing timeout is not an FPS result.
+
+Mac Safari26.3, foreground, 1920x1080 physical canvas at native DPR2: offline
+p95 18/17ms, integrated p95 17/18ms. All four runs had zero unchanged-poll draws
+and no failed downloads. Integrated map residency was264,042,784bytes. Maximum
+frame intervals reached93/99ms in integrated runs and18/82ms offline, so this is
+not a claim of perfectly uniform frame delivery. There were no players or live
+edits during the measurement. The earlier hidden-window timeout was identified
+through `document.visibilityState`; the harness now requires visibility explicitly.
+
+Chrome152, 1920x1080/DPR1, repeated after repair: offline p95 16.8/16.7ms;
+integrated p95 16.7/16.8ms. All four runs had zero unchanged-poll draws and no
+download failures. Integrated map residency was264,042,784bytes; maximum frame
+interval was16.8ms. These idle-feed comparisons did not show a p95 regression;
+the less-than-five-percent active-edit/player target remains unmeasured.
 
 ## Combined-Feed Regression Checkpoint
 
@@ -94,6 +161,8 @@ not represent total browser/driver process memory. Texture, water and relief
 screenshots were inspected. Raw screenshots/measurements stay in ignored `.local`.
 
 Synthetic browser tests pass chunk replacement/picking, unchanged-poll no-redraw,
-camera preservation and sparse distant growth. Dense 4x/16x worlds, active-update
-pan timing, Safari, M4 iPad, real player edits/new exploration and the full daily
-repair workflow remain separate acceptance gates.
+camera preservation and sparse distant growth. Dense growth, Mac Safari and the
+production repair run are recorded above. Real-client edits/new exploration,
+active-update pan timing, M4 iPad timing and measured server tick impact remain
+separate acceptance gates. No client was connected during this rollout; existing
+two-player production marker acceptance predates the terrain addition.
