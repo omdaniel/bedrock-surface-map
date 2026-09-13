@@ -66,24 +66,22 @@ Rollback is a revert of the relevant application/source pin commit followed by
 the same checked build. Old release objects remain available. This does not change
 the Minecraft server, its packs, or any operator deployment.
 
-## Verification Record
+## Verification
 
-September 13, 2026: local built-site checks in real Chrome on the M1 Pro passed
-two playback loops, monotonic restart, player-only idle rendering, center/follow,
-manual follow cancellation, pause, mobile layout, reduced motion and missing-GPU
-preview. The first framed view used 31,486,336 bytes of accounted map memory and
-2,055,987 HTTP response-body bytes (uncompressed local HTTP; not a WAN benchmark).
-The 4,005,538-byte packet is downloaded at build time, not by visitors.
-All 21 pre-existing browser regressions and 40 Rust tests passed, including the
-production per-view tracking opt-out. Four demo unit tests cover clock ordering,
-packet integrity, unsafe entries and expansion bounds. The complete static site
-audit passed: 4,165 files, 5,570,080 bytes, no unreviewed files or private bindings.
-Native Safari 26.3 subsequently passed the built-site hardware check: nonblank
-terrain, pointer dragging, surface picking, texture zoom, device-loss reporting
-and reload recovery. A visible Safari session also demonstrated the structure
-appearing, its center being removed, and both fictional markers moving. Its
-3840-by-2056 drawing buffer at DPR 2 used 49,312,120 bytes of accounted map memory;
-the controlled-pan frame intervals were p50 21 ms and p95 26 ms in that local run.
-These are not 1080p/DPR-1 or universal performance claims. Desktop mobile layout
-is not physical iPad validation. Public-origin acceptance is appended to the
-[release review](https://github.com/omdaniel/bedrock-surface-map/pull/4) after deployment.
+`npm run demo:test` covers clock ordering, packet integrity, unsafe entries and
+expansion bounds. `scripts/check-demo.mjs` exercises two timeline loops,
+monotonic restart, player-only idle rendering, center/follow, manual follow
+cancellation, pause, mobile layout, reduced motion and the missing-WebGPU poster.
+Terrain changes use the same decoder, picking and shadow-update path as live maps.
+
+Run the built-site check and artifact audit above before publication. Inspect
+desktop/mobile screenshots for fictional labels, visible controls and matching
+terrain. Confirm runtime requests stay on the demo origin and base path.
+Native Safari and physical iPad acceptance are separate from Chrome and desktop
+mobile-layout checks; use the [verification guide](VERIFICATION.md).
+
+Record initial transfer, first-visible-map latency, physical canvas resolution
+and accounted map memory in the release PR. The download target is below 10 MiB
+for the initial view, not a universal latency or frame-rate guarantee. The release
+packet is a build-time download; visitors fetch only ordinary static site files.
+Keep historical measurements in release reviews, not in this maintenance guide.

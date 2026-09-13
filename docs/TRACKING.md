@@ -50,8 +50,8 @@ add `?players=off` to disable tracking for that view without changing the world.
 
 ## Compatibility
 
-The [September 12 compatibility record](../tracking/compatibility.json) covers
-BDS 1.26.45.1 and tracking pack 1.0.1. Two simultaneous iPad/iPhone players and
-collector-outage recovery were verified. Switch-specific tracking acceptance
-and controlled M4 iPad performance testing remain separate checks. Recheck the
-pack when updating Bedrock; pinned API declarations alone do not prove support.
+The [compatibility target](../tracking/compatibility.json) is BDS 1.26.45.1
+with tracking pack 1.0.1. Test the pack on an isolated world when updating
+Bedrock; pinned API declarations alone do not prove support. Use the
+[acceptance checklist](TERRAIN-ACCEPTANCE.md) to verify your clients, coordinate
+alignment, recovery and performance before relying on a deployment.

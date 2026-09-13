@@ -24,8 +24,8 @@ No installation or login. Requires a WebGPU-enabled browser.
 
 ![A fictional player moves while a small structure appears and its center is removed](https://github.com/omdaniel/bedrock-surface-map/releases/download/demo-scene-v1/demo.gif)
 
-*Demo playback: fictional players and scripted terrain changes, not a live server.
-The animation is accelerated; the interactive demo runs a 60-second loop.*
+_Demo playback: fictional players and scripted terrain changes, not a live server.
+The animation is accelerated; the interactive demo runs a 60-second loop._
 
 ## What Makes It Different?
 
@@ -52,7 +52,7 @@ server**, and its simulated edits do not alter the original world.
 backup. Some materials are approximated. WebGPU is required, very wide views can
 require zooming in, and live integration needs server administration and
 experimental Bedrock networking APIs. This is an actively developed project,
-not a one-click server installer. [Measurements and limitations](docs/TERRAIN-ACCEPTANCE.md)
+not a one-click server installer. [Verification and limits](docs/VERIFICATION.md)
 
 Not an official Minecraft product. Not approved by or associated with Mojang or
 Microsoft. [Asset notices and public-demo details](THIRD_PARTY.md)

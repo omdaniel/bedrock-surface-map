@@ -2,6 +2,11 @@
 
 - Application source belongs in the public omdaniel/bedrock-surface-map repository.
 - Use incremental tested commits on codex/ branches. Never force push.
+- Documentation describes current code, behavior, configuration and limitations in
+  present tense. Keep implementation chronology, superseded decisions, rollout
+  narratives and dated test results in commits/PRs, not documentation archives.
+  Update affected docs with behavior changes; keep reproducible verification
+  procedures, compatibility requirements, asset attribution and license notices.
 - Never commit worlds, player data, downloaded Minecraft assets, credentials or build artifacts.
 - Reviewed public-demo screenshots may be committed under docs/media; derived demo
   datasets and animation belong in hash-pinned releases, never Git or production feeds.
