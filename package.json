@@ -7,6 +7,10 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "demo:prepare": "node scripts/demo.mjs prepare",
+    "demo:dev": "node scripts/demo.mjs dev",
+    "demo:build": "node scripts/demo.mjs build",
+    "demo:test": "node --test scripts/demo-packet.test.mjs scripts/demo-clock.test.ts",
     "terrain:build": "node scripts/build-terrain.mjs",
     "terrain:bundle": "node scripts/bundle-terrain.mjs",
     "terrain:test": "node --test terrain/test/*.test.ts scripts/map-proxy.test.mjs",

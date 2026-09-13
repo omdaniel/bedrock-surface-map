@@ -19,6 +19,7 @@ import type {
   LivePlayer,
   PlayerBinding,
   PlayerPosition,
+  PlayerView,
 } from "./player-state";
 import "./players.css";
 
@@ -28,6 +29,12 @@ interface Options {
   camera: () => Camera;
   center: (x: number, z: number, zoom: boolean) => void;
   covered: (x: number, z: number) => boolean | null;
+}
+export interface PlayerSource {
+  world_id: string;
+  demo: true;
+  paused: boolean;
+  sample(): Promise<PlayerView>;
 }
 interface Entry {
   player: LivePlayer;
@@ -62,6 +69,7 @@ export class PlayerLayer {
   private readonly overlay = document.createElement("div");
   private readonly visibility = iconButton("Hide player markers", Eye);
   private configuration: PlayerBinding | null = null;
+  private source: PlayerSource | null = null;
   private pollTimer = 0;
   private ageTimer = 0;
   private animation = 0;
@@ -165,21 +173,10 @@ export class PlayerLayer {
   async configure(
     fingerprint: string,
     live?: { world_id: string; generation: string },
+    configuration?: unknown,
   ) {
     try {
-      const response = await fetch("/viewer-config.json", {
-        cache: "no-store",
-        signal: AbortSignal.timeout(5000),
-      });
-      if (!response.ok) {
-        if (response.status === 404) return;
-        throw Error("Configuration unavailable");
-      }
-      this.configuration = binding(
-        await readJsonBounded(response),
-        fingerprint,
-        live,
-      );
+      this.configuration = binding(configuration, fingerprint, live);
       if (!this.configuration) {
         this.message = "No live feed for this snapshot";
         this.age();
@@ -192,24 +189,38 @@ export class PlayerLayer {
       this.age();
     }
   }
+  configureDemo(source: PlayerSource) {
+    this.source = source;
+    this.toggle(matchMedia("(min-width: 800px)").matches);
+    void this.poll();
+  }
   private async poll() {
-    if (!this.configuration || this.stopped || document.hidden || this.request)
+    if (
+      (!this.configuration && !this.source) ||
+      this.stopped ||
+      document.hidden ||
+      this.request
+    )
       return;
     const controller = new AbortController();
     this.request = controller;
     const timeout = window.setTimeout(() => controller.abort(), 5000);
     const started = performance.now();
     try {
-      const response = await fetch(this.configuration.url, {
-        cache: "no-store",
-        signal: controller.signal,
-        redirect: "error",
-      });
-      if (!response.ok) throw Error("Player endpoint unavailable");
-      const view = parseView(
-        await readJsonBounded(response),
-        this.configuration.world_id,
-      );
+      let view: PlayerView;
+      if (this.source) view = await this.source.sample();
+      else {
+        const response = await fetch(this.configuration!.url, {
+          cache: "no-store",
+          signal: controller.signal,
+          redirect: "error",
+        });
+        if (!response.ok) throw Error("Player endpoint unavailable");
+        view = parseView(
+          await readJsonBounded(response),
+          this.configuration!.world_id,
+        );
+      }
       if (view.age_ms !== null) view.age_ms += performance.now() - started;
       this.state.accept(view, performance.now());
       this.failures = 0;
@@ -461,17 +472,19 @@ export class PlayerLayer {
       this.reconcile();
     const count = this.state.view?.snapshot?.players.length;
     this.count.textContent = count === undefined ? "" : String(count);
-    const message = !this.configuration
-      ? this.message
-      : status === "live"
-        ? `${count ?? 0} online${this.message ? " / reconnecting" : ""}`
-        : status === "stale"
-          ? `Stale positions / ${Math.floor((age ?? 0) / 1000)}s old`
-          : status === "disabled"
-            ? "Tracking disabled"
-            : status === "unavailable"
-              ? "Player positions unavailable"
-              : this.message || "Waiting for server samples";
+    const message = this.source
+      ? `${count ?? 0} fictional players / ${this.source.paused ? "paused" : "simulated"}`
+      : !this.configuration
+        ? this.message
+        : status === "live"
+          ? `${count ?? 0} online${this.message ? " / reconnecting" : ""}`
+          : status === "stale"
+            ? `Stale positions / ${Math.floor((age ?? 0) / 1000)}s old`
+            : status === "disabled"
+              ? "Tracking disabled"
+              : status === "unavailable"
+                ? "Player positions unavailable"
+                : this.message || "Waiting for server samples";
     if (this.status.textContent !== message) this.status.textContent = message;
     this.overlay.classList.toggle("stale", status === "stale");
     if (status !== "live") this.manualNavigation();

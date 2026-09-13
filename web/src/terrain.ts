@@ -139,6 +139,7 @@ export class TerrainClient {
     readonly url: URL,
     root: LiveRoot,
     private decode: Decode,
+    private pollRoot?: () => Promise<LiveRoot>,
   ) {
     validateRoot(root);
     this.root = root;
@@ -287,28 +288,38 @@ export class TerrainClient {
     let root = this.root,
       etag = this.etag;
     if (poll) {
-      const response = await fetch(this.url, {
-        headers: etag ? { "If-None-Match": etag } : {},
-        signal: AbortSignal.timeout(10000),
-        cache: "no-cache",
-      });
-      if (response.status !== 304) {
-        if (!response.ok)
-          throw Error(`Terrain manifest unavailable (${response.status})`);
-        const text = new TextDecoder().decode(
-          await boundedBytes(response, 16 * 1024 * 1024),
-        );
-        root = JSON.parse(text);
-        validateRoot(root);
-        if (
-          root.world_id !== this.root.world_id ||
-          root.generation !== this.root.generation
-        )
-          throw Error("Terrain generation changed; reload required");
-        if (root.revision < this.root.revision)
-          throw Error("Older terrain revision rejected");
-        etag = response.headers.get("etag");
+      if (this.pollRoot) root = await this.pollRoot();
+      else {
+        const response = await fetch(this.url, {
+          headers: etag ? { "If-None-Match": etag } : {},
+          signal: AbortSignal.timeout(10000),
+          cache: "no-cache",
+        });
+        if (response.status !== 304) {
+          if (!response.ok)
+            throw Error(`Terrain manifest unavailable (${response.status})`);
+          const text = new TextDecoder().decode(
+            await boundedBytes(response, 16 * 1024 * 1024),
+          );
+          root = JSON.parse(text);
+          validateRoot(root);
+          if (
+            root.world_id !== this.root.world_id ||
+            root.generation !== this.root.generation
+          )
+            throw Error("Terrain generation changed; reload required");
+          if (root.revision < this.root.revision)
+            throw Error("Older terrain revision rejected");
+          etag = response.headers.get("etag");
+        }
       }
+      validateRoot(root);
+      if (
+        root.world_id !== this.root.world_id ||
+        root.generation !== this.root.generation ||
+        root.revision < this.root.revision
+      )
+        throw Error("Obsolete terrain source");
     }
     const manifest = await this.normalize(root);
     const requested = this.needed(view, elevation, root, 256);
