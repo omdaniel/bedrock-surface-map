@@ -9,6 +9,8 @@ const liveProxy = mapProxy({
   generation: process.env.SURFACE_GENERATION,
 });
 export default defineConfig({
+  base: process.env.SURFACE_BASE_PATH || "/",
+  publicDir: process.env.SURFACE_DEMO_PUBLIC || "public",
   plugins: liveProxy
     ? [
         {
@@ -35,6 +37,6 @@ export default defineConfig({
       ],
     },
   },
-  build: { target: "es2022" },
+  build: { target: "es2022", outDir: process.env.SURFACE_DEMO_DIST || "dist" },
   worker: { format: "es" },
 });

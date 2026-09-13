@@ -17,6 +17,8 @@ import { bindSunDial } from "./sun-dial";
 import { PlayerLayer } from "./players";
 import { TerrainClient, type LiveRoot } from "./terrain";
 import { boundedBytes } from "./http";
+import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
+import { DemoPlayback } from "./demo";
 import "./style.css";
 
 const DEFAULT_SUN_AZIMUTH = 330;
@@ -73,6 +75,7 @@ let manifest: Manifest;
 let renderer: Renderer;
 let base: URL;
 let terrain: TerrainClient | null = null;
+let demo: DemoPlayback | null = null;
 let terrainBusy = false,
   terrainAgain = false,
   terrainPollAgain = false;
@@ -474,7 +477,7 @@ async function syncTerrain(poll = false) {
     )
       requestDraw();
     terrainFailures = 0;
-    if (poll) {
+    if (poll && !demo) {
       // A cold-load object may have expired while a newer manifest was being
       // published. Retry against current references after successful revalidation.
       failures.clear();
@@ -727,6 +730,7 @@ document.addEventListener("visibilitychange", () => {
 });
 window.addEventListener("pagehide", () => {
   playerLayer.destroy();
+  demo?.destroy();
   disposed = true;
   if (terrainTimer) clearTimeout(terrainTimer);
   worker.terminate();
@@ -849,52 +853,75 @@ window.__map = {
 };
 
 async function boot() {
-  if (!("gpu" in navigator))
-    throw new Error(
-      "WebGPU is unavailable in this browser. No fallback renderer is enabled.",
-    );
   const params = new URLSearchParams(location.search);
-  const configuration: {
-    terrain?: { url: string; world_id: string; generation: string };
-  } =
-    params.get("players") === "off" && params.get("map")?.startsWith("/maps/")
+  const demoMode = import.meta.env.VITE_SURFACE_DEMO === "true";
+  const configuration: ViewerConfiguration =
+    !demoMode &&
+    params.get("players") === "off" &&
+    params.get("map")?.startsWith("/maps/")
       ? {}
-      : await fetch("/viewer-config.json", {
-          cache: "no-store",
-          signal: AbortSignal.timeout(5000),
-        })
-          .then((r) => (r.ok ? r.json() : {}))
-          .catch(() => ({}));
+      : await loadConfiguration().catch(() => ({}));
+  if (demoMode && !configuration.demo)
+    throw Error("Public demo configuration missing");
+  if (!("gpu" in navigator) || !navigator.gpu) {
+    if (demoMode && configuration.demo) {
+      const poster = document.createElement("img");
+      poster.src = appUrl(configuration.demo.poster).href;
+      poster.alt =
+        "Coastal Showcase with fictional players and simulated terrain changes";
+      poster.className = "demo-poster";
+      $("message").append(poster);
+    }
+    throw new Error(
+      "WebGPU is unavailable. Open this demo in a WebGPU-enabled Chrome or Safari browser. The image is a preview, not an alternative renderer.",
+    );
+  }
+  if (demoMode) {
+    demo = new DemoPlayback();
+    await demo.initialize(appUrl(configuration.demo!.scenario));
+  }
   const url = new URL(
-    new URLSearchParams(location.search).get("map") ??
+    (demo ? appUrl(configuration.demo!.scenario).href : params.get("map")) ??
       (params.get("terrain") === "off"
         ? undefined
         : configuration.terrain?.url) ??
-      "/maps/bedrock-survival/manifest.json",
+      appUrl("maps/bedrock-survival/manifest.json").href,
     location.href,
   );
   if (url.origin !== location.origin)
     throw new Error("Map must use this local origin");
   base = new URL(".", url);
-  const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
-  if (!response.ok)
-    throw new Error(
-      "No imported map found. Run the snapshot import command, then retry.",
+  let raw;
+  if (demo) raw = await demo.root();
+  else {
+    const response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    if (!response.ok)
+      throw new Error(
+        "No imported map found. Run the snapshot import command, then retry.",
+      );
+    raw = JSON.parse(
+      new TextDecoder().decode(await boundedBytes(response, 16 * 1024 * 1024)),
     );
-  const raw = JSON.parse(
-    new TextDecoder().decode(await boundedBytes(response, 16 * 1024 * 1024)),
-  );
+  }
   if (raw.format_version === 2) {
     if (
-      !configuration.terrain ||
-      configuration.terrain.world_id !== raw.world_id ||
-      configuration.terrain.generation !== raw.generation ||
-      new URL(configuration.terrain.url, location.href).href !== url.href
+      !demo &&
+      (!configuration.terrain ||
+        configuration.terrain.world_id !== raw.world_id ||
+        configuration.terrain.generation !== raw.generation ||
+        new URL(configuration.terrain.url, location.href).href !== url.href)
     )
       throw Error("No explicit live-terrain binding for this map");
-    terrain = new TerrainClient(url, raw as LiveRoot, decode);
+    terrain = new TerrainClient(
+      url,
+      raw as LiveRoot,
+      decode,
+      demo ? () => demo!.root() : undefined,
+    );
     manifest = await terrain.initialize();
-    document.querySelector(".subtitle")!.textContent = "OVERWORLD / LIVE";
+    document.querySelector(".subtitle")!.textContent = demo
+      ? "OVERWORLD / DEMO"
+      : "OVERWORLD / LIVE";
   } else manifest = raw;
   if (
     ![1, 2].includes(manifest.format_version) ||
@@ -974,6 +1001,7 @@ async function boot() {
       main.clientWidth / (width + 64),
       main.clientHeight / (height + 64),
     );
+    if (demo) [cx, cz, scale] = demo.camera;
     const budget = () =>
       256 * 1024 * 1024 -
       manifest.regions.filter(visible).length * (65536 * 40 + 349524) -
@@ -1022,10 +1050,17 @@ async function boot() {
     c.height,
   );
   window.__map.ready = true;
+  if (demo) {
+    demo.mount();
+    document.querySelector<HTMLElement>(".local-state")!.textContent =
+      "Simulated terrain";
+    playerLayer.configureDemo(demo);
+  }
   if (terrain) {
     changed();
     void syncTerrain(true).finally(scheduleTerrain);
   } else fit();
+  if (demo) return;
   if (new URLSearchParams(location.search).get("players") === "off")
     playerLayer.disableForView();
   else
@@ -1037,6 +1072,7 @@ async function boot() {
             generation: terrain.root.generation,
           }
         : undefined,
+      configuration,
     );
 }
 void boot().catch((e) => {

@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "url": "https://github.com/omdaniel/bedrock-surface-map/releases/download/demo-scene-v1/coastal-showcase-v1.json.gz",
+  "sha256": "638a68dbb7bf66d0d6d3a2b1c223a067bee33ab2a2e7753347253d1a63957e2a",
+  "bytes": 4005538,
+  "bounds": [-512, -512, 512, 512],
+  "generator": "crates/surface-cli/examples/showcase.rs v1",
+  "source_snapshot_sha256": "d6c03baf7b4bb7a621e85f0acf073abe737bd3789db26505e4268386fee12097",
+  "provenance": "Owner-approved frozen surface-only excerpt. Original procedural textures; fictional activity. No production bindings or player records."
+}

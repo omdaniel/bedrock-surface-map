@@ -1,0 +1,65 @@
+.demo-controls {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #142520f2;
+  border: 1px solid #466558;
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #eef6ef;
+  box-shadow: 0 2px 12px #0004;
+  z-index: 3;
+}
+.demo-controls div {
+  display: flex;
+  flex-direction: column;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.demo-controls div span {
+  color: #b4cabc;
+  font-size: 11px;
+}
+.demo-controls button,
+.demo-controls a {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+}
+.demo-controls a {
+  color: inherit;
+}
+.demo-controls svg {
+  width: 18px;
+  height: 18px;
+}
+.demo-controls output {
+  font: 12px monospace;
+  white-space: nowrap;
+  min-width: 78px;
+}
+.demo-poster {
+  width: min(100%, 960px);
+  display: block;
+  margin: 12px auto;
+}
+.demo-mode #inspect {
+  bottom: 88px;
+}
+@media (max-width: 600px) {
+  .demo-controls {
+    bottom: 12px;
+    gap: 6px;
+    padding: 6px 8px;
+    max-width: calc(100% - 20px);
+  }
+  .demo-controls a {
+    display: none;
+  }
+}
