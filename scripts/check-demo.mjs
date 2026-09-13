@@ -66,6 +66,30 @@ try {
   assert.equal(await page.locator(".player-marker").count(), 2);
   assert.match(await page.locator(".players-status").innerText(), /fictional/);
   const png = PNG.sync.read(await page.locator("canvas").screenshot());
+  const pickSite = async (height, material) => {
+    const box = await page.locator("canvas").boundingBox();
+    await page.mouse.move(
+      box.x + box.width / 2 + 1,
+      box.y + box.height / 2 + 1,
+    );
+    assert.equal(
+      await page.locator("#block-pos").innerText(),
+      `-106 / ${height} / -52`,
+    );
+    assert.equal(await page.locator("#block-name").textContent(), material);
+  };
+  const changedSitePixels = (a, b) => {
+    let changed = 0;
+    for (let y = Math.floor(a.height / 2) - 12; y < a.height / 2 + 12; y++) {
+      for (let x = Math.floor(a.width / 2) - 12; x < a.width / 2 + 12; x++) {
+        const i = (y * a.width + x) * 4;
+        if (!a.data.subarray(i, i + 3).equals(b.data.subarray(i, i + 3)))
+          changed++;
+      }
+    }
+    return changed;
+  };
+  await pickSite(64, "sand");
   const colors = new Set();
   for (let i = 0; i < png.data.length; i += 64)
     colors.add(png.data.subarray(i, i + 3).toString("hex"));
@@ -87,6 +111,12 @@ try {
     () => window.__map.state().terrain.changedChunks > 0,
   );
   const built = await page.evaluate(() => window.__map.state());
+  await pickSite(67, "oak planks");
+  const builtPixels = PNG.sync.read(await page.locator("canvas").screenshot());
+  assert.ok(
+    changedSitePixels(png, builtPixels) > 100,
+    "construction appears in terrain pixels",
+  );
   assert.notEqual(
     await page.locator(".player-detail").first().innerText(),
     pos,
@@ -96,6 +126,12 @@ try {
   await page.waitForTimeout(1000);
   const opened = await page.evaluate(() => window.__map.state());
   assert.ok(opened.terrain.revision > built.terrain.revision);
+  await pickSite(64, "sand");
+  const openedPixels = PNG.sync.read(await page.locator("canvas").screenshot());
+  assert.ok(
+    changedSitePixels(builtPixels, openedPixels) > 25,
+    "removal changes terrain pixels",
+  );
   await page.screenshot({ path: `${output}/removal.png` });
   for (let n = 0; n < 6; n++) {
     await page.clock.fastForward(15000);

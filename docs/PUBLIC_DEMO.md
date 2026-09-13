@@ -78,6 +78,12 @@ All 21 pre-existing browser regressions and 40 Rust tests passed, including the
 production per-view tracking opt-out. Four demo unit tests cover clock ordering,
 packet integrity, unsafe entries and expansion bounds. The complete static site
 audit passed: 4,165 files, 5,570,080 bytes, no unreviewed files or private bindings.
-The initial Safari automation attempt timed out during active development; that
-attempt is not counted as a hardware acceptance pass. Desktop mobile layout is
-not physical iPad validation. Public-origin acceptance is recorded after deployment.
+Native Safari 26.3 subsequently passed the built-site hardware check: nonblank
+terrain, pointer dragging, surface picking, texture zoom, device-loss reporting
+and reload recovery. A visible Safari session also demonstrated the structure
+appearing, its center being removed, and both fictional markers moving. Its
+3840-by-2056 drawing buffer at DPR 2 used 49,312,120 bytes of accounted map memory;
+the controlled-pan frame intervals were p50 21 ms and p95 26 ms in that local run.
+These are not 1080p/DPR-1 or universal performance claims. Desktop mobile layout
+is not physical iPad validation. Public-origin acceptance is appended to the
+[release review](https://github.com/omdaniel/bedrock-surface-map/pull/4) after deployment.

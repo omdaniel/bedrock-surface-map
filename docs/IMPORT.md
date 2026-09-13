@@ -7,7 +7,7 @@ checks. Only an unpacked private copy of an offline archive is opened.
 
 ```sh
 cargo run --release --locked -p surface-cli -- import \
-  --input /Users/macbookpro/Downloads/Bedrock-Survival-2026-09-11.mcworld
+  --input /path/to/your-offline-snapshot.mcworld
 cargo run --release --locked -p surface-cli -- benchmark \
   web/public/maps/bedrock-survival/manifest.json
 cargo run --release --locked -p surface-cli -- inspect \
@@ -35,16 +35,20 @@ are published: no inventories, player records or block-entity payloads.
 
 Content-hashed region objects and height data are completed before atomic
 manifest replacement. Re-importing identical data reuses those files. A browser
-session pins one manifest and its catalog; reload to adopt a new import. This
-also invalidates all shadows and overviews, including every down-sun dependent
-region. There is no polling or live-update service in this milestone.
+session using the offline format pins one manifest and its catalog; reload to
+adopt a new offline import. This also invalidates all shadows and overviews.
+The separate [live-terrain pipeline](TERRAIN-SYNC.md) publishes chunk replacements
+without reloading; importing an archive alone does not enable that integration.
 
 `import-report.json` and stdout report coverage, compressed size, source hash,
 timings, peak process RSS, sampled verification count and unresolved materials.
 Errors have a nonzero exit code and JSON stderr summary. Compiler time and the
 initial asset download are not included in import timings.
 
-Prototype limits: 65,536 chunks and a bounding rectangle of at most 16 million
-columns. The whole dataset heightfield is provided to the GPU shadow sweep, so
-occluders do not disappear merely because their surface region is not resident.
-Unknown terrain outside the snapshot cannot cast a known shadow.
+The legacy offline export is limited to 65,536 chunks and a bounding rectangle
+of at most 16 million columns. It carries a whole-dataset heightfield for shadows.
+For live-map repair, `--surface-only` uses bounded region streaming instead of
+building that heightfield; its output is repair input, not a directly viewable
+offline manifest. Live maps and the public demo use region-aligned height windows
+and a bounded resident cache, including offscreen shadow margins. Unknown terrain
+outside the dataset cannot cast a known shadow.
