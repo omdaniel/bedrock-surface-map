@@ -146,25 +146,7 @@ try {
     (await page.evaluate(() => window.__map.state())).terrain.revision >
       looped.terrain.revision,
   );
-  await page.getByRole("button", { name: "Follow Rowan", exact: true }).click();
-  await page.clock.fastForward(2100);
-  await page.waitForTimeout(400);
-  const following = await page.evaluate(() => window.__map.state());
-  await page.mouse.move(400, 300);
-  await page.mouse.down();
-  await page.mouse.move(470, 340, { steps: 6 });
-  await page.mouse.up();
-  const manual = await page.evaluate(() => window.__map.state());
-  assert.notEqual(manual.cx, following.cx, "pointer navigation moves camera");
-  await page.clock.fastForward(2100);
-  await page.waitForTimeout(400);
-  assert.equal(
-    (await page.evaluate(() => window.__map.state())).cx,
-    manual.cx,
-    "manual navigation cancels follow",
-  );
-  // Exercise keyboard playback as well as the pointer controls above. Focus does
-  // not depend on compositor stability after software-GPU pan/follow draws.
+  // Exercise keyboard playback as well as the pointer controls above.
   await page.getByRole("button", { name: "Pause demo", exact: true }).focus();
   await page.keyboard.press("Enter");
   assert.equal(
@@ -174,20 +156,6 @@ try {
   const paused = await page.locator("#demo-time").innerText();
   await page.clock.fastForward(20000);
   assert.equal(await page.locator("#demo-time").innerText(), paused);
-  await page.setViewportSize({ width: 420, height: 900 });
-  await page.getByRole("button", { name: "Players", exact: true }).click();
-  await page.screenshot({ path: `${output}/mobile.png` });
-  assert.ok(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth,
-    ),
-  );
-  for (const request of requests) {
-    assert.equal(new URL(request).origin, new URL(url).origin);
-    assert.ok(new URL(request).pathname.startsWith(new URL(url).pathname));
-    assert.ok(!request.includes("/api/"));
-  }
-  assert.deepEqual(errors, []);
   const transfer = await page.evaluate(() =>
     performance
       .getEntriesByType("resource")
@@ -201,12 +169,64 @@ try {
     looped,
     colors: colors.size,
     encodedResourceBytes: transfer,
-    errors,
-    requestCount: requests.length,
   };
-  await writeFile(`${output}/chrome.json`, JSON.stringify(result, null, 2));
-  console.log(JSON.stringify(result, null, 2));
+  await page.close();
+
+  // Test real-time input in a separate context with native timers. Fast-forwarded
+  // requestAnimationFrame scheduling must not drive compositor actionability.
+  const ui = await browser.newPage({
+    viewport: { width: 1280, height: 800 },
+    deviceScaleFactor: 1,
+    reducedMotion: "reduce",
+  });
+  activePage = ui;
+  ui.on("pageerror", (e) => errors.push(String(e)));
+  ui.on("request", (r) => requests.push(r.url()));
+  await ui.goto(url);
+  await ui.waitForFunction(
+    () => window.__map?.ready && window.__map.state().pending === 0,
+    {},
+    { timeout: 90000 },
+  );
+  await ui.waitForSelector(".player-marker");
+  await ui.getByRole("button", { name: "Follow Rowan", exact: true }).click();
+  const centered = await ui.evaluate(() => window.__map.state().cx);
+  await ui.getByRole("button", { name: "Play demo", exact: true }).click();
+  await ui.waitForFunction((x) => window.__map.state().cx !== x, centered, {
+    timeout: 15000,
+  });
+  const following = await ui.evaluate(() => window.__map.state());
+  await ui.mouse.move(400, 300);
+  await ui.mouse.down();
+  await ui.mouse.move(470, 340, { steps: 6 });
+  await ui.mouse.up();
+  const manual = await ui.evaluate(() => window.__map.state());
+  assert.notEqual(manual.cx, following.cx, "pointer navigation moves camera");
+  await ui.waitForTimeout(2600);
+  assert.equal(
+    (await ui.evaluate(() => window.__map.state())).cx,
+    manual.cx,
+    "manual navigation cancels follow",
+  );
+  await ui.getByRole("button", { name: "Pause demo", exact: true }).click();
+  await ui.setViewportSize({ width: 420, height: 900 });
+  await ui.getByRole("button", { name: "Players", exact: true }).click();
+  await ui.screenshot({ path: `${output}/mobile.png` });
+  await ui.getByRole("button", { name: "Players", exact: true }).focus();
+  await ui.keyboard.press("Enter");
+  assert.equal(
+    await ui.locator("#players-toggle").getAttribute("aria-expanded"),
+    "true",
+  );
+  await ui.screenshot({ path: `${output}/mobile-roster.png` });
+  assert.ok(
+    await ui.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+  );
+  await ui.close();
   const noGpu = await browser.newPage();
+  activePage = noGpu;
+  noGpu.on("pageerror", (e) => errors.push(String(e)));
+  noGpu.on("request", (r) => requests.push(r.url()));
   await noGpu.addInitScript(() =>
     Object.defineProperty(navigator, "gpu", { value: undefined }),
   );
@@ -216,11 +236,28 @@ try {
     () => document.querySelector(".demo-poster").naturalWidth > 0,
   );
   assert.match(await noGpu.locator("#message-text").innerText(), /WebGPU/);
+  await noGpu.close();
   const reduced = await browser.newPage({ reducedMotion: "reduce" });
+  activePage = reduced;
+  reduced.on("pageerror", (e) => errors.push(String(e)));
+  reduced.on("request", (r) => requests.push(r.url()));
   await reduced.goto(url);
   await reduced.waitForSelector('#demo-play[aria-label="Play demo"]', {
     timeout: 90000,
   });
+  for (const request of requests) {
+    assert.equal(new URL(request).origin, new URL(url).origin);
+    assert.ok(new URL(request).pathname.startsWith(new URL(url).pathname));
+    assert.ok(!request.includes("/api/"));
+  }
+  assert.deepEqual(errors, []);
+  Object.assign(result, {
+    errors,
+    requestCount: requests.length,
+    nativeTimerInteractions: true,
+  });
+  await writeFile(`${output}/chrome.json`, JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(result, null, 2));
 } catch (error) {
   console.error(
     "Demo failure state:",
