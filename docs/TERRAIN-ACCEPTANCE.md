@@ -10,9 +10,9 @@ acceptance is not implied by the automated evidence below.
   `a4d2da69ea08a8879111dd1a4a66f989284d0e3d`. Player tracking remains independently
   pinned to `71d8e2b97ddcfdb4faf5ad13cfb4d8d543e73876`, pack 1.0.1.
 - The ordinary HTTPS map at `https://192.168.68.110:8443/` binds both feeds to
-  `bedrock-survival` / `bedrock-survival-20260912`. Terrain is on VM100 TCP8111,
-  players on TCP8110. The separate Creative test copy remains on game UDP19134,
-  terrain TCP8113, players TCP8112 and viewer HTTPS8445.
+  `bedrock-survival` / `bedrock-survival-20260912`. Terrain is on VM100 TCP 8111,
+  players on TCP 8110. The separate Creative test copy remains on game UDP 19134,
+  terrain TCP 8113, players TCP 8112 and viewer HTTPS 8445.
 - Guarded activation reran both isolated candidates, admitted an idle minute,
   fenced UDP and verified backup `20260913T024312-e0bc88c7` before registration.
   No version upgrade, experiment toggle, game-mode or access-policy change.
@@ -26,15 +26,15 @@ acceptance is not implied by the automated evidence below.
   are not ongoing scan failures. Daily idle-only repair and five-minute degraded
   health monitoring are enabled; the host health evaluator reported no issues.
 - Both services passed deployed non-root/read-only/capability/mount checks.
-  Ingestion is unpublished on separate internal networks, wrong tokens return401,
+  Ingestion is unpublished on separate internal networks, wrong tokens return 401,
   read listeners reject ingestion, and the HTTPS proxy rejects writes/wrong worlds.
 - Guarded 35-second production terrain outage: seven unchanged healthy-game
   checks and independent player health passed. Chrome recovered without reload,
-  retained camera/cache, produced zero terrain draws, and reported92 fresh player
-  UI checks. All31 observable player response bodies were fresh; Chrome's debugger
-  could not retrieve14 already-consumed streamed bodies, which are recorded as
+  retained camera/cache, produced zero terrain draws, and reported 92 fresh player
+  UI checks. All 31 observable player response bodies were fresh; Chrome's debugger
+  could not retrieve 14 already-consumed streamed bodies, which are recorded as
   missing capture evidence rather than stale responses. Independent HTTPS sampling
-  returned15/15 live responses, maximum sample age1989ms. No player movement was
+  returned 15/15 live responses, maximum sample age 1989 ms. No player movement was
   synthesized. The independent restart watchdog was disarmed after restoration.
 - Pause the empty acceptance game before resource-heavy isolated candidate gates;
   it temporarily reduced VM100 headroom below the existing 850 MiB admission
@@ -42,7 +42,7 @@ acceptance is not implied by the automated evidence below.
 
 ### Repeatable Browser Measurement
 
-Run these serially, with Safari foreground and its existing WebDriver on4444:
+Run these serially, with Safari foreground and its existing WebDriver on 4444:
 
 ```sh
 node scripts/check-tracking-performance.mjs --scope combined --browser chrome
@@ -56,18 +56,18 @@ reader paths; it is not a controlled eight-player or continuous-edit benchmark.
 Private JSON/screenshots stay in `.local/tracking`. Never run competing GPU
 benchmarks concurrently. A background-window timing timeout is not an FPS result.
 
-Mac Safari26.3, foreground, 1920x1080 physical canvas at native DPR2: offline
-p95 18/17ms, integrated p95 17/18ms. All four runs had zero unchanged-poll draws
-and no failed downloads. Integrated map residency was264,042,784bytes. Maximum
-frame intervals reached93/99ms in integrated runs and18/82ms offline, so this is
+Mac Safari 26.3, foreground, 1920x1080 physical canvas at native DPR 2: offline
+p95 18/17 ms, integrated p95 17/18 ms. All four runs had zero unchanged-poll draws
+and no failed downloads. Integrated map residency was 264,042,784 bytes. Maximum
+frame intervals reached 93/99 ms in integrated runs and 18/82 ms offline, so this is
 not a claim of perfectly uniform frame delivery. There were no players or live
 edits during the measurement. The earlier hidden-window timeout was identified
 through `document.visibilityState`; the harness now requires visibility explicitly.
 
-Chrome152, 1920x1080/DPR1, repeated after repair: offline p95 16.8/16.7ms;
-integrated p95 16.7/16.8ms. All four runs had zero unchanged-poll draws and no
-download failures. Integrated map residency was264,042,784bytes; maximum frame
-interval was16.8ms. These idle-feed comparisons did not show a p95 regression;
+Chrome 152, 1920x1080/DPR 1, repeated after repair: offline p95 16.8/16.7 ms;
+integrated p95 16.7/16.8 ms. All four runs had zero unchanged-poll draws and no
+download failures. Integrated map residency was 264,042,784 bytes; maximum frame
+interval was 16.8 ms. These idle-feed comparisons did not show a p95 regression;
 the less-than-five-percent active-edit/player target remains unmeasured.
 
 ## Combined-Feed Regression Checkpoint
