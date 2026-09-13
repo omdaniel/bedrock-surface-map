@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/Mojang/bedrock-samples",
+  "commit": "736072450c26a7c67f07b1661f29d9a5ebaa14b1",
+  "archive_sha256": "59da8b24c51907777d214e111341cfec8486b872b2b088b6c02424490b449225",
+  "license": "Mojang copyright; Minecraft EULA, not the application source license",
+  "local_only": true
+}

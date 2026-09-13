@@ -1,0 +1,169 @@
+# Bedrock Surface Map
+
+Local, offline Bedrock Overworld surface viewer. Rust extracts a snapshot into
+losslessly compressed surface attributes; WebAssembly and wgpu draw the map in
+the browser with WGSL. No Vello, image-map tiles, streaming desktop, live server
+connection or hosted service.
+
+## Run on this Mac
+
+Prerequisites: Xcode Command Line Tools, rustup, Node.js 26.8.1 (`.node-version`),
+Git and a WebGPU-enabled Chrome or Safari. Rust is pinned to 1.92.0. The first
+bootstrap installs the WASM target and matching wasm-bindgen CLI, checks the
+local secret-scanning hooks, downloads the pinned Mojang samples and builds WASM.
+Review the asset terms in [THIRD_PARTY.md](THIRD_PARTY.md).
+
+```sh
+cd /Users/macbookpro/oneoff/bedrock-surface-map
+npm run bootstrap
+npm run import -- --input /Users/macbookpro/Downloads/Bedrock-Survival-2026-09-11.mcworld
+npm run dev
+```
+
+Open http://127.0.0.1:5173/. Vite stays on loopback, choosing the next free port
+if 5173 is occupied; use the URL printed by Vite. Only the web directory and
+derived map assets are served. Neither the source archive nor extracted LevelDB
+directory is web-accessible. No Proxmox, Minecraft, Hermes or VDI configuration
+is changed by any command in this repository.
+
+Without a private world or Mojang download:
+
+```sh
+npm ci
+npm run wasm
+npm run fixture
+npm run dev
+```
+
+Open `http://127.0.0.1:5173/?map=/maps/fixture/manifest.json` for the synthetic map.
+This route and the real map use exactly the same codec, worker and renderer.
+
+## LAN Preview
+
+WebGPU requires a secure context; plain HTTP on a LAN IP is not sufficient.
+For a temporary preview on a trusted home network, install
+[mkcert](https://github.com/FiloSottile/mkcert), build, and bind to this Mac's
+current LAN IPv4 address:
+
+```sh
+brew install mkcert
+npm run build
+npm run serve:lan -- --host 192.168.68.110
+```
+
+Open `https://192.168.68.110:8443/` from the same LAN. This serves only `web/dist`,
+not the development checkout, raw world, or `.local` directory. The ordinary
+loopback dev server can keep running. Rebuild and restart to publish source
+changes. The address may change with DHCP. Stop the LAN process with Ctrl+C.
+There is no login or public tunnel; any device that can reach this LAN address
+can download the derived map. Keep the Mac awake while viewing.
+
+Certificates are generated under ignored `.local/lan`, using a project-specific
+CA. The command does not install trust or modify any system trust store.
+On the viewing device, download the **public certificate only** from
+`http://192.168.68.110:8444/bedrock-surface-map-ca.crt` and trust it for HTTPS.
+For iPhone/iPad: install the downloaded profile in Settings, then enable its
+full trust under General > About > Certificate Trust Settings. Remove the
+profile when testing is finished. A desktop browser may instead offer a
+temporary certificate exception. Never distribute `rootCA-key.pem` or
+`server-key.pem`; neither is exposed by the server. Port 8444 serves only the
+public certificate, not the app or a directory listing.
+
+## Interaction
+
+Drag to pan; wheel or pinch to zoom. The toolbar provides fit-world, spawn,
+block borders, shadows, lighting/color settings and diagnostics. Sun elevation
+defaults to 45 degrees above the horizon and is adjustable from 15 to 75 degrees.
+The sun-azimuth dial uses compass bearings clockwise from north: north=0/360,
+east=90, south=180, west=270. Its default is 330 degrees (30 degrees west of north).
+Drag around the dial with a mouse, pen or touch; rotations wrap without endpoints.
+Arrow keys change one degree, Page Up/Down change 15, and Home points north.
+The displayed bearing is 0-359 degrees; continuing past 359 returns to 0.
+Shadow strength defaults to 55%; Vivid/Original selects the color treatment.
+Vivid sand has a slightly darker base to preserve contrast with its bright rims;
+the adjustment does not affect other materials or Original mode.
+Terrain relief adds sun-facing height-step highlights, brighter corners and
+down-sun contact shading independently of cast shadows. Strength defaults to
+100%; edge width defaults to 0.25 block (one pixel at four pixels/block, four at
+sixteen), adjustable from 0.05 to 0.50. Both follow the azimuth control.
+These settings are session-local. Hover inspects coordinates, top height
+and material. The camera stays north-up. Redraws stop while the view is idle;
+performance sampling animates a short pan only when explicitly requested.
+WebGPU is required: unsupported browsers and lost devices produce an explicit
+message, not a silent renderer substitution. Retry after device loss reloads
+the snapshot and recreates GPU resources.
+
+## Layout
+
+| Component | Ownership |
+| --- | --- |
+| `surface-core` | Surface fields, versioned codec, pure Rust Zstd decode, CPU shadow oracle |
+| `bedrock-adapter` | Pinned Bedrock parser; read-only extraction and material-state catalog |
+| `surface-cli` | Archive safeguards, import, atlas, atomic publication, inspect and benchmark |
+| `surface-gpu` | WASM ABI, GPU residency, compute shadows/overviews, WGSL drawing |
+| `web/src` | Worker transport, bounded visible-region cache, navigation, picking, diagnostics |
+
+See [import safety and commands](docs/IMPORT.md), [format and rendering](docs/FORMAT.md),
+[verification results](docs/VERIFICATION.md) and the
+[uNmINeD/BedrockMap visual comparison](docs/VISUAL-COMPARISON.md).
+The [appearance follow-up](docs/APPEARANCE.md) explains fractional-block shadows, terrain-edge relief
+and how to reproduce the matched beach comparison.
+
+## Verify
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warnings
+cargo test --workspace --locked
+npm run format:check
+npm run build
+npm run fixture
+npm test
+```
+
+Native GPU tests require a Metal or Vulkan adapter. Linux CI installs Mesa's
+software Vulkan driver and uses synthetic fixtures only. CI compiles WASM and
+runs browser interaction/error tests; it neither downloads Mojang assets nor
+uploads compiled artifacts or private-world screenshots. CI is not a hardware
+performance result or a real-world parser compatibility claim.
+
+Hardware verification with the dev server already running on port 5173:
+
+```sh
+node scripts/check-browser.mjs
+# Safari: temporarily enable Settings > Developer > Allow remote automation.
+# Start /usr/bin/safaridriver -p 4444 in another terminal, then:
+node scripts/check-safari.mjs
+# Stop safaridriver and turn remote automation off again after the test.
+cargo build --release --locked -p surface-cli
+node scripts/verify-import.mjs /Users/macbookpro/Downloads/Bedrock-Survival-2026-09-11.mcworld
+```
+
+Reports/screenshots are under ignored `.local/verification`; synthetic screenshots
+are under ignored `test-results`. Commit summaries, not private artifacts.
+
+## Boundaries and Maintenance
+
+- One snapshot, Overworld, top-surface representation. Not a replacement for a
+  full-world backup, arbitrary 3D Minecraft rendering, or multiplayer tracking.
+- Exact compression applies to retained fields, not the underground world.
+- Biome colors approximate vanilla palettes. Complex stairs/fences/glass,
+  canopy cutouts and multiple translucent layers have explicit approximations.
+- The 256 MiB resident map budget covers logical GPU buffers/textures and CPU
+  picking arrays, not browser RSS, WASM heap, driver overhead or transient decode
+  allocations. The real 64-region snapshot fits. Very large visible areas may
+  request zooming in; paging compact overview-only regions is a future extension.
+- Shadows use the complete snapshot heightfield and a max-height hierarchy for
+  arbitrary-direction ray queries. Overviews cache shaded colors; close-up
+  shadows are evaluated per pixel. A new manifest is adopted on reload,
+  rebuilding every affected cache, not by a live change-feed service.
+- Update dependencies in an isolated `codex/` branch, regenerate lockfiles,
+  rerun synthetic CI and both real-browser checks. Parser updates require a
+  fresh real-world import/hash/sample verification. Codec changes need a format
+  version bump or a compatible reader; never reinterpret old objects silently.
+- New outputs are immutable/content-hashed; preserve an old manifest and its
+  referenced objects for data rollback. Source rollback is a new `git revert`
+  commit followed by the matching build. Git is not the world backup.
+- Future homelab deployment manifests belong in `runproxmox`, not here. Static
+  manifest/asset URLs permit CDN hosting later, after access and licensing review.
