@@ -9,6 +9,7 @@ const config = {
 test("combined pilot configuration binds players and terrain to the same world", async () => {
   const proxy = mapProxy({
     ...config,
+    terrainOrigin: "http://192.168.68.114:8113",
     origin: "http://192.168.68.114:8112",
     fingerprint: "a".repeat(64),
   });

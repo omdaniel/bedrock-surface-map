@@ -21,6 +21,42 @@ production rollout or complete device acceptance claim.
 
 ## Copied-World Engine Gate
 
+### Stabilization Build
+
+Application `a4d2da69ea08a8879111dd1a4a66f989284d0e3d`, pack 1.0.2, BDS 1.26.45.1:
+
+- The shipping pack, without the probe pack or players, observed an actual piston
+  change/new chunk in 0.783 s. Recovery after an eight-second collector outage was
+  1.276 s in this run; exponential retry backoff can take longer (up to 30 s).
+- Restored-copy probe: roof removal 3.031 s, recovery 3.031 s, 256/256 complete
+  columns matching offline extraction across all retained fields. Native-query
+  scan measurements: 446, 402, 1105, 400, 403, 403 ms. These are collector timings,
+  not a measured real-client edit-to-browser p95.
+- Underwater lookup uses the native solid lower bound plus a filtered volume query;
+  it preserves underwater plants/support and no longer reads each water voxel.
+  An additional real ocean chunk matched all ten fields in all 256 columns.
+- Test-copy catalog repair corrected two published descriptors. Chrome and Safari
+  show ordinary sand instead of magenta. Both test feeds use the same world and
+  generation, with independent private ingestion networks and fresh test secrets.
+
+### Working-Window Stress
+
+`node scripts/check-terrain-growth.mjs` generates dense synthetic maps using the
+shared Rust codec, then pans Chrome at 1920x1080/DPR1 through 26 locations each:
+
+- 4x: 256 regions / 16,777,216 columns; 16x: 1,024 regions / 67,108,864 columns.
+- Maximum accounted map residency: 268,221,480 bytes (255.8 MiB), with nonvisible
+  detail evicted at the ceiling. The height window moved instead of allocating
+  either world's full bounding rectangle. This is accounted map memory, not total
+  browser process RSS or instantaneous decoder/driver allocation peaks.
+- Oversized fit-world views explicitly required zooming in; spawn navigation
+  recovered without reloading. No page errors or failed region downloads.
+- Mac Safari 26.3 on the HTTPS pilot passed rendering, picking, drag and device-loss
+  recovery. Its measured controlled-pan p95 was 30 ms at DPR2/3840x2056; this is not
+  the specified 1080p/DPR1 baseline or an iPad result.
+
+### Earlier Build
+
 Application `3bfca666a9e1c675380df7030cfa5fe7dd9a8cac`, official BDS 1.26.45.1,
 VM100 isolated containers, no published game ports. Input snapshot SHA-256:
 `d6c03baf7b4bb7a621e85f0acf073abe737bd3789db26505e4268386fee12097`.

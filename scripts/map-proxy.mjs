@@ -8,7 +8,7 @@ export function mapProxy(options) {
     generation = options.generation;
   if (
     target.protocol !== "http:" ||
-    target.port !== "8111" ||
+    !["8111", "8113"].includes(target.port) ||
     target.username ||
     target.password ||
     target.pathname !== "/" ||
@@ -21,7 +21,7 @@ export function mapProxy(options) {
     ![world, generation].every((v) => /^[A-Za-z0-9_-]{1,80}$/.test(v ?? ""))
   )
     throw Error(
-      "Terrain requires an explicit private IPv4 origin on port 8111 and a world/generation binding",
+      "Terrain requires an explicit private IPv4 origin on production port 8111 or pilot port 8113 and a world/generation binding",
     );
   const prefix = `/api/v1/worlds/${world}/terrain/`;
   const config = JSON.stringify({
