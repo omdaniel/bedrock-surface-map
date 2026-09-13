@@ -76,6 +76,13 @@ test("water support, grass overlay, snow and slab fractions", () => {
   );
 });
 test("redundant legacy API states normalize without dropping other permutation fields", () => {
+  for (const [name, key] of [
+    ["sand", "sand_type"],
+    ["dirt", "dirt_type"],
+  ]) {
+    const sample = finish(fixture({ 0: material(name, { [key]: "normal" }) }));
+    assert.deepEqual(sample.materials[1], material(name));
+  }
   const s = finish(
     fixture({
       0: material("stone", { stone_type: "stone" }),

@@ -6,6 +6,30 @@ const config = {
   generation: "generation",
   terrainOrigin: "http://127.0.0.1:8111",
 };
+test("combined pilot configuration binds players and terrain to the same world", async () => {
+  const proxy = mapProxy({
+    ...config,
+    origin: "http://192.168.68.114:8112",
+    fingerprint: "a".repeat(64),
+  });
+  let body;
+  const response = {
+    setHeader() {},
+    writeHead() {
+      return this;
+    },
+    end(value) {
+      body = value;
+    },
+  };
+  await proxy({ url: "/viewer-config.json", method: "GET" }, response, () =>
+    assert.fail("fallthrough"),
+  );
+  const result = JSON.parse(body);
+  assert.equal(result.players.world_id, result.terrain.world_id);
+  assert.equal(result.players.generation, result.terrain.generation);
+  assert.equal(result.players.url, "/api/v1/worlds/test/players");
+});
 test("terrain proxy allows only fixed destination and exact read routes", async () => {
   for (const terrainOrigin of [
     "http://example.com:8111",

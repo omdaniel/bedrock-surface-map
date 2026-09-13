@@ -3,6 +3,22 @@
 September 12, 2026. Implementation remains under review in PR 3; this is not a
 production rollout or complete device acceptance claim.
 
+## Combined-Feed Regression Checkpoint
+
+- Corrected live `sand_type=normal` and `dirt_type=normal` canonicalization and
+  moved texture-name resolution into shared Rust code. Default variants reuse
+  sand/dirt textures; red sand and coarse dirt remain distinct.
+- `surface-sync refresh-catalog` repairs descriptors of already-published material
+  IDs without changing chunk hashes, IDs or dataset generation. Its idempotence
+  and root-catalog publication are covered by a persistent-store regression test.
+- Pack 1.0.1 distinguishes expected unloads, scan errors and HTTP failures. Health
+  includes completed scans, active coverage and last/max scan duration. A fresh
+  heartbeat no longer masks delayed scan coverage.
+- Real Chrome synthetic integration verifies simultaneous terrain/player updates,
+  stable camera/selection/follow, marker projection, zero terrain draws on player
+  movement, independent feed outages and expired region-object retry. This is
+  browser integration evidence, not an assertion that real clients were tested.
+
 ## Copied-World Engine Gate
 
 Application `3bfca666a9e1c675380df7030cfa5fe7dd9a8cac`, official BDS 1.26.45.1,

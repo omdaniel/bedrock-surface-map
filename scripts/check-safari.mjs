@@ -1,6 +1,8 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 const host = "http://127.0.0.1:4444";
+const target = process.env.MAP_URL ?? "http://127.0.0.1:5173/";
+const output = process.env.MAP_EVIDENCE ?? ".local/verification";
 async function command(path, body, method = body ? "POST" : "GET") {
   const response = await fetch(host + path, {
     method,
@@ -29,20 +31,17 @@ async function wait(code) {
 }
 async function screenshot(name) {
   const b64 = await command(root + "/screenshot");
-  await writeFile(
-    `.local/verification/safari-${name}.png`,
-    Buffer.from(b64, "base64"),
-  );
+  await writeFile(`${output}/safari-${name}.png`, Buffer.from(b64, "base64"));
 }
 try {
-  await mkdir(".local/verification", { recursive: true });
+  await mkdir(output, { recursive: true });
   await command(root + "/window/rect", {
     x: 0,
     y: 0,
     width: 1920,
     height: 1176,
   });
-  await command(root + "/url", { url: "http://127.0.0.1:5173/" });
+  await command(root + "/url", { url: target });
   await wait(
     "return window.__map?.ready && window.__map.state().cached>0 && window.__map.state().pending===0",
   );
@@ -111,6 +110,7 @@ try {
   await command(root + "/refresh", {});
   await wait("return window.__map?.ready && window.__map.state().cached>0");
   const report = {
+    target,
     capabilities: session.capabilities,
     overview,
     timings,
@@ -119,10 +119,7 @@ try {
     device_loss: loss,
     recovered: true,
   };
-  await writeFile(
-    ".local/verification/safari.json",
-    JSON.stringify(report, null, 2),
-  );
+  await writeFile(`${output}/safari.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 } finally {
   await command(root, undefined, "DELETE");

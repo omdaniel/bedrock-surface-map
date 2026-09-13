@@ -4,7 +4,7 @@ export function trackerProxy({ origin, world, fingerprint }) {
   const target = new URL(origin);
   if (
     target.protocol !== "http:" ||
-    target.port !== "8110" ||
+    !["8110", "8112"].includes(target.port) ||
     target.username ||
     target.password ||
     target.pathname !== "/" ||
@@ -18,7 +18,7 @@ export function trackerProxy({ origin, world, fingerprint }) {
     !/^[a-f0-9]{64}$/.test(fingerprint ?? "")
   ) {
     throw Error(
-      "Tracking requires a private IPv4 HTTP origin on port 8110, a world ID and a SHA-256 map binding",
+      "Tracking requires a private IPv4 HTTP origin on port 8110 (production) or 8112 (pilot), a world ID and a SHA-256 map binding",
     );
   }
   const path = `/api/v1/worlds/${world}/players`;

@@ -158,45 +158,8 @@ fn placeholder() -> Material {
         average: [1., 0., 1., 1.],
     }
 }
-fn material_name(spec: &MaterialSpec) -> String {
-    let mut name = spec.name.trim_start_matches("minecraft:").to_string();
-    for (old, property, suffix) in [
-        ("stone", "stone_type", ""),
-        ("dirt", "dirt_type", ""),
-        ("sand", "sand_type", ""),
-        ("leaves", "old_leaf_type", "_leaves"),
-        ("leaves2", "new_leaf_type", "_leaves"),
-        ("log", "old_log_type", "_log"),
-        ("log2", "new_log_type", "_log"),
-        ("planks", "wood_type", "_planks"),
-    ] {
-        if name == old
-            && let Some(Value::String(v)) = spec.states.get(property)
-        {
-            name = format!("{v}{suffix}");
-        }
-    }
-    name
-}
-
-fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
-    if spec.name == "surface:unknown" {
-        return Ok(0);
-    }
-    let key = spec.key();
-    if let Some(id) = db
-        .query_row("SELECT id FROM materials WHERE key=?1", [&key], |r| {
-            r.get(0)
-        })
-        .optional()?
-    {
-        return Ok(id);
-    }
-    let id: u32 = db.query_row("SELECT COALESCE(MAX(id),0)+1 FROM materials", [], |r| {
-        r.get(0)
-    })?;
-    ensure!(id < 65536, "material catalog limit");
-    let name = material_name(spec);
+fn describe_material(db: &Connection, spec: &MaterialSpec, key: &str) -> Result<Material> {
+    let name = spec.render_name();
     let source: Option<String> = db
         .query_row(
             "SELECT material FROM templates WHERE name=?1",
@@ -204,12 +167,16 @@ fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
             |r| r.get(0),
         )
         .optional()?;
-    let mut material = if let Some(s) = source {
+    let mut material: Material = if let Some(s) = source {
         serde_json::from_str(&s)?
     } else {
-        placeholder()
+        let sentinel: String =
+            db.query_row("SELECT material FROM materials WHERE id=0", [], |r| {
+                r.get(0)
+            })?;
+        serde_json::from_str(&sentinel)?
     };
-    material.key = key.clone();
+    material.key = key.to_owned();
     material.name = name.clone();
     material.tint = if name.contains("water") {
         3
@@ -235,6 +202,27 @@ fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
         || name.contains("fence")
         || name.contains("glass")
         || name == "leaf_litter";
+    Ok(material)
+}
+
+fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
+    if spec.name == "surface:unknown" {
+        return Ok(0);
+    }
+    let key = spec.key();
+    if let Some(id) = db
+        .query_row("SELECT id FROM materials WHERE key=?1", [&key], |r| {
+            r.get(0)
+        })
+        .optional()?
+    {
+        return Ok(id);
+    }
+    let id: u32 = db.query_row("SELECT COALESCE(MAX(id),0)+1 FROM materials", [], |r| {
+        r.get(0)
+    })?;
+    ensure!(id < 65536, "material catalog limit");
+    let material = describe_material(db, spec, &key)?;
     db.execute(
         "INSERT INTO materials(id,key,material) VALUES(?1,?2,?3)",
         params![id, key, serde_json::to_string(&material)?],
@@ -325,8 +313,13 @@ fn publish_region(db: &Connection, root: &Objects<'_>, rx: i32, rz: i32) -> Resu
     Ok(())
 }
 
-fn publish_root(db: &Connection, root: &Objects<'_>, dirty: &BTreeSet<(i32, i32)>) -> Result<()> {
-    if dirty.is_empty() {
+fn publish_root(
+    db: &Connection,
+    root: &Objects<'_>,
+    dirty: &BTreeSet<(i32, i32)>,
+    catalog_changed: bool,
+) -> Result<()> {
+    if dirty.is_empty() && !catalog_changed {
         return Ok(());
     }
     for &(rx, rz) in dirty {
@@ -512,7 +505,7 @@ impl Store {
                 "live"
             },
         )?;
-        publish_root(&tx, &objects, &dirty)?;
+        publish_root(&tx, &objects, &dirty, false)?;
         tx.commit()?;
         Ok(!dirty.is_empty())
     }
@@ -655,7 +648,7 @@ impl Store {
             }
         }
         ensure!(checked > 0, "empty repair import");
-        publish_root(&tx, &objects, &dirty)?;
+        publish_root(&tx, &objects, &dirty, false)?;
         let mut published: Value = meta(&tx, "manifest")?;
         published["source_sha256"] = json!(manifest.source_sha256);
         set_meta(&tx, "manifest", &published)?;
@@ -665,6 +658,47 @@ impl Store {
     }
     pub fn manifest(&self) -> Result<Value> {
         meta(&self.connection, "manifest")
+    }
+    /// Correct descriptors atomically while retaining every published ID and
+    /// chunk hash. Existing clients adopt the new catalog on their next poll.
+    pub fn refresh_catalog(&mut self) -> Result<usize> {
+        self.ensure_space()?;
+        let objects = Objects {
+            root: &self.root,
+            used: &self.used,
+            limit: self.limit,
+        };
+        let tx = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        objects.refresh(&tx, &self.data_version)?;
+        let rows = {
+            let mut s =
+                tx.prepare("SELECT id,key,material FROM materials WHERE id>0 ORDER BY id")?;
+            s.query_map([], |r| {
+                Ok((
+                    r.get::<_, u32>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let mut changed = 0;
+        for (id, key, old) in rows {
+            let spec = MaterialSpec::from_saved_key(&key)?;
+            let material = serde_json::to_string(&describe_material(&tx, &spec, &key)?)?;
+            if material != old {
+                tx.execute(
+                    "UPDATE materials SET material=?1 WHERE id=?2",
+                    params![material, id],
+                )?;
+                changed += 1;
+            }
+        }
+        publish_root(&tx, &objects, &BTreeSet::new(), changed > 0)?;
+        tx.commit()?;
+        Ok(changed)
     }
     pub fn object(&self, name: &str) -> Result<Vec<u8>> {
         load(&self.root, name)
@@ -686,7 +720,7 @@ impl Store {
             "live"
         };
         Ok(
-            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.0"}),
+            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.1"}),
         )
     }
     pub fn disable(&self, disabled: bool, reason: &str) -> Result<()> {

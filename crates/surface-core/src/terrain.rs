@@ -92,6 +92,30 @@ pub struct MaterialSpec {
 }
 
 impl MaterialSpec {
+    /// Resolve legacy permutations to texture names without confusing a default
+    /// variant such as sand_type=normal with a block named "normal".
+    pub fn render_name(&self) -> String {
+        let spec = self.canonicalized();
+        let name = spec.name.trim_start_matches("minecraft:");
+        for (old, property, suffix) in [
+            ("stone", "stone_type", ""),
+            ("dirt", "dirt_type", "_dirt"),
+            ("sand", "sand_type", "_sand"),
+            ("leaves", "old_leaf_type", "_leaves"),
+            ("leaves2", "new_leaf_type", "_leaves"),
+            ("log", "old_log_type", "_log"),
+            ("log2", "new_log_type", "_log"),
+            ("planks", "wood_type", "_planks"),
+        ] {
+            if name == old
+                && let Some(Value::String(v)) = spec.states.get(property)
+            {
+                return format!("{v}{suffix}");
+            }
+        }
+        name.to_owned()
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.name.len() <= 128
@@ -367,6 +391,20 @@ pub struct ScanDiagnostics {
     pub reads: u64,
     pub errors: u64,
     pub overflow: u64,
+    #[serde(default)]
+    pub completed: u64,
+    #[serde(default)]
+    pub unloaded: u64,
+    #[serde(default)]
+    pub active_chunks: u32,
+    #[serde(default)]
+    pub last_scan_ms: u64,
+    #[serde(default)]
+    pub max_scan_ms: u64,
+    #[serde(default)]
+    pub scan_errors: u64,
+    #[serde(default)]
+    pub send_errors: u64,
 }
 
 pub fn valid_id(s: &str) -> bool {
@@ -419,6 +457,37 @@ impl TerrainObservation {
 mod tests {
     use super::*;
     use crate::MISSING_HEIGHT;
+    #[test]
+    fn saved_and_live_default_sand_and_dirt_share_identity_and_texture() {
+        for (name, property, variant, expected) in [
+            ("sand", "sand_type", "normal", "sand"),
+            ("sand", "sand_type", "red", "red_sand"),
+            ("dirt", "dirt_type", "normal", "dirt"),
+            ("dirt", "dirt_type", "coarse", "coarse_dirt"),
+        ] {
+            let live = MaterialSpec {
+                name: format!("minecraft:{name}"),
+                states: BTreeMap::from([(property.into(), Value::from(variant))]),
+            };
+            let saved = MaterialSpec::from_saved_key(
+                &serde_json::json!([live.name, {property:{"String":variant}}]).to_string(),
+            )
+            .unwrap();
+            assert_eq!(saved.key(), live.key());
+            assert_eq!(saved.render_name(), expected);
+            assert_eq!(live.render_name(), expected);
+            if variant == "normal" {
+                assert_eq!(
+                    live.key(),
+                    MaterialSpec {
+                        name: live.name.clone(),
+                        states: BTreeMap::new()
+                    }
+                    .key()
+                );
+            }
+        }
+    }
     #[test]
     fn rectangular_height_patches_match_full_rebuild() {
         let mut source = vec![0.; 512 * 257];

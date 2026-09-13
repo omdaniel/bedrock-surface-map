@@ -475,6 +475,9 @@ async function syncTerrain(poll = false) {
       requestDraw();
     terrainFailures = 0;
     if (poll) {
+      // A cold-load object may have expired while a newer manifest was being
+      // published. Retry against current references after successful revalidation.
+      failures.clear();
       const response = await fetch(new URL("status", terrain.base), {
         cache: "no-store",
         signal: AbortSignal.timeout(5000),

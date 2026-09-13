@@ -53,24 +53,7 @@ fn interner(
     if let Some(id) = ids.get(&key) {
         return Ok(*id);
     }
-    let mut name = state.name.trim_start_matches("minecraft:").to_string();
-    for (old, prop, suffix) in [
-        ("stone", "stone_type", ""),
-        ("dirt", "dirt_type", ""),
-        ("sand", "sand_type", ""),
-        ("leaves", "old_leaf_type", "_leaves"),
-        ("leaves2", "new_leaf_type", "_leaves"),
-        ("log", "old_log_type", "_log"),
-        ("log2", "new_log_type", "_log"),
-        ("planks", "wood_type", "_planks"),
-    ] {
-        if name == old {
-            let v = value(state, prop);
-            if !v.is_empty() {
-                name = format!("{v}{suffix}");
-            }
-        }
-    }
+    let name = surface_core::terrain::MaterialSpec::from_saved_key(&key)?.render_name();
     let tint = if name.contains("water") {
         3
     } else if name.contains("leaves") {

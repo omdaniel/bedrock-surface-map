@@ -199,6 +199,7 @@ type Work = {
   due: number;
   urgent: boolean;
   serial: number;
+  marked: number;
 };
 export class WorkQueue {
   private entries = new Map<string, Work>();
@@ -221,7 +222,14 @@ export class WorkQueue {
       this.overflow++;
       return;
     }
-    this.entries.set(key, { cx, cz, due, urgent, serial: ++this.serial });
+    this.entries.set(key, {
+      cx,
+      cz,
+      due,
+      marked: due,
+      urgent,
+      serial: ++this.serial,
+    });
   }
   take(now: number, background = false): Work | undefined {
     let best: Work | undefined;
@@ -243,7 +251,7 @@ export class WorkQueue {
   get oldest() {
     return Math.min(
       Date.now(),
-      ...Array.from(this.entries.values(), (v) => v.due),
+      ...Array.from(this.entries.values(), (v) => v.marked),
     );
   }
 }
@@ -300,5 +308,11 @@ export class Outbox {
   resetAcknowledged() {
     this.acknowledged.clear();
     this.acknowledgedBytes = 0;
+  }
+  get oldest() {
+    return Math.min(
+      Date.now(),
+      ...Array.from(this.pending.values(), (v) => v.sample.start),
+    );
   }
 }

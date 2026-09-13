@@ -26,6 +26,7 @@ enum Command {
         input: PathBuf,
     },
     Manifest,
+    RefreshCatalog,
     Chunk {
         #[arg(long, allow_hyphen_values = true)]
         x: i32,
@@ -72,6 +73,10 @@ async fn main() -> Result<()> {
             println!("changed={}", store.ingest(&observation, now_ms())?);
         }
         Command::Manifest => println!("{}", store.manifest()?),
+        Command::RefreshCatalog => println!(
+            "{}",
+            serde_json::json!({"updated_materials":store.refresh_catalog()?})
+        ),
         Command::Chunk { x, z } => {
             let hash: String = store.connection.query_row(
                 "SELECT hash FROM chunks WHERE cx=?1 AND cz=?2",

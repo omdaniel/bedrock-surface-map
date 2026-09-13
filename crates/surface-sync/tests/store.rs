@@ -129,6 +129,75 @@ fn unchanged_content_updates_observation_without_republishing() {
     assert_eq!(current_height(&s), 32);
 }
 #[test]
+fn fresh_heartbeat_does_not_hide_delayed_terrain_scans() {
+    let (_dir, mut s) = seeded();
+    let start = now_ms();
+    let mut sample = observation(1, start, 16);
+    sample.chunks.clear();
+    sample.diagnostics.active_chunks = 4;
+    sample.diagnostics.oldest_scan_ms = 65000;
+    s.ingest(&sample, start + 2).unwrap();
+    assert_eq!(s.health(start + 3).unwrap()["status"], "degraded");
+    sample.sequence += 1;
+    sample.diagnostics.oldest_scan_ms = 2000;
+    s.ingest(&sample, start + 4).unwrap();
+    assert_eq!(s.health(start + 5).unwrap()["status"], "live");
+}
+#[test]
+fn catalog_repair_fixes_published_descriptors_without_rewriting_terrain_or_ids() {
+    let (_dir, mut s) = seeded();
+    let before = s.manifest().unwrap();
+    // Model the previously deployed default-variant bug, with a chunk already
+    // referencing this ID. Repair must not need another gameplay observation.
+    let template: String = s
+        .connection
+        .query_row(
+            "SELECT material FROM templates WHERE name='stone'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let mut sand: Material = serde_json::from_str(&template).unwrap();
+    sand.name = "sand".into();
+    sand.texture = "sand".into();
+    s.connection
+        .execute(
+            "INSERT INTO templates VALUES('sand',?1)",
+            [serde_json::to_string(&sand).unwrap()],
+        )
+        .unwrap();
+    let key = r#"["minecraft:sand",{"sand_type":"normal"}]"#;
+    let mut bad = sand.clone();
+    bad.name = "normal".into();
+    bad.texture = "unknown".into();
+    bad.key = key.into();
+    bad.average = [1., 0., 1., 1.];
+    s.connection
+        .execute(
+            "UPDATE materials SET key=?1,material=?2 WHERE id=1",
+            [key, &serde_json::to_string(&bad).unwrap()],
+        )
+        .unwrap();
+    assert_eq!(s.refresh_catalog().unwrap(), 1);
+    let after = s.manifest().unwrap();
+    assert_eq!(before["regions"], after["regions"]);
+    assert_eq!(before["atlas"], after["atlas"]);
+    assert_ne!(before["catalog"], after["catalog"]);
+    let material: String = s
+        .connection
+        .query_row("SELECT material FROM materials WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    let material: Material = serde_json::from_str(&material).unwrap();
+    assert_eq!(material.name, "sand");
+    assert_eq!(material.texture, "sand");
+    assert_eq!(material.key, key);
+    assert_eq!(current_height(&s), 16);
+    assert_eq!(s.refresh_catalog().unwrap(), 0);
+    assert_eq!(s.manifest().unwrap(), after);
+}
+#[test]
 fn old_sessions_wrong_world_and_failed_batch_do_not_mutate() {
     let (_dir, mut s) = seeded();
     let start = now_ms();

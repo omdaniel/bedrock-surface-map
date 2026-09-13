@@ -1,6 +1,12 @@
 {
   "version": 1,
   "canonical_state_defaults": {
+    "minecraft:sand": {
+      "sand_type": "normal"
+    },
+    "minecraft:dirt": {
+      "dirt_type": "normal"
+    },
     "minecraft:stone": { "stone_type": "stone" },
     "minecraft:short_grass": { "tall_grass_type": "default" },
     "minecraft:oak_slab": { "wood_type": "oak" },
