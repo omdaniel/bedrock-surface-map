@@ -25,11 +25,13 @@ const browser = await chromium.launch({
       ]
     : [],
 });
+let activePage;
 try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
     deviceScaleFactor: 1,
   });
+  activePage = page;
   const errors = [],
     requests = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -111,11 +113,13 @@ try {
   await page.getByRole("button", { name: "Follow Rowan", exact: true }).click();
   await page.clock.fastForward(2100);
   await page.waitForTimeout(400);
+  const following = await page.evaluate(() => window.__map.state());
   await page.mouse.move(400, 300);
   await page.mouse.down();
   await page.mouse.move(470, 340, { steps: 6 });
   await page.mouse.up();
   const manual = await page.evaluate(() => window.__map.state());
+  assert.notEqual(manual.cx, following.cx, "pointer navigation moves camera");
   await page.clock.fastForward(2100);
   await page.waitForTimeout(400);
   assert.equal(
@@ -123,7 +127,14 @@ try {
     manual.cx,
     "manual navigation cancels follow",
   );
-  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
+  // Exercise keyboard playback as well as the pointer controls above. Focus does
+  // not depend on compositor stability after software-GPU pan/follow draws.
+  await page.getByRole("button", { name: "Pause demo", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  assert.equal(
+    await page.locator("#demo-play").getAttribute("aria-label"),
+    "Play demo",
+  );
   const paused = await page.locator("#demo-time").innerText();
   await page.clock.fastForward(20000);
   assert.equal(await page.locator("#demo-time").innerText(), paused);
@@ -174,6 +185,21 @@ try {
   await reduced.waitForSelector('#demo-play[aria-label="Play demo"]', {
     timeout: 90000,
   });
+} catch (error) {
+  console.error(
+    "Demo failure state:",
+    await activePage
+      ?.evaluate(() => ({
+        hidden: document.hidden,
+        time: document.querySelector("#demo-time")?.textContent,
+        map: window.__map?.state(),
+      }))
+      .catch(() => "page unavailable"),
+  );
+  await activePage
+    ?.screenshot({ path: `${output}/failure.png`, timeout: 5000 })
+    .catch(() => {});
+  throw error;
 } finally {
   await browser.close();
   if (server) await new Promise((ok) => server.close(ok));

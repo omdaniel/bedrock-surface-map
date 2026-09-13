@@ -50,7 +50,7 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: xvfb-run -a -s '-screen 0 1280x900x24' npm test
       - run: npm run demo:build
-      - run: DEMO_SELF_SERVE=1 xvfb-run -a -s '-screen 0 1440x1000x24' node scripts/check-demo.mjs
+      - run: DEMO_SELF_SERVE=1 xvfb-run -a -s '-screen 0 1920x1200x24' node scripts/check-demo.mjs
       - run: node scripts/audit-demo.mjs
       - name: Configure Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
