@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import { mkdir, writeFile } from "node:fs/promises";
-import { parseArgs } from "node:util";
+import { resolve } from "node:path";
+import {
+  verificationConfig,
+  waitForMap,
+  isPlayerResponse,
+} from "./verification-config.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 
-const { values } = parseArgs({
+const values = verificationConfig({
+  output: ".local/tracking",
   options: { service: { type: "string", default: "tracking" } },
 });
 if (!["tracking", "terrain"].includes(values.service))
@@ -17,7 +23,8 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
   });
-  await page.goto("https://192.168.68.110:8443/");
+  await page.goto(values.url);
+  await waitForMap(page, values);
   await page.waitForFunction(
     (terrain) =>
       window.__map?.ready &&
@@ -46,7 +53,7 @@ try {
       playerUiChecks = 0;
     const responseDiagnostics = {};
     page.on("response", async (response) => {
-      if (!response.url().endsWith("/bedrock-survival/players")) return;
+      if (!isPlayerResponse(response.url(), values.url)) return;
       try {
         const value = await response.json();
         responses++;
@@ -106,9 +113,9 @@ try {
       limitation:
         "No movement or edit latency is inferred from an idle outage test.",
     };
-    await mkdir(".local/tracking", { recursive: true });
+    await mkdir(values.output, { recursive: true });
     await writeFile(
-      ".local/tracking/terrain-outage-observation.json",
+      resolve(values.output, "terrain-outage-observation.json"),
       JSON.stringify(report, null, 2),
     );
     console.log(JSON.stringify(report, null, 2));
@@ -153,9 +160,9 @@ try {
         "Game-action latency and server tick cost are not measured here.",
     };
     assert.equal(report.terrain_draws_during_outage, 0);
-    await mkdir(".local/tracking", { recursive: true });
+    await mkdir(values.output, { recursive: true });
     await writeFile(
-      ".local/tracking/outage-observation.json",
+      resolve(values.output, "outage-observation.json"),
       JSON.stringify(report, null, 2),
     );
     console.log(JSON.stringify(report, null, 2));

@@ -1,9 +1,22 @@
 import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-const input = process.argv[2];
-if (!input) throw new Error("Pass the offline .mcworld path");
-const root = "web/public/maps/bedrock-survival/";
+import { resolve, sep } from "node:path";
+import { verificationConfig } from "./verification-config.mjs";
+const config = verificationConfig({
+  options: {
+    input: { type: "string" },
+    "map-dir": { type: "string" },
+    assets: { type: "string" },
+    cli: { type: "string", default: "target/release/surface-map" },
+  },
+});
+if (!config.input || !config["map-dir"])
+  throw Error(
+    "Configure input archive and map-dir for repeat-import verification",
+  );
+const input = config.input;
+const root = resolve(config["map-dir"]) + sep;
 const before = JSON.parse(await readFile(root + "manifest.json", "utf8"));
 const objects = [
   ...before.regions.map((r) => r.url),
@@ -17,8 +30,17 @@ const original = createHash("sha256")
   .update(await readFile(input))
   .digest("hex");
 const child = spawnSync(
-  "target/release/surface-map",
-  ["import", "--input", input],
+  config.cli,
+  [
+    "import",
+    "--input",
+    input,
+    "--output",
+    root,
+    "--name",
+    before.name,
+    ...(config.assets ? ["--assets", config.assets] : []),
+  ],
   { encoding: "utf8" },
 );
 if (child.status !== 0) throw new Error(child.stderr);
@@ -38,9 +60,9 @@ const report = {
   ...JSON.parse(child.stdout),
   identical_objects_reused: objects.length,
 };
-await mkdir(".local/verification", { recursive: true });
+await mkdir(config.output, { recursive: true });
 await writeFile(
-  ".local/verification/import.json",
+  resolve(config.output, "import.json"),
   JSON.stringify(report, null, 2),
 );
 console.log(JSON.stringify(report, null, 2));

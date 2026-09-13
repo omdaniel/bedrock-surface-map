@@ -7,18 +7,18 @@ import {
   HttpHeader,
 } from "@minecraft/server-net";
 import { Publisher, Roster } from "./core.js";
+import { validCollectorUrl } from "./config.js";
 
 const worldId = variables.get("world_id"),
   endpoint = variables.get("collector_url");
 if (
   typeof worldId !== "string" ||
   !/^[A-Za-z0-9_-]{1,80}$/.test(worldId) ||
-  typeof endpoint !== "string" ||
-  !/^http:\/\/[A-Za-z0-9.-]+:8081\/ingest\/v1\/snapshot$/.test(endpoint)
+  !validCollectorUrl(endpoint)
 ) {
   throw Error("Surface tracker configuration missing or invalid");
 }
-const roster = new Roster();
+const roster = new Roster(variables.get("excluded_players") ?? []);
 const started = Date.now();
 const publisher = new Publisher(
   worldId,

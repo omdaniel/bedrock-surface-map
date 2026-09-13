@@ -4,7 +4,7 @@
     "name": "Surface Tracker HTTP Isolation Probe",
     "description": "Disposable-world diagnostics only; never register in a player world",
     "uuid": "b73ce036-18f9-4453-a7cd-09094362ed57",
-    "version": [1, 0, 0],
+    "version": [1, 0, 1],
     "min_engine_version": [1, 26, 40]
   },
   "modules": [
@@ -12,7 +12,7 @@
       "type": "script",
       "language": "javascript",
       "uuid": "197dca2b-fefb-4f8c-a169-31961a8545eb",
-      "version": [1, 0, 0],
+      "version": [1, 0, 1],
       "entry": "scripts/main.js"
     }
   ],

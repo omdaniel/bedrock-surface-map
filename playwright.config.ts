@@ -1,10 +1,14 @@
 import { defineConfig } from "@playwright/test";
+const port = Number(process.env.SURFACE_TEST_PORT ?? 5173);
+if (!Number.isInteger(port) || port < 1024 || port > 65535)
+  throw Error("Invalid SURFACE_TEST_PORT");
+const baseURL = `http://127.0.0.1:${port}`;
 export default defineConfig({
   testDir: "tests",
   workers: 1,
   timeout: 60000,
   use: {
-    baseURL: "http://127.0.0.1:5173",
+    baseURL,
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 1,
     channel: process.env.CI ? undefined : "chrome",
@@ -23,8 +27,8 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: "npm run dev",
-    url: "http://127.0.0.1:5173",
+    command: `npm run dev -- --port ${port} --strictPort`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
   },
 });

@@ -1,4 +1,4 @@
-export const PACK_VERSION = "1.0.1";
+export const PACK_VERSION = "1.0.2";
 export interface SourcePlayer {
   id: string;
   name: string;
@@ -16,6 +16,22 @@ export interface SamplePlayer {
 export const compassHeading = (yaw: number) =>
   (((yaw + 180) % 360) + 360) % 360;
 export class Roster {
+  private excluded: Set<string>;
+  constructor(excluded: unknown = []) {
+    if (
+      !Array.isArray(excluded) ||
+      excluded.length > 32 ||
+      !excluded.every(
+        (name) =>
+          typeof name === "string" &&
+          name.length > 0 &&
+          name.length <= 128 &&
+          !/[\x00-\x1f\x7f]/.test(name),
+      )
+    )
+      throw Error("excluded_players must be an array of up to 32 gamertags");
+    this.excluded = new Set(excluded.map((name) => name.toLowerCase()));
+  }
   private next = 1;
   private records = new Map<
     string,
@@ -53,7 +69,7 @@ export class Roster {
       // If identity cannot be established, fail the sample rather than invent
       // an empty roster. A known disconnect race retains only its current name.
       if (!name) throw Error("player identity unavailable");
-      if (name.toLowerCase() === "popcello8931") continue;
+      if (this.excluded.has(name.toLowerCase())) continue;
       active.add(entityId);
       if (!this.records.has(entityId)) this.spawn(entityId);
       const record = this.records.get(entityId)!;

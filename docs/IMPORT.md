@@ -9,12 +9,15 @@ checks. Only an unpacked private copy of an offline archive is opened.
 cargo run --release --locked -p surface-cli -- import \
   --input /path/to/your-offline-snapshot.mcworld
 cargo run --release --locked -p surface-cli -- benchmark \
-  web/public/maps/bedrock-survival/manifest.json
+  web/public/maps/world/manifest.json
 cargo run --release --locked -p surface-cli -- inspect \
-  web/public/maps/bedrock-survival/manifest.json
+  web/public/maps/world/manifest.json
 ```
 
 Run `node scripts/assets.mjs` first to acquire the pinned Mojang resource-pack samples.
+`--output` sets the derived directory and `--name` its display name; defaults are
+`web/public/maps/world` and `Bedrock World`. Set the viewer's `map` configuration
+to the served manifest path when using another location.
 The private extraction scratch directory is under `.local/worlds` (its parent
 has mode 0700). Successful imports remove their scratch copy. Failed imports
 retain it for local diagnosis; it is ignored by Git and never served by Vite.

@@ -20,6 +20,8 @@ and graphics-driver overhead. Oversized views request zooming in.
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),
 [acceptance checks](TERRAIN-ACCEPTANCE.md) and [public-demo maintenance](PUBLIC_DEMO.md).
+See [operator configuration](CONFIGURATION.md) for addresses, world bindings and
+portable verification settings.
 
 ## Controls and Appearance
 
@@ -42,6 +44,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warnings
 cargo test --workspace --locked
 npm run format:check
+npm run config:test
 npm run build
 npm run tracking:build
 npm run tracking:test

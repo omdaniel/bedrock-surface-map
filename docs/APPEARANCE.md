@@ -116,8 +116,9 @@ node scripts/check-relief.mjs
 ```
 
 The scripts write ignored reports, screenshots and comparison pages under
-`.local/appearance`, `.local/azimuth` and `.local/relief`. The beach crop is
-X `[-380,-188)`, Z `[-210,-18)`. Azimuth and relief checks include navigation
+`.local/appearance`, `.local/azimuth` and `.local/relief` by default. Views use
+spawn or the `view`/`detailView` fields in [operator configuration](CONFIGURATION.md).
+Azimuth and relief checks include navigation
 timings and desktop/mobile layouts. Relief comparisons use off/on views at
 330 degrees and reversed light at 150 degrees, not different application builds.
 
@@ -128,8 +129,9 @@ For an optional matching uNmINeD image, prepare the separate offline copy in the
 .local/comparison-tools/unmined-cli_0.20.8-dev_osx-arm64/unmined-cli image render \
   --world=.local/comparison/world \
   --output=.local/appearance/unmined-beach.png \
-  '--area=b(-380,-210,192,192)' --zoom=2 --shadows=3d \
+  "--area=b($CROP_X,$CROP_Z,192,192)" --zoom=2 --shadows=3d \
   --chunkprocessors=2 --log-level=warning
 ```
 
 Private comparison images and downloaded assets do not belong in Git or CI.
+Set `CROP_X`/`CROP_Z` to match the configured 192-block browser crop at scale 4.

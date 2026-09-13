@@ -26,8 +26,8 @@ same deadline. Unauthorized, oversized and slow requests do not replace the rost
 The pack samples every forty ticks and coalesces roster events. It allows one
 two-second HTTP request at a time, with no backlog and a maximum thirty-second
 retry backoff. Empty-roster heartbeats distinguish idle from broken.
-The [sampler](../tracking/pack/src/core.ts) contains an installation-specific
-service-account exclusion; review it for another server. Bedrock yaw becomes
+The [sampler](../tracking/pack/src/core.ts) accepts an operator-configured
+`excluded_players` array; its default excludes nobody. Bedrock yaw becomes
 north-zero, clockwise heading with `(yaw + 180) mod 360`.
 
 ## Browser Behavior
@@ -80,7 +80,8 @@ candidate rather than assuming all beta releases behave identically.
 
 The separate `probe/` pack exercises BDS URI/body/concurrency rejection and
 timeouts. Register it only on disposable test worlds, never in the gameplay
-world. Activation, stopped backups, experiment approval, secrets and update
+world, with explicit `allow_test_probe: true` module configuration. Activation,
+stopped backups, experiment approval, secrets and update
 fallback belong in the deployment runbook. Removing the tracking pack does not
 undo experimental-world metadata.
 
@@ -120,6 +121,8 @@ performance.
 See [combined acceptance](TERRAIN-ACCEPTANCE.md) for real-client coordinate checks,
 independent outages and controlled-pan measurements. `--scope players` isolates
 tracking off/on; `--scope combined` compares both feed configurations.
+Set the target and output through [operator configuration](CONFIGURATION.md);
+no installation-specific address or world size is required.
 Sample-to-browser latency depends on synchronized clocks and is not the full
 in-game-action delay. Keep live names, coordinates and raw screenshots out of
 published reports.

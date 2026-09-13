@@ -57,6 +57,7 @@ for (const path of [
   "surface-tracker",
   "pack/manifest.json",
   "pack/scripts/core.js",
+  "pack/scripts/config.js",
   "pack/scripts/main.js",
   "probe/manifest.json",
   "probe/scripts/main.js",

@@ -1,8 +1,10 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-const host = "http://127.0.0.1:4444";
-const target = process.env.MAP_URL ?? "http://127.0.0.1:5173/";
-const output = process.env.MAP_EVIDENCE ?? ".local/verification";
+import { verificationConfig, mapReady } from "./verification-config.mjs";
+const config = verificationConfig();
+const host = config.webdriver;
+const target = config.url;
+const output = config.output;
 async function command(path, body, method = body ? "POST" : "GET") {
   const response = await fetch(host + path, {
     method,
@@ -42,9 +44,7 @@ try {
     height: 1176,
   });
   await command(root + "/url", { url: target });
-  await wait(
-    "return window.__map?.ready && window.__map.state().cached>0 && window.__map.state().pending===0",
-  );
+  await wait(`return (${mapReady})(${config.expectedRegions})`);
   await screenshot("overview");
   const overview = await script("return window.__map.state()");
   await script("window.__map.spawn()");

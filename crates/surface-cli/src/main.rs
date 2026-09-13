@@ -34,13 +34,15 @@ enum Command {
     Import {
         #[arg(long)]
         input: PathBuf,
-        #[arg(long, default_value = "web/public/maps/bedrock-survival")]
+        #[arg(long, default_value = "web/public/maps/world")]
         output: PathBuf,
         #[arg(long, default_value = ".local/assets/bedrock-samples.zip")]
         assets: PathBuf,
         /// Bounded region-only export for live-map repair; no whole-world height array.
         #[arg(long)]
         surface_only: bool,
+        #[arg(long, default_value = "Bedrock World")]
+        name: String,
     },
     Inspect {
         path: PathBuf,
@@ -144,6 +146,7 @@ fn publish(
     source: String,
     spawn: [i32; 3],
     atlas: String,
+    name: &str,
 ) -> Result<MapManifest> {
     regions.sort_by_key(|r| (r.rz, r.rx));
     ensure!(!regions.is_empty(), "empty map");
@@ -200,7 +203,7 @@ fn publish(
     let height_url = format!("heights/{sha}.i16.zst");
     atomic_write(&output.join(&height_url), &packed)?;
     let catalog_version = hash(&serde_json::to_vec(&materials)?);
-    let manifest=MapManifest { format_version:VERSION,name:"Bedrock Survival".into(),bounds,spawn,source_sha256:source,catalog_version,materials,atlas,regions:refs,heights:height_url,heights_sha256:sha,height_range:range,approximations:vec!["Vanilla biome tint palette; no exact climate interpolation".into(),"Canopy surfaces are opaque; complex stairs/fences/glass use top-surface approximations".into(),"Water and thin overlays retain one support layer; no arbitrary multilayer transparency".into()] };
+    let manifest=MapManifest { format_version:VERSION,name:name.into(),bounds,spawn,source_sha256:source,catalog_version,materials,atlas,regions:refs,heights:height_url,heights_sha256:sha,height_range:range,approximations:vec!["Vanilla biome tint palette; no exact climate interpolation".into(),"Canopy surfaces are opaque; complex stairs/fences/glass use top-surface approximations".into(),"Water and thin overlays retain one support layer; no arbitrary multilayer transparency".into()] };
     atomic_write(
         &output.join("manifest.json"),
         &serde_json::to_vec_pretty(&manifest)?,
@@ -229,6 +232,7 @@ fn stream_publish(
     assets: &Path,
     source: String,
     start: Instant,
+    name: &str,
 ) -> Result<serde_json::Value> {
     let mut refs = Vec::new();
     let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
@@ -272,7 +276,7 @@ fn stream_publish(
     let report = serde_json::json!({"source_sha256":source,"source_unchanged":true,"surface_only":true,"chunks":extracted.chunks,"regions":refs.len(),"extraction_seconds":extraction_seconds,"total_seconds":start.elapsed().as_secs_f64(),"peak_rss_bytes":peak_rss_bytes(),"verified_samples":extracted.verified_samples,"unsupported_materials":unsupported});
     let manifest = MapManifest {
         format_version: 1,
-        name: "Bedrock Survival".into(),
+        name: name.into(),
         bounds,
         spawn: extracted.spawn,
         source_sha256: source,
@@ -359,7 +363,14 @@ fn run() -> Result<()> {
             output,
             assets,
             surface_only,
+            name,
         } => {
+            ensure!(
+                !name.is_empty()
+                    && name.chars().count() <= 128
+                    && !name.chars().any(char::is_control),
+                "invalid map name"
+            );
             let start = Instant::now();
             let source = file_hash(&input)?;
             let cache = PathBuf::from(format!(".local/worlds/{source}-{}", std::process::id()));
@@ -371,7 +382,8 @@ fn run() -> Result<()> {
             }
             unpack(&input, &cache)?;
             if surface_only {
-                let result = stream_publish(&cache, &input, &output, &assets, source, start)?;
+                let result =
+                    stream_publish(&cache, &input, &output, &assets, source, start, &name)?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
                 fs::remove_dir_all(&cache)?;
                 return Ok(());
@@ -393,6 +405,7 @@ fn run() -> Result<()> {
                 source,
                 extracted.spawn,
                 atlas,
+                &name,
             )?;
             let columns: usize = m.regions.iter().map(|r| r.columns).sum();
             let bytes: usize = m.regions.iter().map(|r| r.bytes).sum();
@@ -481,6 +494,7 @@ fn run() -> Result<()> {
                 "synthetic-fixture-v1".into(),
                 [-128, 4, -128],
                 atlas,
+                "Synthetic Fixture",
             )?;
         }
     }

@@ -6,11 +6,11 @@ const config = {
   generation: "generation",
   terrainOrigin: "http://127.0.0.1:8111",
 };
-test("combined pilot configuration binds players and terrain to the same world", async () => {
+test("operator configuration binds players and terrain on arbitrary private read ports", async () => {
   const proxy = mapProxy({
     ...config,
-    terrainOrigin: "http://192.168.68.114:8113",
-    origin: "http://192.168.68.114:8112",
+    terrainOrigin: "http://10.23.45.67:34567",
+    origin: "http://10.23.45.67:45678",
     fingerprint: "a".repeat(64),
   });
   let body;
@@ -34,7 +34,7 @@ test("combined pilot configuration binds players and terrain to the same world",
 test("terrain proxy allows only fixed destination and exact read routes", async () => {
   for (const terrainOrigin of [
     "http://example.com:8111",
-    "http://127.0.0.1:8082",
+    "http://169.254.169.254:8082",
     "http://u:p@127.0.0.1:8111",
     "http://127.0.0.1:8111/path",
   ])

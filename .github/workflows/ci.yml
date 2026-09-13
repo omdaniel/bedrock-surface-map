@@ -39,6 +39,7 @@ jobs:
           install -m 0755 "$RUNNER_TEMP/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"
       - run: npm ci
       - run: npm run format:check
+      - run: npm run config:test
       - run: npm run build
       - run: npm run tracking:build
       - run: npm run tracking:test

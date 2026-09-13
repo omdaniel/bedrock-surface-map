@@ -9,6 +9,7 @@ import {
 import { scan, WorkQueue, Outbox, UNKNOWN, type Sample } from "./core.js";
 import rules from "./rules.js";
 import { surfaceAccess } from "./api.js";
+import { validTerrainUrl } from "./config.js";
 
 const worldId = variables.get("world_id"),
   generation = variables.get("generation"),
@@ -17,8 +18,7 @@ if (
   typeof worldId !== "string" ||
   typeof generation !== "string" ||
   ![worldId, generation].every((v) => /^[A-Za-z0-9_-]{1,80}$/.test(v)) ||
-  typeof endpoint !== "string" ||
-  !/^http:\/\/[A-Za-z0-9.-]+:8082\/ingest\/v1\/terrain$/.test(endpoint)
+  !validTerrainUrl(endpoint)
 )
   throw Error("Terrain configuration invalid");
 const config = { worldId, generation, endpoint };

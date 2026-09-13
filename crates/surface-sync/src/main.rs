@@ -10,7 +10,7 @@ use surface_sync::{
 struct Args {
     #[arg(long, env = "TERRAIN_STATE", default_value = ".local/terrain/state")]
     state: PathBuf,
-    #[arg(long, env = "TERRAIN_WORLD_ID", default_value = "bedrock-survival")]
+    #[arg(long, env = "TERRAIN_WORLD_ID")]
     world: String,
     #[arg(long, env = "TERRAIN_GENERATION")]
     generation: String,

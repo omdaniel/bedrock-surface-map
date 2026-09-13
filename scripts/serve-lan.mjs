@@ -14,22 +14,31 @@ const { values } = parseArgs({
     "players-origin": { type: "string" },
     "world-id": { type: "string" },
     "map-fingerprint": { type: "string" },
+    map: { type: "string" },
     "terrain-origin": { type: "string" },
     generation: { type: "string" },
     port: { type: "string", default: "8443" },
+    "ca-port": { type: "string", default: "8444" },
     "out-dir": { type: "string", default: "web/dist" },
     "no-ca-download": { type: "boolean", default: false },
   },
 });
 const host = values.host;
 const port = Number(values.port),
+  caPort = Number(values["ca-port"]),
   outDir = resolve(values["out-dir"]);
-if (!Number.isInteger(port) || port < 1024 || port > 65535)
+if (
+  ![port, caPort].every(
+    (p) => Number.isInteger(p) && p >= 1024 && p <= 65535,
+  ) ||
+  (!values["no-ca-download"] && port === caPort)
+)
   throw Error("Pass an unprivileged TCP port between 1024 and 65535");
 const playerProxy = mapProxy({
   origin: values["players-origin"],
   world: values["world-id"],
   fingerprint: values["map-fingerprint"],
+  map: values.map,
   terrainOrigin: values["terrain-origin"],
   generation: values.generation,
 });
@@ -113,7 +122,7 @@ try {
   if (!values["no-ca-download"])
     await new Promise((accept, reject) => {
       certificateServer.once("error", reject);
-      certificateServer.listen(8444, host, accept);
+      certificateServer.listen(caPort, host, accept);
     });
 } catch (error) {
   await viewer.close();
@@ -121,7 +130,7 @@ try {
 }
 console.log(`LAN viewer: https://${host}:${port}/`);
 if (!values["no-ca-download"]) {
-  console.log(`Public CA: http://${host}:8444/bedrock-surface-map-ca.crt`);
+  console.log(`Public CA: http://${host}:${caPort}/bedrock-surface-map-ca.crt`);
   console.log(
     "Trust the public CA on the viewing device. Never share CA keys.",
   );

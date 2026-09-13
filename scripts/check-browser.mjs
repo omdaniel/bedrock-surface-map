@@ -1,5 +1,7 @@
+import { verificationConfig, waitForMap } from "./verification-config.mjs";
 import { chromium } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
+const config = verificationConfig({ output: ".local/verification" });
 const browser = await chromium.launch({ channel: "chrome", headless: false });
 try {
   const context = await browser.newContext({
@@ -18,26 +20,21 @@ try {
       console.error(m.text());
     }
   });
-  await page.goto("http://127.0.0.1:5173");
-  await page.waitForFunction(() => window.__map?.ready, {}, { timeout: 90000 });
-  await page.waitForFunction(
-    () => window.__map.state().cached > 0 && window.__map.state().pending === 0,
-    {},
-    { timeout: 90000 },
-  );
-  await mkdir(".local/verification", { recursive: true });
-  await page.screenshot({ path: ".local/verification/chrome-overview.png" });
+  await page.goto(config.url);
+  await waitForMap(page, config);
+  await mkdir(config.output, { recursive: true });
+  await page.screenshot({ path: config.output + "/chrome-overview.png" });
   const overview = await page.evaluate(() => window.__map.state());
   await page.evaluate(() => window.__map.spawn());
   await page.waitForFunction(() => window.__map.state().pending === 0);
   await page.mouse.move(960, 600);
-  await page.screenshot({ path: ".local/verification/chrome-detail.png" });
+  await page.screenshot({ path: config.output + "/chrome-detail.png" });
   const timings = await page.evaluate(() => window.__map.measure());
   const state = await page.evaluate(() => window.__map.state());
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__map.fit());
   await page.screenshot({
-    path: ".local/verification/chrome-mobile-layout.png",
+    path: config.output + "/chrome-mobile-layout.png",
   });
   const report = {
     browser: await browser.version(),
@@ -47,7 +44,7 @@ try {
     errors,
   };
   await writeFile(
-    ".local/verification/chrome.json",
+    config.output + "/chrome.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

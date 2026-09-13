@@ -1,0 +1,5 @@
+{
+  "url": "http://127.0.0.1:5173/?map=/maps/fixture/manifest.json",
+  "output": ".local/verification",
+  "webdriver": "http://127.0.0.1:4444"
+}

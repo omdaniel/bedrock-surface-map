@@ -16,3 +16,5 @@
 - Rust/WASM/wgpu/WGSL terrain renderer; no Vello or exported map-image tiles.
 - Pin toolchains and dependencies. Run tests, lint, WASM build and browser checks before delivery.
 - Use apply_patch for manual edits. Prefer uv for dependency-backed Python commands.
+- Keep installation addresses, world identities and account policies in operator
+  configuration. Tests use synthetic fixtures and loopback services, not a homelab.

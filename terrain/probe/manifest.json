@@ -4,7 +4,7 @@
     "name": "Surface Terrain Compatibility Probe",
     "description": "Disposable world only; reads a console-prepared fixture",
     "uuid": "a48e5e73-bc37-49cf-bf4c-1455d295e54b",
-    "version": [1, 0, 0],
+    "version": [1, 0, 1],
     "min_engine_version": [1, 26, 40]
   },
   "modules": [
@@ -12,7 +12,7 @@
       "type": "script",
       "language": "javascript",
       "uuid": "2d4268e1-4d4b-4b62-8304-49d22b5c2cb8",
-      "version": [1, 0, 0],
+      "version": [1, 0, 1],
       "entry": "scripts/main.js"
     }
   ],

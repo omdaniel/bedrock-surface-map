@@ -8,11 +8,11 @@ const valid = {
 };
 test("proxy destination is configuration, never a user-supplied URL", () => {
   for (const origin of [
-    "http://127.0.0.1:22",
+    "http://169.254.169.254:8110",
     "http://example.com:8110",
     "http://u:p@127.0.0.1:8110",
     "http://127.0.0.1:8110/private",
-    "https://127.0.0.1:8110",
+    "ftp://127.0.0.1:8110",
   ])
     assert.throws(() => trackerProxy({ ...valid, origin }));
   assert.equal(trackerProxy({}), null);

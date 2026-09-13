@@ -24,7 +24,7 @@ test("headings, identities, invalid reads, spawn, leave and service filtering", 
     [-180, -90, 0, 90, 180].map(compassHeading),
     [0, 90, 180, 270, 0],
   );
-  const roster = new Roster(),
+  const roster = new Roster(["FixtureObserver"]),
     p = player();
   const first = roster.sample([p]);
   assert.equal(first[0].position?.x, -2.5);
@@ -42,7 +42,19 @@ test("headings, identities, invalid reads, spawn, leave and service filtering", 
     },
   };
   assert.equal(roster.sample([broken])[0].position, null);
-  assert.deepEqual(roster.sample([{ ...p, name: "PopCello8931" }]), []);
+  assert.deepEqual(roster.sample([{ ...p, name: "fixtureobserver" }]), []);
+  assert.equal(
+    new Roster().sample([{ ...p, name: "FixtureObserver" }]).length,
+    1,
+  );
+  for (const invalid of [
+    "name",
+    [null],
+    [""],
+    ["bad\nname"],
+    Array(33).fill("name"),
+  ])
+    assert.throws(() => new Roster(invalid));
   roster.leave(p.id);
   assert.notEqual(roster.sample([p])[0].id, first[0].id);
   assert.throws(() => roster.sample(Array.from({ length: 33 }, player)));

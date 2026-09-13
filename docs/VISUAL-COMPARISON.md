@@ -11,8 +11,9 @@ separate disposable world copy for the reference renderer. Match bounds, north-u
 orientation and pixels per block. Do not use a live server directory or upload a
 world to a service as part of a local comparison.
 
-The local comparison scripts use X/Z `[-500,500)` at one pixel per block, with
-closer island and river crops. Compare coastlines, channels, vegetation boundaries
+The default comparison crop uses X/Z `[-500,500)` at one pixel per block.
+Set `areas` in [operator configuration](CONFIGURATION.md) for other crops.
+Compare coastlines, channels, vegetation boundaries
 and recognizable terrain structures at matching coordinates. Look for swapped
 axes, flipped north/south, missing coverage and shifted features.
 
