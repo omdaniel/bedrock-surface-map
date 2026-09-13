@@ -21,6 +21,39 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
 }
 
 #[wasm_bindgen]
+pub fn decode_chunk_words(
+    bytes: &[u8],
+    cx: i32,
+    cz: i32,
+    material_count: u32,
+) -> Result<Vec<u32>, JsValue> {
+    let raw = surface_core::decompress(bytes, 32768).map_err(js_error)?;
+    let chunk = surface_core::terrain::SurfaceChunk::decode(&raw).map_err(js_error)?;
+    chunk
+        .validate(material_count as usize, false)
+        .map_err(js_error)?;
+    if chunk.cx != cx || chunk.cz != cz {
+        return Err(js_error("chunk coordinates mismatch"));
+    }
+    Ok(chunk
+        .columns
+        .iter()
+        .flat_map(|c| {
+            [
+                c[1] as u32,
+                c[2] as u32,
+                c[3] as u32,
+                c[5] as u32,
+                c[7] as u32,
+                c[8] as u32,
+                c[6] as u32,
+                c[0] as u32,
+            ]
+        })
+        .collect())
+}
+
+#[wasm_bindgen]
 pub fn decode_region_words(
     bytes: &[u8],
     rx: i32,
@@ -71,6 +104,7 @@ struct Region {
     _origin: wgpu::Buffer,
     texture: wgpu::Texture,
     words: usize,
+    dirty: std::cell::Cell<bool>,
 }
 
 #[wasm_bindgen]
@@ -89,6 +123,11 @@ pub struct Renderer {
     regions: BTreeMap<(i32, i32), Region>,
     sampler: wgpu::Sampler,
     base_bytes: usize,
+    height_buffer: wgpu::Buffer,
+    height_tree: Vec<u32>,
+    material_buffer: wgpu::Buffer,
+    atlas_view: wgpu::TextureView,
+    atlas_sampler: wgpu::Sampler,
     first_frame_requested: bool,
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -348,6 +387,11 @@ impl Renderer {
             regions: BTreeMap::new(),
             sampler,
             base_bytes,
+            height_buffer: ss,
+            height_tree: tree,
+            material_buffer: mats,
+            atlas_view,
+            atlas_sampler,
             first_frame_requested: false,
             lost,
         })
@@ -452,6 +496,7 @@ impl Renderer {
             _origin: origin,
             texture,
             words: words.len(),
+            dirty: std::cell::Cell::new(true),
         };
         self.regenerate(&region);
         self.regions.insert((rx, rz), region);
@@ -474,6 +519,152 @@ impl Renderer {
             pass.dispatch_workgroups(size.div_ceil(8), size.div_ceil(8), 1);
         }
         self.queue.submit([encoder.finish()]);
+        r.dirty.set(false);
+    }
+
+    fn rebind(&mut self) {
+        self.global_render = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("updated map resources"),
+            layout: &self.render_pipeline.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &self.params),
+                entry(1, &self.material_buffer),
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&self.atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
+                },
+                entry(4, &self.height_buffer),
+            ],
+        });
+        self.global_overview = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("updated overview resources"),
+            layout: &self.overview_pipeline.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &self.params),
+                entry(1, &self.material_buffer),
+                entry(2, &self.height_buffer),
+            ],
+        });
+    }
+    pub fn cpu_bytes(&self) -> u32 {
+        (self.height_tree.len() * 4) as u32
+    }
+    pub fn update_materials(&mut self, values: Vec<f32>) -> Result<(), JsValue> {
+        if values.is_empty()
+            || !values.len().is_multiple_of(12)
+            || values.len() > 65536 * 12
+            || !values.iter().all(|v| v.is_finite())
+        {
+            return Err(js_error("invalid catalog update"));
+        }
+        let buffer = storage(&self.device, bytemuck::cast_slice(&values));
+        self.base_bytes = self.base_bytes - self.material_buffer.size() as usize + values.len() * 4;
+        let old = std::mem::replace(&mut self.material_buffer, buffer);
+        self.rebind();
+        old.destroy();
+        for r in self.regions.values() {
+            r.dirty.set(true);
+        }
+        Ok(())
+    }
+    pub fn set_height_window(
+        &mut self,
+        bounds: Vec<i32>,
+        heights: Vec<f32>,
+    ) -> Result<(), JsValue> {
+        if bounds.len() != 4 {
+            return Err(js_error("height window bounds"));
+        }
+        let (width, height) = (
+            (bounds[2] - bounds[0]) as usize,
+            (bounds[3] - bounds[1]) as usize,
+        );
+        if width == 0
+            || height == 0
+            || width.checked_mul(height) != Some(heights.len())
+            || heights.len() > 16 * 1024 * 1024
+            || !heights.iter().all(|v| v.is_finite())
+        {
+            return Err(js_error("height window size"));
+        }
+        let tree = surface_core::height_pyramid(&heights, width, height);
+        if self.gpu_bytes() as usize - self.height_tree.len() * 4 + tree.len() * 8
+            > 256 * 1024 * 1024
+        {
+            return Err(js_error("Height coverage exceeds cache; zoom in"));
+        }
+        let buffer = storage(&self.device, bytemuck::cast_slice(&tree));
+        self.base_bytes = self.base_bytes - self.height_tree.len() * 4 + tree.len() * 4;
+        self.height_tree = tree;
+        let old = std::mem::replace(&mut self.height_buffer, buffer);
+        self.values[8..12].copy_from_slice(&[
+            bounds[0] as f32,
+            bounds[1] as f32,
+            width as f32,
+            height as f32,
+        ]);
+        self.rebind();
+        old.destroy();
+        for r in self.regions.values() {
+            r.dirty.set(true);
+        }
+        Ok(())
+    }
+    pub fn patch_height_region(
+        &mut self,
+        rx: i32,
+        rz: i32,
+        values: Vec<f32>,
+    ) -> Result<(), JsValue> {
+        let x = rx * 256 - self.values[8] as i32;
+        let z = rz * 256 - self.values[9] as i32;
+        if x < 0 || z < 0 || x + 256 > self.values[10] as i32 || z + 256 > self.values[11] as i32 {
+            return Ok(());
+        }
+        let ranges = surface_core::terrain::patch_height_tree(
+            &mut self.height_tree,
+            x as usize,
+            z as usize,
+            256,
+            256,
+            &values,
+        )
+        .map_err(js_error)?;
+        for (start, count) in ranges {
+            self.queue.write_buffer(
+                &self.height_buffer,
+                (start * 4) as u64,
+                bytemuck::cast_slice(&self.height_tree[start..start + count]),
+            );
+        }
+        for r in self.regions.values() {
+            r.dirty.set(true);
+        }
+        Ok(())
+    }
+    pub fn patch_chunk(&mut self, cx: i32, cz: i32, words: Vec<u32>) -> Result<(), JsValue> {
+        if words.len() != 256 * 8 {
+            return Err(js_error("invalid chunk GPU data"));
+        }
+        let r = self
+            .regions
+            .get(&(cx.div_euclid(16), cz.div_euclid(16)))
+            .ok_or_else(|| js_error("region not resident"))?;
+        let x = cx.rem_euclid(16) as usize * 16;
+        let z = cz.rem_euclid(16) as usize * 16;
+        for row in 0..16 {
+            self.queue.write_buffer(
+                &r._data,
+                (((z + row) * 256 + x) * 32) as u64,
+                bytemuck::cast_slice(&words[row * 128..(row + 1) * 128]),
+            );
+        }
+        r.dirty.set(true);
+        Ok(())
     }
     pub fn remove_region(&mut self, rx: i32, rz: i32) {
         if let Some(r) = self.regions.remove(&(rx, rz)) {
@@ -564,6 +755,18 @@ impl Renderer {
             .write_buffer(&self.params, 0, bytemuck::cast_slice(&self.values));
         if changed {
             for r in self.regions.values() {
+                r.dirty.set(true);
+            }
+        }
+        for ((rx, rz), r) in &self.regions {
+            let x = *rx as f32 * 256.;
+            let z = *rz as f32 * 256.;
+            if r.dirty.get()
+                && x <= cx + width as f32 / scale / 2.
+                && x + 256. >= cx - width as f32 / scale / 2.
+                && z <= cz + height as f32 / scale / 2.
+                && z + 256. >= cz - height as f32 / scale / 2.
+            {
                 self.regenerate(r);
             }
         }

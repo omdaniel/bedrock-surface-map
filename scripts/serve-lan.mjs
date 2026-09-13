@@ -6,7 +6,7 @@ import { networkInterfaces } from "node:os";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { preview } from "vite";
-import { trackerProxy } from "./tracker-proxy.mjs";
+import { mapProxy } from "./map-proxy.mjs";
 
 const { values } = parseArgs({
   options: {
@@ -14,13 +14,24 @@ const { values } = parseArgs({
     "players-origin": { type: "string" },
     "world-id": { type: "string" },
     "map-fingerprint": { type: "string" },
+    "terrain-origin": { type: "string" },
+    generation: { type: "string" },
+    port: { type: "string", default: "8443" },
+    "out-dir": { type: "string", default: "web/dist" },
+    "no-ca-download": { type: "boolean", default: false },
   },
 });
 const host = values.host;
-const playerProxy = trackerProxy({
+const port = Number(values.port),
+  outDir = resolve(values["out-dir"]);
+if (!Number.isInteger(port) || port < 1024 || port > 65535)
+  throw Error("Pass an unprivileged TCP port between 1024 and 65535");
+const playerProxy = mapProxy({
   origin: values["players-origin"],
   world: values["world-id"],
   fingerprint: values["map-fingerprint"],
+  terrainOrigin: values["terrain-origin"],
+  generation: values.generation,
 });
 const localAddresses = Object.values(networkInterfaces())
   .flat()
@@ -35,7 +46,7 @@ if (
   throw new Error("Pass --host with this computer's private LAN IPv4 address.");
 }
 
-await readFile("web/dist/index.html");
+await readFile(resolve(outDir, "index.html"));
 const directory = resolve(".local/lan");
 const caDirectory = resolve(directory, "ca");
 await mkdir(caDirectory, { recursive: true, mode: 0o700 });
@@ -79,6 +90,7 @@ const certificateServer = createServer((request, response) => {
 });
 const viewer = await preview({
   configFile: resolve("vite.config.ts"),
+  build: { outDir },
   plugins: playerProxy
     ? [
         {
@@ -91,24 +103,29 @@ const viewer = await preview({
     : [],
   preview: {
     host,
-    port: 8443,
+    port,
     strictPort: true,
     cors: false,
     https: { cert: await readFile(certificate), key: await readFile(key) },
   },
 });
 try {
-  await new Promise((accept, reject) => {
-    certificateServer.once("error", reject);
-    certificateServer.listen(8444, host, accept);
-  });
+  if (!values["no-ca-download"])
+    await new Promise((accept, reject) => {
+      certificateServer.once("error", reject);
+      certificateServer.listen(8444, host, accept);
+    });
 } catch (error) {
   await viewer.close();
   throw error;
 }
-console.log(`LAN viewer: https://${host}:8443/`);
-console.log(`Public CA: http://${host}:8444/bedrock-surface-map-ca.crt`);
-console.log("Trust the public CA on the viewing device. Never share CA keys.");
+console.log(`LAN viewer: https://${host}:${port}/`);
+if (!values["no-ca-download"]) {
+  console.log(`Public CA: http://${host}:8444/bedrock-surface-map-ca.crt`);
+  console.log(
+    "Trust the public CA on the viewing device. Never share CA keys.",
+  );
+}
 console.log("LAN only, no authentication: use on a trusted home network.");
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, async () => {

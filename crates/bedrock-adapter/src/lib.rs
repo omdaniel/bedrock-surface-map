@@ -2,9 +2,9 @@ use anyhow::{Context, Result, ensure};
 use bedrock_world::nbt::NbtTag;
 use bedrock_world::{
     BedrockWorld, BlockPos, BlockState, ChunkLoadOptions, Dimension, ExactSurfaceBiomeLoad,
-    ExactSurfaceSubchunkPolicy, OpenOptions, SubChunk, SubChunkDecodeMode, TerrainColumnBiome,
-    TerrainColumnOverlay, TerrainColumnSample, TerrainSurfaceRole, WorldScanOptions,
-    WorldThreadingOptions, terrain_surface_role,
+    ExactSurfaceSubchunkPolicy, OpenOptions, ParsedBiomeStorage, SubChunk, SubChunkDecodeMode,
+    TerrainColumnBiome, TerrainColumnOverlay, TerrainColumnSample, TerrainSurfaceRole,
+    WorldScanOptions, WorldThreadingOptions, terrain_surface_role,
 };
 use std::{collections::BTreeMap, path::Path};
 use surface_core::{Material, SurfaceRegion};
@@ -53,24 +53,7 @@ fn interner(
     if let Some(id) = ids.get(&key) {
         return Ok(*id);
     }
-    let mut name = state.name.trim_start_matches("minecraft:").to_string();
-    for (old, prop, suffix) in [
-        ("stone", "stone_type", ""),
-        ("dirt", "dirt_type", ""),
-        ("sand", "sand_type", ""),
-        ("leaves", "old_leaf_type", "_leaves"),
-        ("leaves2", "new_leaf_type", "_leaves"),
-        ("log", "old_log_type", "_log"),
-        ("log2", "new_log_type", "_log"),
-        ("planks", "wood_type", "_planks"),
-    ] {
-        if name == old {
-            let v = value(state, prop);
-            if !v.is_empty() {
-                name = format!("{v}{suffix}");
-            }
-        }
-    }
+    let name = surface_core::terrain::MaterialSpec::from_saved_key(&key)?.render_name();
     let tint = if name.contains("water") {
         3
     } else if name.contains("leaves") {
@@ -131,18 +114,94 @@ fn retain_leaf_litter(sample: &mut TerrainColumnSample, below: BlockState) -> Re
 
 // Bounded vanilla-biome palette, not a claim of exact Minecraft climate blending.
 fn biome_tint(biome: u32) -> u32 {
-    match biome {
-        2 | 17 | 35 | 36 | 37 | 38 | 39 | 163 | 164 | 165 | 166 | 167 => 0xbfb755,
-        6 | 134 => 0x6a7039,
-        5 | 19 | 30 | 31 | 32 | 33 | 133 | 160 | 161 => 0x86b783,
-        12 | 13 | 140 | 178 | 179 | 180 => 0x91bd59,
-        21 | 22 | 23 | 149 | 151 | 168 | 169 => 0x59c93c,
-        27 | 28 | 155 | 156 => 0x88bb67,
-        _ => 0x91bd59,
+    static RULES: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        serde_json::from_str(include_str!("../../../terrain/rules.json"))
+            .expect("checked surface rules")
+    });
+    rules["tints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| {
+            t["ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v.as_u64() == Some(biome as u64))
+        })
+        .map_or(&rules["default_tint"], |t| &t["rgb"])
+        .as_u64()
+        .unwrap() as u32
+}
+
+fn surface_biome(
+    storages: &BTreeMap<i32, ParsedBiomeStorage>,
+    sample: &TerrainColumnSample,
+    x: u8,
+    z: u8,
+) -> u32 {
+    let y = i32::from(
+        sample
+            .water
+            .as_ref()
+            .and_then(|w| w.underwater_y)
+            .unwrap_or(sample.relief_y),
+    );
+    let storage = storages
+        .get(&(y.div_euclid(16) * 16))
+        .or_else(|| storages.values().find(|s| s.y.is_none()));
+    // bedrock-world 0.3.5's surface helper filters ID 0, which is valid ocean.
+    // Read the already-decoded storage at the support height without that filter.
+    if let Some(s) = storage {
+        let local_y = s.y.map_or(0, |base| (y - base) as u8);
+        if let Some(id) = s.biome_id_at(x, local_y, z) {
+            return id;
+        }
+        if s.indices.is_none() && s.palette.len() == 1 {
+            return s.palette[0];
+        }
+        return u32::MAX;
+    }
+    match sample.biome {
+        Some(TerrainColumnBiome::Legacy(value)) => u32::from(value.biome_id),
+        _ => u32::MAX,
     }
 }
 
 pub fn extract(path: &Path) -> Result<Extraction> {
+    let mut regions = BTreeMap::new();
+    let mut result = extract_stream(path, |r| {
+        regions.insert((r.rx, r.rz), r);
+        Ok(())
+    })?;
+    result.regions = regions;
+    Ok(result)
+}
+
+/// Emit completed regions, retaining only one region plus a bounded chunk batch.
+pub fn extract_stream(
+    path: &Path,
+    consume: impl FnMut(SurfaceRegion) -> Result<()>,
+) -> Result<Extraction> {
+    extract_selected(path, None, consume)
+}
+
+pub fn extract_chunk(path: &Path, x: i32, z: i32) -> Result<Extraction> {
+    let mut regions = BTreeMap::new();
+    let mut result = extract_selected(path, Some([x, z]), |r| {
+        regions.insert((r.rx, r.rz), r);
+        Ok(())
+    })?;
+    result.regions = regions;
+    Ok(result)
+}
+
+fn extract_selected(
+    path: &Path,
+    selection: Option<[i32; 2]>,
+    mut consume: impl FnMut(SurfaceRegion) -> Result<()>,
+) -> Result<Extraction> {
     let document = bedrock_world::read_level_dat(&path.join("level.dat"))?;
     ensure!(
         document.warnings.is_empty(),
@@ -168,19 +227,22 @@ pub fn extract(path: &Path) -> Result<Extraction> {
         ..Default::default()
     })?;
     positions.retain(|p| p.dimension == Dimension::Overworld);
+    if let Some([x, z]) = selection {
+        positions.retain(|p| p.x == x && p.z == z);
+    }
     ensure!(
         positions
             .iter()
             .all(|p| (-524288..524288).contains(&p.x) && (-524288..524288).contains(&p.z)),
         "chunk outside exact GPU coordinate range"
     );
-    positions.sort_by_key(|p| (p.z, p.x));
+    positions.sort_by_key(|p| (p.z.div_euclid(16), p.x.div_euclid(16), p.z, p.x));
     ensure!(!positions.is_empty(), "no Overworld chunks found");
     ensure!(
-        positions.len() <= 65536,
-        "snapshot exceeds prototype chunk limit"
+        positions.len() <= 1048576,
+        "snapshot exceeds bounded import chunk limit"
     );
-    let mut regions = BTreeMap::new();
+    let mut current: Option<SurfaceRegion> = None;
     let mut ids = BTreeMap::new();
     let mut materials = vec![Material {
         key: "unknown".into(),
@@ -199,19 +261,28 @@ pub fn extract(path: &Path) -> Result<Extraction> {
             false,
         );
         options.threading = WorldThreadingOptions::Fixed(2);
-        let (chunks, stats) =
+        let (mut chunks, stats) =
             world.query_chunk_data_with_stats_blocking(batch.iter().copied(), options)?;
         ensure!(
             stats.missing_subchunk_columns == 0,
             "missing subchunk columns in batch {batch_number}"
         );
+        chunks.sort_by_key(|c| {
+            (
+                c.pos.z.div_euclid(16),
+                c.pos.x.div_euclid(16),
+                c.pos.z,
+                c.pos.x,
+            )
+        });
         for chunk in chunks {
             ensure!(chunk.is_loaded, "chunk {:?} could not be loaded", chunk.pos);
             let rx = chunk.pos.x.div_euclid(16);
             let rz = chunk.pos.z.div_euclid(16);
-            let region = regions
-                .entry((rx, rz))
-                .or_insert_with(|| SurfaceRegion::empty(rx, rz));
+            if current.as_ref().is_some_and(|r| r.rx != rx || r.rz != rz) {
+                consume(current.take().unwrap())?;
+            }
+            let region = current.get_or_insert_with(|| SurfaceRegion::empty(rx, rz));
             let samples = chunk.column_samples.context("surface samples missing")?;
             // Released 0.3.5 treats leaf litter as solid. Decode each needed layer
             // once per chunk to retain the real supporting block under this overlay.
@@ -257,10 +328,7 @@ pub fn extract(path: &Path) -> Result<Extraction> {
                     region.heights[i] = top_height(&c.surface_block_state, c.surface_y)?;
                     region.materials[i] =
                         interner(&c.surface_block_state, &mut ids, &mut materials)?;
-                    let biome = match c.biome {
-                        Some(TerrainColumnBiome::Id(id)) => id,
-                        _ => u32::MAX,
-                    };
+                    let biome = surface_biome(&chunk.biome_data, c, x, z);
                     region.biomes[i] = biome;
                     region.tints[i] = biome_tint(biome);
                     region.supports[i] = interner(&c.relief_block_state, &mut ids, &mut materials)?;
@@ -303,8 +371,11 @@ pub fn extract(path: &Path) -> Result<Extraction> {
             );
         }
     }
+    if let Some(region) = current {
+        consume(region)?;
+    }
     Ok(Extraction {
-        regions,
+        regions: BTreeMap::new(),
         materials,
         spawn,
         chunks: positions.len(),
@@ -354,5 +425,35 @@ mod tests {
         assert_eq!(sample.overlay.as_ref().unwrap().block_state, litter);
         assert_eq!(top_height(&litter, -16).unwrap(), -255);
         assert!(retain_leaf_litter(&mut sample, litter).is_err());
+    }
+
+    #[test]
+    fn ocean_zero_is_valid_and_support_height_selects_the_biome_layer() {
+        let block = BlockState {
+            name: "minecraft:stone".into(),
+            states: BTreeMap::new(),
+            version: None,
+        };
+        let sample = TerrainColumnSample {
+            surface_y: 200,
+            surface_block_state: block.clone(),
+            relief_y: 200,
+            relief_block_state: block,
+            overlay: None,
+            water: None,
+            biome: Some(TerrainColumnBiome::Id(1)),
+            source: bedrock_world::TerrainSampleSource::Subchunk,
+        };
+        let storage = ParsedBiomeStorage {
+            y: Some(192),
+            palette: vec![0],
+            indices: Some(vec![0; 4096]),
+            counts: vec![4096],
+        };
+        assert_eq!(
+            surface_biome(&BTreeMap::from([(192, storage)]), &sample, 12, 0),
+            0
+        );
+        assert_eq!(surface_biome(&BTreeMap::new(), &sample, 12, 0), u32::MAX);
     }
 }

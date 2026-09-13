@@ -29,7 +29,7 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
         let col=textureSampleLevel(overview,overview_sampler,v.local/256.0,lod);
         if col.a<0.005{discard;}return vec4f(col.rgb/max(col.a,0.001),col.a);
     }
-    if c.covered==0u {discard;}
+    if c.covered!=1u {discard;}
     var col=material_color(c.material,c.tint,fractional);
     if c.depth>0u {
         let support=material_color(c.support,c.tint,fractional).rgb;

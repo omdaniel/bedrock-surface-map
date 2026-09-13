@@ -162,7 +162,10 @@ export class PlayerLayer {
     this.destroy();
     this.status.textContent = "Tracking disabled in this view";
   }
-  async configure(fingerprint: string) {
+  async configure(
+    fingerprint: string,
+    live?: { world_id: string; generation: string },
+  ) {
     try {
       const response = await fetch("/viewer-config.json", {
         cache: "no-store",
@@ -175,6 +178,7 @@ export class PlayerLayer {
       this.configuration = binding(
         await readJsonBounded(response),
         fingerprint,
+        live,
       );
       if (!this.configuration) {
         this.message = "No live feed for this snapshot";

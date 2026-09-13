@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
+pub mod terrain;
 
 pub const SIDE: usize = 256;
 pub const CELLS: usize = SIDE * SIDE;
@@ -113,7 +114,8 @@ fn read_u32(input: &mut &[u8]) -> Result<u32> {
 
 // Each channel independently uses a constant, frame-of-reference, or palette mode.
 fn encode_channel(values: &[u32], out: &mut Vec<u8>) -> Result<()> {
-    ensure!(values.len() == CELLS, "invalid channel length");
+    let cells = values.len();
+    ensure!(cells == CELLS || cells == 256, "invalid channel length");
     let min = *values.iter().min().context("empty channel")?;
     let max = *values.iter().max().unwrap();
     let width = (32 - (max - min).leading_zeros()) as u8;
@@ -122,8 +124,8 @@ fn encode_channel(values: &[u32], out: &mut Vec<u8>) -> Result<()> {
         palette.entry(*v).or_insert(0u32);
     }
     let pwidth = (32 - (palette.len() as u32 - 1).leading_zeros()) as u8;
-    let use_palette = palette.len() * 4 + (CELLS * pwidth as usize).div_ceil(8)
-        < (CELLS * width as usize).div_ceil(8);
+    let use_palette = palette.len() * 4 + (cells * pwidth as usize).div_ceil(8)
+        < (cells * width as usize).div_ceil(8);
     out.push(if use_palette { 1 } else { 0 });
     let bits = if use_palette { pwidth } else { width };
     out.push(bits);
@@ -154,7 +156,7 @@ fn encode_channel(values: &[u32], out: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn decode_channel(input: &mut &[u8]) -> Result<Vec<u32>> {
+fn decode_channel(input: &mut &[u8], cells: usize) -> Result<Vec<u32>> {
     ensure!(input.len() >= 2, "truncated channel");
     let mode = input[0];
     let bits = input[1];
@@ -162,14 +164,14 @@ fn decode_channel(input: &mut &[u8]) -> Result<Vec<u32>> {
     ensure!(mode <= 1 && bits <= 32, "invalid channel encoding");
     let base = read_u32(input)?;
     let palette = if mode == 1 {
-        ensure!(base > 0 && base as usize <= CELLS, "invalid palette size");
+        ensure!(base > 0 && base as usize <= cells, "invalid palette size");
         (0..base)
             .map(|_| read_u32(input))
             .collect::<Result<Vec<_>>>()?
     } else {
         vec![]
     };
-    let bytes = (CELLS * bits as usize).div_ceil(8);
+    let bytes = (cells * bits as usize).div_ceil(8);
     ensure!(input.len() >= bytes, "truncated packed channel");
     let packed = &input[..bytes];
     *input = &input[bytes..];
@@ -177,8 +179,8 @@ fn decode_channel(input: &mut &[u8]) -> Result<Vec<u32>> {
     let mut acc = 0u64;
     let mut available = 0u32;
     let mut cursor = 0;
-    let mut values = Vec::with_capacity(CELLS);
-    for _ in 0..CELLS {
+    let mut values = Vec::with_capacity(cells);
+    for _ in 0..cells {
         while available < bits as u32 {
             acc |= (packed[cursor] as u64) << available;
             cursor += 1;
@@ -199,7 +201,15 @@ fn decode_channel(input: &mut &[u8]) -> Result<Vec<u32>> {
 }
 
 pub fn encode_region(r: &SurfaceRegion) -> Result<Vec<u8>> {
-    let mut out = b"BSM1".to_vec();
+    encode_region_version(r, false)
+}
+
+pub fn encode_live_region(r: &SurfaceRegion) -> Result<Vec<u8>> {
+    encode_region_version(r, true)
+}
+
+fn encode_region_version(r: &SurfaceRegion, live: bool) -> Result<Vec<u8>> {
+    let mut out = if live { b"BSM2" } else { b"BSM1" }.to_vec();
     write_u32(&mut out, r.rx as u32);
     write_u32(&mut out, r.rz as u32);
     for field in [
@@ -226,8 +236,9 @@ pub fn encode_region(r: &SurfaceRegion) -> Result<Vec<u8>> {
 }
 
 pub fn decode_region(mut input: &[u8]) -> Result<SurfaceRegion> {
+    let live = input.starts_with(b"BSM2");
     ensure!(
-        input.len() <= MAX_DECOMPRESSED && input.starts_with(b"BSM1"),
+        input.len() <= MAX_DECOMPRESSED && (live || input.starts_with(b"BSM1")),
         "invalid region header or length"
     );
     input = &input[4..];
@@ -243,14 +254,14 @@ pub fn decode_region(mut input: &[u8]) -> Result<SurfaceRegion> {
         &mut r.water_depth,
         &mut r.supports,
     ] {
-        *field = decode_channel(&mut input)?;
+        *field = decode_channel(&mut input, CELLS)?;
     }
     for field in [
         &mut r.heights,
         &mut r.overlay_heights,
         &mut r.support_heights,
     ] {
-        *field = decode_channel(&mut input)?
+        *field = decode_channel(&mut input, CELLS)?
             .into_iter()
             .map(|v| {
                 ensure!(v <= 65535, "invalid height");
@@ -259,7 +270,10 @@ pub fn decode_region(mut input: &[u8]) -> Result<SurfaceRegion> {
             .collect::<Result<_>>()?;
     }
     ensure!(input.is_empty(), "trailing region data");
-    ensure!(r.coverage.iter().all(|v| *v <= 1), "invalid coverage");
+    ensure!(
+        r.coverage.iter().all(|v| *v <= if live { 2 } else { 1 }),
+        "invalid coverage"
+    );
     Ok(r)
 }
 

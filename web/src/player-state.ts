@@ -33,6 +33,7 @@ export interface PlayerBinding {
   world_id: string;
   source_sha256: string;
   url: string;
+  generation?: string;
 }
 export interface Camera {
   cx: number;
@@ -56,13 +57,16 @@ const object = (v: unknown): v is Record<string, unknown> =>
 export function binding(
   value: unknown,
   fingerprint: string,
+  live?: { world_id: string; generation: string },
 ): PlayerBinding | null {
   if (!object(value) || value.players === null) return null;
   const p = value.players;
   if (
     !object(p) ||
     !id(p.world_id) ||
-    p.source_sha256 !== fingerprint ||
+    (live
+      ? p.world_id !== live.world_id || p.generation !== live.generation
+      : p.source_sha256 !== fingerprint) ||
     p.url !== `/api/v1/worlds/${p.world_id}/players`
   )
     return null;

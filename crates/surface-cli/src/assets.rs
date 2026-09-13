@@ -28,13 +28,24 @@ fn first_texture(v: &Value) -> Option<&str> {
 }
 
 fn finish(output: &Path, materials: &mut [Material], images: &[RgbaImage]) -> Result<String> {
-    let cols = 16u32;
-    let rows = (images.len() as u32).div_ceil(cols);
+    let mut slots = BTreeMap::new();
+    let mut indices = Vec::new();
+    for image in images {
+        let key = crate::hash(image.as_raw());
+        let next = slots.len() as u32;
+        indices.push(*slots.entry(key).or_insert(next));
+    }
+    let cols = if slots.len() > 800 { 32u32 } else { 16u32 };
+    let rows = (slots.len() as u32).div_ceil(cols);
+    ensure!(
+        cols * CELL <= 8192 && rows * CELL <= 8192 && cols * rows * CELL * CELL <= 8 * 1024 * 1024,
+        "texture library exceeds atlas bound"
+    );
     let mut atlas = RgbaImage::new(cols * CELL, rows * CELL);
     for (i, (m, img)) in materials.iter_mut().zip(images).enumerate() {
         let tile = image::imageops::resize(img, TILE, TILE, image::imageops::FilterType::Nearest);
-        let ox = i as u32 % cols * CELL;
-        let oy = i as u32 / cols * CELL;
+        let ox = indices[i] % cols * CELL;
+        let oy = indices[i] / cols * CELL;
         for y in 0..CELL {
             for x in 0..CELL {
                 let sx = (x as i32 - 4).clamp(0, TILE as i32 - 1) as u32;
@@ -70,6 +81,57 @@ fn finish(output: &Path, materials: &mut [Material], images: &[RgbaImage]) -> Re
     let name = format!("assets/{}.png", crate::hash(&bytes));
     crate::atomic_write(&output.join(&name), &bytes)?;
     Ok(name)
+}
+
+pub fn library(path: &Path, output: &Path) -> Result<serde_json::Value> {
+    let mut zip = zip::ZipArchive::new(fs::File::open(path)?)?;
+    let prefix = format!("bedrock-samples-{SOURCE}/resource_pack/");
+    let blocks = json_entry(&mut zip, &format!("{prefix}blocks.json"))?;
+    let terrain = json_entry(&mut zip, &format!("{prefix}textures/terrain_texture.json"))?;
+    let mut names = std::collections::BTreeSet::new();
+    for (name, value) in blocks.as_object().context("blocks object")? {
+        if value.is_object() {
+            names.insert(name.clone());
+        }
+    }
+    for name in terrain["texture_data"]
+        .as_object()
+        .context("texture data object")?
+        .keys()
+    {
+        names.insert(name.clone());
+    }
+    for name in [
+        "grass_block",
+        "short_grass",
+        "water",
+        "flowing_water",
+        "snow_layer",
+    ] {
+        names.insert(name.into());
+    }
+    let mut materials = vec![Material {
+        key: "unknown".into(),
+        name: "Unknown".into(),
+        texture: "unknown".into(),
+        tint: 0,
+        approximate: true,
+        uv: [0.; 4],
+        average: [1., 0., 1., 1.],
+    }];
+    materials.extend(names.into_iter().map(|name| Material {
+        key: serde_json::json!([format!("minecraft:{name}"), {}]).to_string(),
+        texture: name.clone(),
+        name,
+        tint: 0,
+        approximate: false,
+        uv: [0.; 4],
+        average: [0.; 4],
+    }));
+    let (atlas, unsupported) = prepare(path, output, &mut materials)?;
+    let result = serde_json::json!({"schema_version":1,"source_commit":SOURCE,"atlas":atlas,"materials":materials,"unsupported":unsupported});
+    crate::atomic_write(&output.join("library.json"), &serde_json::to_vec(&result)?)?;
+    Ok(result)
 }
 pub fn synthetic(output: &Path, materials: &mut [Material]) -> Result<String> {
     let images = materials

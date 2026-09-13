@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/surface-core", "crates/bedrock-adapter", "crates/surface-cli", "crates/surface-gpu", "crates/surface-tracker"]
+members = ["crates/surface-core", "crates/bedrock-adapter", "crates/surface-cli", "crates/surface-gpu", "crates/surface-tracker", "crates/surface-sync"]
 resolver = "2"
 
 [workspace.package]
