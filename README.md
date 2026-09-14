@@ -9,7 +9,10 @@ locations, and terrain updates without reloading.
 
 No installation or login. Requires a WebGPU-enabled browser.
 
-[![Coastal islands, terrain relief and fictional player markers in the interactive demo](docs/media/demo.png)](https://omdaniel.github.io/bedrock-surface-map/)
+[![A fictional player moves while a small structure appears and its center is removed](https://github.com/omdaniel/bedrock-surface-map/releases/download/demo-scene-v1/demo.gif)](https://omdaniel.github.io/bedrock-surface-map/)
+
+_Demo playback: fictional players and scripted terrain changes, not a live server.
+The animation is accelerated; the interactive demo runs a 60-second loop._
 
 ## See the World, Find Your Friends
 
@@ -21,11 +24,6 @@ No installation or login. Requires a WebGPU-enabled browser.
 - **Watch the world change.** With server integration enabled, surface edits
   and newly explored terrain arrive incrementally. The map keeps your camera
   position and lighting settings instead of starting over.
-
-![A fictional player moves while a small structure appears and its center is removed](https://github.com/omdaniel/bedrock-surface-map/releases/download/demo-scene-v1/demo.gif)
-
-_Demo playback: fictional players and scripted terrain changes, not a live server.
-The animation is accelerated; the interactive demo runs a 60-second loop._
 
 ## What Makes It Different?
 
