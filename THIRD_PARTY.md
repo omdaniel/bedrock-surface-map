@@ -1,5 +1,14 @@
 # Third-Party Sources
 
+## License scope
+
+Unless otherwise noted, this repository's original application source and
+documentation are licensed under [GNU AGPL version 3 only](LICENSE)
+(`AGPL-3.0-only`). This includes the Rust crates, browser code, behavior packs and
+project scripts. This grant does not relicense third-party software, Minecraft
+assets, imported worlds or derived world data. Original demo texture artwork
+retains its separate CC0 dedication below.
+
 ## Minecraft assets
 
 Textures are downloaded locally from [Mojang's resource-pack samples](https://github.com/Mojang/bedrock-samples/tree/736072450c26a7c67f07b1661f29d9a5ebaa14b1),

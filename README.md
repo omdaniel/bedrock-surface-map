@@ -52,5 +52,14 @@ require zooming in, and live integration needs server administration and
 experimental Bedrock networking APIs. This is an actively developed project,
 not a one-click server installer. [Verification and limits](docs/VERIFICATION.md)
 
+## License
+
+Copyright (C) 2026 Oliver M Daniel.
+
+Application source and documentation are licensed under the
+[GNU AGPL version 3 only](LICENSE) (`AGPL-3.0-only`). Third-party dependencies,
+Minecraft assets, world data and original demo artwork retain their separate
+terms; see [asset and dependency notices](THIRD_PARTY.md).
+
 Not an official Minecraft product. Not approved by or associated with Mojang or
 Microsoft. [Asset notices and public-demo details](THIRD_PARTY.md)
