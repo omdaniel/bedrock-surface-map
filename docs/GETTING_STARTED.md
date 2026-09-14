@@ -45,6 +45,8 @@ npm run dev
 Use a consistent offline export, never a live world directory. Follow the URL
 Vite prints, normally <http://127.0.0.1:5173/>. See [import commands and safeguards](IMPORT.md).
 This serves derived surfaces, not LevelDB or the original archive.
+For custom import paths, display names and viewer bindings, see
+[operator configuration](CONFIGURATION.md#viewer-and-read-proxies).
 
 For the small synthetic test map without Minecraft assets:
 
@@ -73,8 +75,12 @@ npm run build
 npm run serve:lan -- --host YOUR_LAN_IP
 ```
 
+Use `--map` for a custom served manifest and `--port`/`--ca-port` for alternate
+listener ports. See [preview configuration](CONFIGURATION.md#viewer-and-read-proxies).
+
 The command prints the HTTPS address and public CA certificate URL. On an iPad,
-install the public certificate profile, then enable it under Settings > General
-> About > Certificate Trust Settings. Never share a CA private key. This preview
-requires its host to remain awake; use proper persistent HTTPS hosting for a
-production map. GitHub Pages uses trusted HTTPS and needs no custom certificate.
+install the public certificate profile, then enable it under
+`Settings > General > About > Certificate Trust Settings`. Never share a CA private
+key. This preview requires its host to remain awake; use proper persistent HTTPS
+hosting for a production map. GitHub Pages uses trusted HTTPS and needs no custom
+certificate.

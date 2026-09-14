@@ -58,6 +58,12 @@ remain supported.
 The read API serves revalidated manifests/status and immutable hashed objects.
 A fixed-destination HTTPS proxy exposes only approved GET/HEAD routes.
 
+Every service command requires an explicit world ID and dataset generation via
+`--world`/`TERRAIN_WORLD_ID` and `--generation`/`TERRAIN_GENERATION`.
+The [operator configuration reference](CONFIGURATION.md#server-services-and-packs)
+covers listener addresses, secret files, pack variables and the diagnostic packs'
+required `allow_test_probe: true` opt-in on disposable worlds.
+
 The pack uses server runtime `2.9.0` and net/admin runtime `1.0.0-beta`.
 Exact npm declaration pins are in `package-lock.json`; declarations do not
 establish BDS binary compatibility. Test candidate versions with the actual pack
