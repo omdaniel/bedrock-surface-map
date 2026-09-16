@@ -12,7 +12,9 @@ chunks around players for changes that events do not cover. It never reads live
 LevelDB, creates ticking areas or forces chunks to load.
 
 Every publication contains all 256 columns. Failed reads or unloading retain
-last-known terrain for retry, not empty replacements. Scanning spans ticks; it
+last-known terrain for retry, not empty replacements. Piston `moving_block`
+placeholders also invalidate the entire observation; a bounded rescan is queued
+after 250 ms instead of publishing a temporary diagnostic material. Scanning spans ticks; it
 is not a globally atomic world snapshot. `terrain/rules.json` shares material,
 state and biome/tint rules with the offline adapter.
 
