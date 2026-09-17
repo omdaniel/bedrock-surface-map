@@ -46,6 +46,7 @@ const publisher = new Publisher(
     console.warn(
       `Surface tracker export unavailable (${code}); gameplay continues`,
     ),
+  variables.get("update_interval_ms") as number | undefined,
 );
 let loaded = false;
 const pump = () => {
@@ -69,4 +70,4 @@ world.afterEvents.playerDimensionChange.subscribe(() => {
   publisher.changed();
   system.run(pump);
 });
-system.runInterval(pump, 20);
+system.runInterval(pump, 2);

@@ -34,6 +34,7 @@ export interface PlayerBinding {
   source_sha256: string;
   url: string;
   generation?: string;
+  poll_interval_ms?: number;
 }
 export interface Camera {
   cx: number;
@@ -67,10 +68,23 @@ export function binding(
     (live
       ? p.world_id !== live.world_id || p.generation !== live.generation
       : p.source_sha256 !== fingerprint) ||
-    p.url !== `/api/v1/worlds/${p.world_id}/players`
+    p.url !== `/api/v1/worlds/${p.world_id}/players` ||
+    (p.poll_interval_ms !== undefined &&
+      (!Number.isInteger(p.poll_interval_ms) ||
+        Number(p.poll_interval_ms) < 100 ||
+        Number(p.poll_interval_ms) > 2000))
   )
     return null;
   return p as unknown as PlayerBinding;
+}
+export function playerPollDelay(
+  interval: number,
+  failures: number,
+  empty: boolean,
+  elapsed: number,
+) {
+  if (failures) return Math.min(30000, 2000 * 2 ** Math.min(failures - 1, 4));
+  return Math.max(0, (empty ? 2000 : interval) - elapsed);
 }
 export function parseView(value: unknown, world: string): PlayerView {
   if (

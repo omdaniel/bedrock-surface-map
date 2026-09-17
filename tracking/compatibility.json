@@ -2,7 +2,7 @@
   "purpose": "Compatibility target and configuration requirements; candidate binaries require isolated runtime and real-client checks.",
   "bds_version": "1.26.45.1",
   "bds_zip_sha256": "b0db86098ee418a9bb226f6f3f51ff2be36542236839375627b29aef3dfa5cda",
-  "pack_version": "1.0.2",
+  "pack_version": "1.0.3",
   "npm_declarations": {
     "@minecraft/server": "2.9.0",
     "@minecraft/server-net": "1.0.0-beta.1.26.40-stable",
