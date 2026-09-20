@@ -50,6 +50,12 @@ export interface Access {
   biome(x: number, y: number, z: number): string;
 }
 export const UNKNOWN: Material = { name: "surface:unknown", states: {} };
+export class TransientSurfaceError extends Error {
+  constructor() {
+    super("Surface contains an unsettled piston block");
+    this.name = "TransientSurfaceError";
+  }
+}
 export const empty = (): Column => [
   2, -32768, 0, 0xffffff, -1, 0, -32768, 0, 0, -32768,
 ];
@@ -147,6 +153,9 @@ export function* scan(
           yield;
         }
         if (!b) throw Error("unavailable-block");
+        // A piston placeholder is not the final material. Retry the whole chunk.
+        if (b.material.name === "minecraft:moving_block")
+          throw new TransientSurfaceError();
         const kind = role(b.material, rules);
         if (kind === "air") {
           if (water) depth++;

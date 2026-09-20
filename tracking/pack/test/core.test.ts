@@ -1,12 +1,103 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Roster, Publisher, compassHeading, failureCode } from "../src/core.ts";
+import {
+  Roster,
+  Publisher,
+  compassHeading,
+  failureCode,
+  trackingInterval,
+} from "../src/core.ts";
 const player = () => ({
   id: "entity-private",
   name: "ExamplePlayer",
   dimension: { id: "minecraft:overworld" },
   location: { x: -2.5, y: 64, z: 8 },
   getRotation: () => ({ x: 0, y: 0 }),
+});
+test("100ms active sampling, coalesced events, slow ticks and empty heartbeats", async () => {
+  let online = true;
+  const sent: number[] = [];
+  const p = new Publisher(
+    "fixture",
+    "instance",
+    0,
+    () => (online ? new Roster().sample([player()]) : []),
+    async (s) => {
+      sent.push(s.sampled_at_ms);
+    },
+    () => {},
+    () => {},
+  );
+  await p.tick(0, 0);
+  p.changed();
+  await p.tick(1, 50);
+  await p.tick(2, 100);
+  await p.tick(3, 500); // Tick budget also applies under a slow game loop.
+  await p.tick(4, 600);
+  assert.deepEqual(sent, [0, 100, 600]);
+  online = false;
+  p.changed();
+  await p.tick(6, 700);
+  await p.tick(8, 800);
+  await p.tick(46, 2700);
+  assert.deepEqual(sent, [0, 100, 600, 700, 2700]);
+  online = true;
+  p.changed();
+  await p.tick(48, 2800);
+  assert.equal(sent.at(-1), 2800);
+  assert.equal(trackingInterval(), 100);
+  assert.equal(trackingInterval(500), 500);
+  for (const v of [null, "100", 0, 99, 125, 2050, NaN])
+    assert.throws(() => trackingInterval(v));
+});
+test("slow active requests never overlap or replay queued samples", async () => {
+  let complete: () => void = () => {};
+  let calls = 0;
+  const p = new Publisher(
+    "fixture",
+    "instance",
+    0,
+    () => new Roster().sample([player()]),
+    () => {
+      calls++;
+      return new Promise<void>((resolve) => {
+        complete = resolve;
+      });
+    },
+    () => {},
+    () => {},
+  );
+  const first = p.tick(0, 0);
+  for (let tick = 2; tick <= 20; tick += 2) await p.tick(tick, tick * 50);
+  assert.equal(calls, 1);
+  complete();
+  await first;
+  const second = p.tick(22, 1100);
+  assert.equal(calls, 2);
+  complete();
+  await second;
+});
+test("game-tick cadence tolerates clock jitter and rate-limits roster events", async () => {
+  const sent: number[] = [];
+  const p = new Publisher(
+    "fixture",
+    "instance",
+    0,
+    () => new Roster().sample([player()]),
+    async (s) => {
+      sent.push(s.sampled_at_ms);
+    },
+    () => {},
+    () => {},
+  );
+  for (let tick = 0; tick <= 200; tick++) {
+    p.changed();
+    await p.tick(tick, tick * 50 + (tick % 4 === 0 ? 1 : 0));
+  }
+  assert.equal(sent.length, 101);
+  assert.ok(
+    sent.slice(1).every((t, i) => t - sent[i] >= 99 && t - sent[i] <= 101),
+  );
 });
 test("failure diagnostics never include credentials or raw exception details", () => {
   assert.equal(

@@ -14,7 +14,8 @@ and zoom to that player; use the target button to follow them. Dragging or
 zooming the map cancels follow. Nether and End players stay in the roster but
 do not appear as misleading markers on the Overworld map.
 
-Positions normally refresh about every two seconds while the page is visible.
+Active positions target 100 ms updates while the page is visible; game tick rate,
+network delay and server load affect delivery. Empty-server checks use two seconds.
 If updates stop, positions are marked stale after ten seconds and removed after
 thirty. A connection failure is not shown as an empty, healthy server.
 
@@ -51,7 +52,7 @@ add `?players=off` to disable tracking for that view without changing the world.
 ## Compatibility
 
 The [compatibility target](../tracking/compatibility.json) is BDS 1.26.45.1
-with tracking pack 1.0.2. Test the pack on an isolated world when updating
+with tracking pack 1.0.4. Test the pack on an isolated world when updating
 Bedrock; pinned API declarations alone do not prove support. Use the
 [acceptance checklist](TERRAIN-ACCEPTANCE.md) to verify your clients, coordinate
 alignment, recovery and performance before relying on a deployment.

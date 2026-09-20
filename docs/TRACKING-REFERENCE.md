@@ -23,7 +23,13 @@ Authentication precedes body collection. Ingest has one request slot and a
 two-second body/handler deadline; the read listener has sixteen slots with the
 same deadline. Unauthorized, oversized and slow requests do not replace the roster.
 
-The pack samples every forty ticks and coalesces roster events. It allows one
+The pack samples active players every two ticks (100 ms at 20 TPS) and coalesces
+roster events. Module variable `update_interval_ms` defaults to 100 and accepts
+multiples of 50 between 100 and 2000; the pump checks every two ticks, rounding
+odd-tick intervals up to its next check. Empty-roster heartbeats use forty ticks.
+All publications, including roster events, obey the game-tick interval. Wall time
+controls failure backoff, not successful sampling: tiny clock jitter must not skip
+a complete tick pair. A slow game loop reduces the actual update rate. It allows one
 two-second HTTP request at a time, with no backlog and a maximum thirty-second
 retry backoff. Empty-roster heartbeats distinguish idle from broken.
 The [sampler](../tracking/pack/src/core.ts) accepts an operator-configured
@@ -32,12 +38,18 @@ north-zero, clockwise heading with `(yaw + 180) mod 360`.
 
 ## Browser Behavior
 
-The browser polls every two seconds while visible. Samples become stale at ten
+The browser polls active rosters every 100 ms while visible. Set optional
+`players.poll_interval_ms` in viewer configuration (100-2000) to choose a slower
+cadence. Empty rosters and the demo use two seconds. Only one request runs at a
+time; request time counts toward the interval, and failures back off from two
+to thirty seconds. Hidden tabs stop polling and immediately revalidate on return.
+Samples become stale at ten
 seconds and lose coordinates/markers at thirty, even if HTTP requests succeed.
 An empty successful snapshot removes players immediately.
 
 Markers use fixed CSS-pixel sizes and the terrain camera transform. Ordinary
-movement interpolates for 250 ms without prediction; teleports, respawns and
+movement interpolates for the poll interval, capped at 250 ms, without prediction;
+teleports, respawns and
 dimension changes snap. Player-only updates do not request a terrain frame.
 Follow moves the camera, so it redraws terrain.
 

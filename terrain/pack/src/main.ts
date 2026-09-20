@@ -6,7 +6,14 @@ import {
   HttpRequest,
   HttpRequestMethod,
 } from "@minecraft/server-net";
-import { scan, WorkQueue, Outbox, UNKNOWN, type Sample } from "./core.js";
+import {
+  scan,
+  WorkQueue,
+  Outbox,
+  UNKNOWN,
+  TransientSurfaceError,
+  type Sample,
+} from "./core.js";
 import rules from "./rules.js";
 import { surfaceAccess } from "./api.js";
 import { validTerrainUrl } from "./config.js";
@@ -167,8 +174,9 @@ system.runInterval(() => {
     }
   } catch (error) {
     const unavailable = /unloaded/i.test(String(error));
+    const transient = error instanceof TransientSurfaceError;
     if (unavailable) unloaded++;
-    else {
+    else if (!transient) {
       errors++;
       scanErrors++;
     }
@@ -178,7 +186,13 @@ system.runInterval(() => {
         // Rediscovery retries once a player loads this chunk again.
         coverage.delete(key);
         due.set(key, Date.now() + 5000);
-      } else queue.mark(current.cx, current.cz, Date.now() + 5000);
+      } else
+        queue.mark(
+          current.cx,
+          current.cz,
+          Date.now() + (transient ? 250 : 5000),
+          transient,
+        );
     }
     current = undefined;
   }

@@ -7,6 +7,7 @@ import {
   empty,
   Outbox,
   WorkQueue,
+  TransientSurfaceError,
   type Access,
   type Rules,
   type Material,
@@ -35,6 +36,28 @@ function finish(access: Access) {
     if (r.done) return r.value;
   }
 }
+test("piston placeholders invalidate a whole chunk until the block settles", () => {
+  const stone = material("stone"),
+    moving = material("moving_block");
+  for (const stack of [
+    { 0: stone, 2: moving },
+    { 0: moving, 2: material("water") },
+    { 0: moving, 1: material("short_grass") },
+  ])
+    assert.throws(() => finish(fixture(stack)), TransientSurfaceError);
+  const access = fixture({ 0: stone });
+  const originalTop = access.top;
+  access.top = (x, z) =>
+    x === -1 && z === -257 ? { y: 0, material: moving } : originalTop(x, z);
+  assert.throws(() => finish(access), TransientSurfaceError);
+  access.top = originalTop;
+  const settled = finish(access);
+  assert.equal(settled.chunk.columns.length, 256);
+  assert.equal(
+    settled.materials.some((m) => m.name === moving.name),
+    false,
+  );
+});
 test("complete negative-coordinate surface, roof removal and empty terrain", () => {
   const ground = material("stone"),
     roof = material("oak_planks");

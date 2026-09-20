@@ -6,6 +6,80 @@ const manifest = JSON.parse(
 const template = JSON.parse(
   readFileSync("fixtures/tracking/snapshot.json", "utf8"),
 );
+test("100ms eight-player polling is single-flight and leaves stationary terrain alone", async ({
+  page,
+}) => {
+  let calls = 0,
+    active = 0,
+    peak = 0,
+    delay = 0;
+  await page.route("**/viewer-config.json", (r) =>
+    r.fulfill({
+      json: {
+        players: {
+          world_id: "fixture-world",
+          source_sha256: manifest.source_sha256,
+          url: "/api/v1/worlds/fixture-world/players",
+          poll_interval_ms: 100,
+        },
+      },
+    }),
+  );
+  await page.route("**/api/v1/worlds/fixture-world/players", async (r) => {
+    calls++;
+    active++;
+    peak = Math.max(peak, active);
+    const s = structuredClone(template);
+    s.sequence = calls;
+    s.sampled_at_ms = Date.now();
+    s.players = Array.from({ length: 8 }, (_, i) => ({
+      ...structuredClone(s.players[0]),
+      id: `p${i}`,
+      name: `FixturePlayer${i}`,
+      discontinuity: calls === 1,
+      position: { x: -12 + i + calls / 20, y: 64, z: i, heading: 90 },
+    }));
+    try {
+      if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+      await r.fulfill({
+        json: {
+          schema_version: 1,
+          world_id: "fixture-world",
+          status: "live",
+          reason: null,
+          age_ms: 0,
+          snapshot: s,
+        },
+      });
+    } finally {
+      active--;
+    }
+  });
+  await page.goto("/?map=/maps/fixture/manifest.json&terrain=off");
+  await page.waitForFunction(
+    () =>
+      window.__map?.ready &&
+      (window.__map.state() as { pending: number }).pending === 0,
+  );
+  await expect(page.locator(".player-marker")).toHaveCount(8);
+  await page.waitForTimeout(500);
+  const draws = await page.evaluate(
+    () => (window.__map.state() as { draws: number }).draws,
+  );
+  const before = calls;
+  await page.waitForTimeout(2000);
+  expect(calls - before).toBeGreaterThanOrEqual(12);
+  expect(calls - before).toBeLessThanOrEqual(23);
+  expect(
+    await page.evaluate(
+      () => (window.__map.state() as { draws: number }).draws,
+    ),
+  ).toBe(draws);
+  delay = 180;
+  await page.waitForTimeout(1000);
+  expect(peak).toBe(1);
+  await page.unrouteAll({ behavior: "wait" });
+});
 test("operator-selected offline manifest loads without a deployment-specific default", async ({
   page,
 }) => {

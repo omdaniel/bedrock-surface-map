@@ -13,6 +13,7 @@ import {
   PlayerState,
   project,
   readJsonBounded,
+  playerPollDelay,
 } from "./player-state";
 import type {
   Camera,
@@ -82,6 +83,12 @@ export class PlayerLayer {
   private message = "Tracking not configured";
   private snapshotKey = "";
   private resumePending = false;
+  private get interval() {
+    return this.source ? 2000 : (this.configuration?.poll_interval_ms ?? 100);
+  }
+  private get transitionMs() {
+    return Math.min(250, this.interval);
+  }
   private readonly onVisibility = () => {
     clearTimeout(this.pollTimer);
     if (document.hidden) {
@@ -246,7 +253,15 @@ export class PlayerLayer {
       if (!this.stopped && !document.hidden)
         this.pollTimer = window.setTimeout(
           () => void this.poll(),
-          resume ? 0 : Math.min(30000, 2000 * 2 ** Math.min(this.failures, 4)),
+          resume
+            ? 0
+            : playerPollDelay(
+                this.interval,
+                this.failures,
+                this.state.view?.status === "live" &&
+                  this.state.view.snapshot?.players.length === 0,
+                performance.now() - started,
+              ),
         );
     }
   }
@@ -380,7 +395,7 @@ export class PlayerLayer {
   private position(e: Entry, now: number) {
     const to = e.player.position;
     if (!to || !e.from) return to;
-    const t = Math.min(1, Math.max(0, (now - e.started) / 250));
+    const t = Math.min(1, Math.max(0, (now - e.started) / this.transitionMs));
     const turn = ((to.heading - e.from.heading + 540) % 360) - 180;
     return {
       x: e.from.x + (to.x - e.from.x) * t,
@@ -402,7 +417,9 @@ export class PlayerLayer {
       }
       this.project();
       if (
-        [...this.entries.values()].some((e) => e.from && now - e.started < 250)
+        [...this.entries.values()].some(
+          (e) => e.from && now - e.started < this.transitionMs,
+        )
       )
         this.animation = requestAnimationFrame(step);
     };

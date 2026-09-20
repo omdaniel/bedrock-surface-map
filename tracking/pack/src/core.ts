@@ -1,4 +1,16 @@
-export const PACK_VERSION = "1.0.2";
+export const PACK_VERSION = "1.0.4";
+export function trackingInterval(value: unknown = 100): number {
+  if (
+    !Number.isInteger(value) ||
+    Number(value) < 100 ||
+    Number(value) > 2000 ||
+    Number(value) % 50 !== 0
+  )
+    throw Error(
+      "update_interval_ms must be a multiple of 50 between 100 and 2000",
+    );
+  return Number(value);
+}
 export interface SourcePlayer {
   id: string;
   name: string;
@@ -150,9 +162,11 @@ export class Publisher {
   private pending = true;
   private inFlight = false;
   private nextTick = 0;
+  private earliestTick = 0;
   private nextTime = 0;
   private failures = 0;
   private sequence = 0;
+  private readonly interval: number;
   constructor(
     world: string,
     instance: string,
@@ -161,6 +175,7 @@ export class Publisher {
     send: (snapshot: Snapshot) => Promise<void>,
     success: () => void,
     failure: (code: string) => void,
+    intervalMs = 100,
   ) {
     this.world = world;
     this.instance = instance;
@@ -169,6 +184,7 @@ export class Publisher {
     this.send = send;
     this.success = success;
     this.failure = failure;
+    this.interval = trackingInterval(intervalMs);
   }
   changed() {
     this.pending = true;
@@ -177,15 +193,19 @@ export class Publisher {
     if (
       this.inFlight ||
       now < this.nextTime ||
+      tick < this.earliestTick ||
       (!this.pending && tick < this.nextTick)
     )
       return;
     this.inFlight = true;
     this.pending = false;
-    this.nextTick = tick + 40;
-    this.nextTime = now + 1000;
+    // Successful sampling follows game ticks; wall time gates failed retries only.
+    // Comparing both clocks on every success skips a tick pair on sub-ms jitter.
+    this.earliestTick = tick + this.interval / 50;
+    this.nextTime = 0;
     try {
       const players = this.read();
+      this.nextTick = tick + (players.length ? this.interval / 50 : 40);
       const snapshot: Snapshot = {
         schema_version: 1,
         world_id: this.world,
