@@ -77,6 +77,28 @@ test("slow active requests never overlap or replay queued samples", async () => 
   complete();
   await second;
 });
+test("game-tick cadence tolerates clock jitter and rate-limits roster events", async () => {
+  const sent: number[] = [];
+  const p = new Publisher(
+    "fixture",
+    "instance",
+    0,
+    () => new Roster().sample([player()]),
+    async (s) => {
+      sent.push(s.sampled_at_ms);
+    },
+    () => {},
+    () => {},
+  );
+  for (let tick = 0; tick <= 200; tick++) {
+    p.changed();
+    await p.tick(tick, tick * 50 + (tick % 4 === 0 ? 1 : 0));
+  }
+  assert.equal(sent.length, 101);
+  assert.ok(
+    sent.slice(1).every((t, i) => t - sent[i] >= 99 && t - sent[i] <= 101),
+  );
+});
 test("failure diagnostics never include credentials or raw exception details", () => {
   assert.equal(
     failureCode(new Error("secret=private-credential")),

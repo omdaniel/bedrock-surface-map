@@ -1,4 +1,4 @@
-export const PACK_VERSION = "1.0.3";
+export const PACK_VERSION = "1.0.4";
 export function trackingInterval(value: unknown = 100): number {
   if (
     !Number.isInteger(value) ||
@@ -162,6 +162,7 @@ export class Publisher {
   private pending = true;
   private inFlight = false;
   private nextTick = 0;
+  private earliestTick = 0;
   private nextTime = 0;
   private failures = 0;
   private sequence = 0;
@@ -192,12 +193,16 @@ export class Publisher {
     if (
       this.inFlight ||
       now < this.nextTime ||
+      tick < this.earliestTick ||
       (!this.pending && tick < this.nextTick)
     )
       return;
     this.inFlight = true;
     this.pending = false;
-    this.nextTime = now + this.interval;
+    // Successful sampling follows game ticks; wall time gates failed retries only.
+    // Comparing both clocks on every success skips a tick pair on sub-ms jitter.
+    this.earliestTick = tick + this.interval / 50;
+    this.nextTime = 0;
     try {
       const players = this.read();
       this.nextTick = tick + (players.length ? this.interval / 50 : 40);

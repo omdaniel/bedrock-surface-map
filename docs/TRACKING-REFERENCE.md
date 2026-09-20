@@ -27,7 +27,9 @@ The pack samples active players every two ticks (100 ms at 20 TPS) and coalesces
 roster events. Module variable `update_interval_ms` defaults to 100 and accepts
 multiples of 50 between 100 and 2000; the pump checks every two ticks, rounding
 odd-tick intervals up to its next check. Empty-roster heartbeats use forty ticks.
-Tick and wall-clock gates prevent exceeding the requested rate. It allows one
+All publications, including roster events, obey the game-tick interval. Wall time
+controls failure backoff, not successful sampling: tiny clock jitter must not skip
+a complete tick pair. A slow game loop reduces the actual update rate. It allows one
 two-second HTTP request at a time, with no backlog and a maximum thirty-second
 retry backoff. Empty-roster heartbeats distinguish idle from broken.
 The [sampler](../tracking/pack/src/core.ts) accepts an operator-configured
