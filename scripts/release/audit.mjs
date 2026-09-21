@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: audit.mjs <archive>");
@@ -90,10 +90,11 @@ try {
         throw Error(`release contains a symlink: ${path}`);
       if (metadata.isDirectory()) await walk(path);
       else if (metadata.isFile()) {
-        const relative = path
-          .slice(join(staging, root).length + 1)
-          .replaceAll("\\", "/");
-        if (relative !== "release-manifest.json") actual.add(relative);
+        const member = relative(join(staging, root), path).replaceAll(
+          "\\",
+          "/",
+        );
+        if (member !== "release-manifest.json") actual.add(member);
       } else throw Error(`release contains an unsupported entry: ${path}`);
     }
   }
