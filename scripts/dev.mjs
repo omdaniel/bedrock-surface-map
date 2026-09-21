@@ -125,9 +125,48 @@ try {
       ["test", "-p", "bedrock-map", "-p", "surface-cli", "--locked"],
       { cwd: root },
     );
-    if (profile === "full")
+    if (profile === "full") {
       run("cargo", ["test", "--workspace", "--locked"], { cwd: root });
-    else if (profile !== "fast")
+      run(
+        "cargo",
+        [
+          "clippy",
+          "--workspace",
+          "--all-targets",
+          "--locked",
+          "--",
+          "-D",
+          "warnings",
+        ],
+        { cwd: root },
+      );
+      run(
+        "cargo",
+        [
+          "clippy",
+          "-p",
+          "surface-gpu",
+          "--target",
+          "wasm32-unknown-unknown",
+          "--locked",
+          "--",
+          "-D",
+          "warnings",
+        ],
+        { cwd: root },
+      );
+      run("npm", ["run", "wasm"], { cwd: root });
+      run("npm", ["run", "build"], { cwd: root });
+      run("npm", ["run", "config:test"], { cwd: root });
+      run("npm", ["run", "tracking:build"], { cwd: root });
+      run("npm", ["run", "tracking:test"], { cwd: root });
+      run("npm", ["run", "terrain:build"], { cwd: root });
+      run("npm", ["run", "terrain:test"], { cwd: root });
+      run("npm", ["run", "demo:test"], { cwd: root });
+      run("npm", ["test"], { cwd: root });
+      run("npm", ["run", "demo:build"], { cwd: root });
+      run("node", ["scripts/audit-demo.mjs"], { cwd: root });
+    } else if (profile !== "fast")
       throw new Error(`Unknown check profile: ${profile}`);
   } else if (command === "package") {
     const target = arguments_[arguments_.indexOf("--target") + 1];

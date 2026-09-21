@@ -20,10 +20,12 @@ fixture. It does not download Minecraft assets or contact a Minecraft server.
 without accessing the network.
 
 Run `./dev check --profile fast` before a focused change. `--profile full`
-adds workspace tests. Use `./dev package --target x86_64-unknown-linux-musl`
-or `aarch64-unknown-linux-musl` only when the pinned cargo-zigbuild and Zig
-tools are available. Cross-compilation is not native runtime proof; each
-release target needs its archive smoke-tested on matching Linux hardware.
+also runs workspace and WASM lints, renderer/browser checks, tracking and
+terrain protocol suites, and the public-demo audit. Use
+`./dev package --target x86_64-unknown-linux-musl` or
+`aarch64-unknown-linux-musl` only when the pinned cargo-zigbuild and Zig tools
+are available. Cross-compilation is not native runtime proof; each release
+target needs its archive smoke-tested on matching Linux hardware.
 
 `./dev setup --install-hooks` opts into the repository hook path only when no
 unrelated local hook path is configured. It does not change `pull.ff`,
