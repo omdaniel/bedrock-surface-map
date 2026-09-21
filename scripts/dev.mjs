@@ -72,8 +72,10 @@ try {
         ]);
       run("npm", ["ci"], { cwd: root });
     }
+    // The scanner is project-local. It does not change Git configuration unless
+    // the caller separately asks to install the optional hook path.
+    const scanner = await installGitleaks(root, pins, offline);
     if (hooks) {
-      const scanner = await installGitleaks(root, pins, offline);
       const existing = probe("git", [
         "config",
         "--local",
@@ -106,7 +108,7 @@ try {
       { cwd: root },
     );
     console.log(
-      "Developer setup complete. No Minecraft assets were downloaded.",
+      `Developer setup complete with ${scanner}. No Minecraft assets were downloaded.`,
     );
   } else if (command === "demo") {
     run("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {

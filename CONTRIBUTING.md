@@ -13,9 +13,11 @@ cd bedrock-surface-map
 ```
 
 `setup` installs or verifies the pinned language tools, runs `npm ci`, builds
-WASM, and creates a local synthetic fixture. It does not download Minecraft
-assets or contact a Minecraft server. `setup --offline` checks a warmed local
-cache and reports exactly what is absent without accessing the network.
+WASM, prepares the project-local secret scanner, and creates a local synthetic
+fixture. It does not download Minecraft assets or contact a Minecraft server.
+`npm run bootstrap` is a compatibility alias for this same safe setup path.
+`setup --offline` checks a warmed local cache and reports exactly what is absent
+without accessing the network.
 
 Run `./dev check --profile fast` before a focused change. `--profile full`
 adds workspace tests. Use `./dev package --target x86_64-unknown-linux-musl`

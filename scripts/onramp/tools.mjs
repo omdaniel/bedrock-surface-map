@@ -50,11 +50,15 @@ export async function installGitleaks(root, pins, offline = false) {
   const partial = `${archive}.part`;
   await rm(partial, { force: true });
   const response = await fetch(entry.url, {
-    redirect: "error",
+    // GitHub release URLs redirect to a short-lived HTTPS object URL. The
+    // pinned archive digest still authenticates the bytes before extraction.
+    redirect: "follow",
     signal: AbortSignal.timeout(300000),
   });
   if (!response.ok || !response.body)
     throw new Error(`Gitleaks download failed: ${response.status}`);
+  if (new URL(response.url).protocol !== "https:")
+    throw new Error("Gitleaks download redirected to a non-HTTPS URL");
   const file = await (
     await import("node:fs/promises")
   ).open(partial, "w", 0o600);
