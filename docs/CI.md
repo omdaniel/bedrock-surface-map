@@ -16,9 +16,12 @@ Configure these protected GitLab variables before enabling its jobs:
 The release jobs are intentionally skipped until those variables exist. A
 cross-compiled archive is build evidence, not native-runtime evidence.
 
-`node ci/release.mjs <target>` packages and smokes one exact archive. The
-smoke harness extracts it, uses only the packaged executable and resources,
-and verifies the loopback HTTP service.
+`node ci/release.mjs <target> <common-artifact>` packages and validates one
+exact archive. The harness extracts it, uses only the packaged executable and
+resources, verifies the loopback HTTP service, and uses Chromium to confirm
+the packaged application initializes WebGPU and renders its synthetic terrain
+at both `/` and `/map/`. The browser gate runs on the same native Linux
+architecture as the archive.
 
 `node scripts/release/publish.mjs --dist <dir>` validates a candidate without
 network publication. `--publish` additionally requires the matching protected
@@ -27,4 +30,6 @@ Merge-request pipelines cannot publish. Creating a GitLab mirror, runners, and
 credentials is an owner operation; this repository does not provision them.
 
 `node ci/collect-release.mjs <candidate-dir> <amd64-dist> <arm64-dist>` combines
-the two native job artifacts before the release validation/publisher runs.
+the two native job artifacts before the release validation/publisher runs. It
+requires duplicate source archives and embedded common-resource manifests to
+be byte-identical.

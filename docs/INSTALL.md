@@ -34,6 +34,13 @@ recorded as user-supplied, not as verified Mojang content. Imports accept
 archives only, never a live LevelDB directory. A failed import leaves the
 previous selected map unchanged.
 
-Use `status` to inspect selection and `doctor --json` for non-mutating checks.
+Use these non-mutating checks to inspect the selected dataset and packaged
+resources:
+
+```sh
+./bedrock-map status --state ./map-data
+./bedrock-map doctor --state ./map-data --json
+```
+
 `doctor` cannot prove a browser’s WebGPU capability; open the served URL in a
 current WebGPU-capable browser to render a map.

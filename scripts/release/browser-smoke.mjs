@@ -2,6 +2,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PNG } from "pngjs";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: browser-smoke.mjs <archive>");
@@ -77,6 +78,18 @@ async function start(binary, resources, state, basePath) {
   return { child, url };
 }
 
+function assertTerrainPixels(bytes) {
+  const image = PNG.sync.read(bytes);
+  const colors = new Set();
+  for (let index = 0; index < image.data.length; index += 4 * 127) {
+    colors.add(
+      `${image.data[index]},${image.data[index + 1]},${image.data[index + 2]},${image.data[index + 3]}`,
+    );
+  }
+  if (colors.size < 8)
+    throw Error("canvas screenshot lacks the expected terrain color variation");
+}
+
 try {
   execFileSync("tar", ["-xzf", archive, "-C", staging], { stdio: "inherit" });
   const root = packagedRoot();
@@ -117,6 +130,7 @@ try {
         const state = await page.evaluate(() => window.__map.state());
         if (state.cached < 1 || state.draws < 1)
           throw Error("fixture terrain was not rendered");
+        assertTerrainPixels(await page.locator("#map").screenshot());
         if (errors.length || failures.length)
           throw Error(
             `browser failures: ${[...errors, ...failures].join("; ")}`,

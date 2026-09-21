@@ -15,7 +15,7 @@ pub struct Doctor {
     pub checks: Vec<Check>,
 }
 
-pub fn check(state: &State, resources: Option<&Resources>, config: &Config) -> Doctor {
+pub fn check(state: &State, resources: Result<&Resources, String>, config: &Config) -> Doctor {
     let mut checks = vec![Check {
         id: "state",
         status: "pass",
@@ -54,14 +54,14 @@ pub fn check(state: &State, resources: Option<&Resources>, config: &Config) -> D
         },
     });
     checks.push(match resources {
-        Some(resources) if resources.require_web().is_ok() => Check {
+        Ok(resources) if resources.require_web().is_ok() => Check {
             id: "resources",
             status: "pass",
             severity: "required",
             message: "Packaged viewer resources are available.".into(),
             remediation: None,
         },
-        Some(_) => Check {
+        Ok(_) => Check {
             id: "resources",
             status: "fail",
             severity: "required",
@@ -70,12 +70,14 @@ pub fn check(state: &State, resources: Option<&Resources>, config: &Config) -> D
                 "Use a complete release or provide --resources for a development package.",
             ),
         },
-        None => Check {
+        Err(error) => Check {
             id: "resources",
-            status: "unknown",
+            status: "fail",
             severity: "required",
-            message: "Resources were not inspected.".into(),
-            remediation: Some("Run doctor with --resources when outside an assembled release."),
+            message: format!("Packaged viewer resources could not be discovered: {error}"),
+            remediation: Some(
+                "Use a complete release or provide --resources for a development package.",
+            ),
         },
     });
     checks.push(Check {

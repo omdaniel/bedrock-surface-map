@@ -106,6 +106,9 @@ await writeFile(
     `1. ./bedrock-map init --state ./map-data\n` +
     `2. ./bedrock-map demo --state ./map-data\n` +
     `3. ./bedrock-map serve --state ./map-data\n\n` +
+    `Inspect the installed state with:\n` +
+    `./bedrock-map status --state ./map-data\n` +
+    `./bedrock-map doctor --state ./map-data --json\n\n` +
     `The service prints a loopback URL. To import an offline .mcworld, fetch assets explicitly:\n` +
     `./bedrock-map assets fetch --state ./map-data --acknowledge-asset-terms\n` +
     `Then run ./bedrock-map import --state ./map-data --input /path/to/world.mcworld --name "My World" --replace-active\n`,

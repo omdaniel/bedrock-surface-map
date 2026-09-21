@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -30,12 +31,42 @@ for (const source of sources.map((source) => resolve(source))) {
   }
 }
 const sums = [];
-for (const name of (await readdir(output))
+const archives = (await readdir(output))
   .filter((name) => name.endsWith(".tar.gz"))
-  .sort()) {
+  .sort();
+for (const name of archives) {
   const digest = createHash("sha256")
     .update(await readFile(resolve(output, name)))
     .digest("hex");
   sums.push(`${digest}  ${name}`);
 }
 await writeFile(resolve(output, "SHA256SUMS"), sums.join("\n") + "\n");
+
+const commonManifests = archives
+  .filter((name) => name.includes("-linux-"))
+  .map((name) => ({
+    name,
+    bytes: embeddedCommonManifest(resolve(output, name)),
+  }));
+if (commonManifests.length !== 2)
+  throw Error("candidate must contain exactly two Linux architecture archives");
+const [firstManifest, ...remainingManifests] = commonManifests;
+for (const manifest of remainingManifests) {
+  if (!firstManifest.bytes.equals(manifest.bytes))
+    throw Error(
+      `common resource manifest differs between ${firstManifest.name} and ${manifest.name}`,
+    );
+}
+await writeFile(
+  resolve(output, "COMMON_RESOURCES_SHA256"),
+  `${createHash("sha256").update(firstManifest.bytes).digest("hex")}  provenance/common-manifest.json\n`,
+);
+
+function embeddedCommonManifest(archive) {
+  const entries = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" })
+    .split("\n")
+    .filter((entry) => entry.endsWith("/provenance/common-manifest.json"));
+  if (entries.length !== 1)
+    throw Error(`${archive} must contain exactly one common resource manifest`);
+  return execFileSync("tar", ["-xOzf", archive, entries[0]]);
+}

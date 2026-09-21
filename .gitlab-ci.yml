@@ -48,7 +48,7 @@ native-amd64:
   tags:
     - $BEDROCK_MAP_AMD64_RUNNER_TAG
   rules:
-    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG"
+    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
 
 native-arm64:
   extends: .native-release
@@ -58,7 +58,7 @@ native-arm64:
   tags:
     - $BEDROCK_MAP_ARM64_RUNNER_TAG
   rules:
-    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_ARM64_RUNNER_TAG"
+    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
 
 release-dry-run:
   stage: publish

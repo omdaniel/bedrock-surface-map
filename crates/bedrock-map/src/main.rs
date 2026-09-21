@@ -265,8 +265,12 @@ async fn run() -> Result<()> {
             // A packaged invocation normally discovers resources adjacent to
             // its executable. Doctor reports discovery failures as a check
             // result instead of requiring an otherwise unnecessary flag.
-            let resources = resource(&args).ok();
-            let report = doctor::check(&state, resources.as_ref(), &config);
+            let resources = resource(&args);
+            let report = doctor::check(
+                &state,
+                resources.as_ref().map_err(|error| format!("{error:#}")),
+                &config,
+            );
             if let Some(url) = url {
                 ensure!(
                     url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:"),

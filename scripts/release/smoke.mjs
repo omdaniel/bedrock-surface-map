@@ -24,29 +24,40 @@ try {
   }
   const state = join(staging, "state with spaces");
   const invoke = (...args) =>
-    execFileSync(binary, ["--state", state, ...args], {
+    execFileSync(binary, args, {
       cwd: tmpdir(),
       encoding: "utf8",
       env: { PATH: "/usr/bin:/bin", HOME: staging },
     });
-  JSON.parse(invoke("--json", "init"));
+  JSON.parse(invoke("init", "--state", state, "--json"));
   JSON.parse(
     invoke(
-      "--resources",
-      join(install, "share/bedrock-surface-map"),
-      "--json",
       "demo",
-    ),
-  );
-  const child = spawn(
-    binary,
-    [
       "--state",
       state,
       "--resources",
       join(install, "share/bedrock-surface-map"),
       "--json",
+    ),
+  );
+  const status = JSON.parse(invoke("status", "--state", state, "--json"));
+  if (!status.active?.dataset_id)
+    throw Error("documented status command did not report the demo dataset");
+  const doctor = JSON.parse(invoke("doctor", "--state", state, "--json"));
+  const resourceCheck = doctor.checks?.find(
+    (check) => check.id === "resources",
+  );
+  if (resourceCheck?.status !== "pass")
+    throw Error("packaged doctor did not discover its bundled resources");
+  const child = spawn(
+    binary,
+    [
       "serve",
+      "--state",
+      state,
+      "--resources",
+      join(install, "share/bedrock-surface-map"),
+      "--json",
       "--bind",
       "127.0.0.1:0",
     ],

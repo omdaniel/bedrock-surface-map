@@ -31,6 +31,28 @@ impl Drop for MutationLock {
     }
 }
 
+trait PublicationIo {
+    fn create_dir(&self, path: &Path) -> Result<()>;
+    fn rename(&self, from: &Path, to: &Path) -> Result<()>;
+    fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<()>;
+}
+
+struct HostPublicationIo;
+
+impl PublicationIo for HostPublicationIo {
+    fn create_dir(&self, path: &Path) -> Result<()> {
+        fs::create_dir(path).map_err(Into::into)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+        fs::rename(from, to).map_err(Into::into)
+    }
+
+    fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+        write_atomic(path, bytes)
+    }
+}
+
 impl State {
     pub fn new(path: PathBuf) -> Result<Self> {
         ensure!(
@@ -135,6 +157,21 @@ impl State {
         source_sha256: String,
         replace_active: bool,
     ) -> Result<ActiveDataset> {
+        self.register_staged_dataset_with_io(
+            staged_public,
+            source_sha256,
+            replace_active,
+            &HostPublicationIo,
+        )
+    }
+
+    fn register_staged_dataset_with_io(
+        &self,
+        staged_public: &Path,
+        source_sha256: String,
+        replace_active: bool,
+        io: &impl PublicationIo,
+    ) -> Result<ActiveDataset> {
         ensure!(
             valid_hash(&source_sha256),
             "E_STATE_UNSAFE: invalid source fingerprint"
@@ -143,6 +180,17 @@ impl State {
         reject_symlink(staged_public)?;
         validate_public_tree(staged_public)?;
         let id = tree_hash(staged_public)?;
+        let active = ActiveDataset {
+            schema_version: 1,
+            dataset_id: id.clone(),
+            source_sha256,
+        };
+        if let Some(current) = current
+            && current.dataset_id != active.dataset_id
+            && !replace_active
+        {
+            bail!("E_REPLACE_REQUIRED: use --replace-active to select a new dataset");
+        }
         let destination = self.datasets().join(&id);
         if destination.exists() {
             ensure!(
@@ -154,26 +202,15 @@ impl State {
                 .parent()
                 .context("staged public directory has no parent")?;
             let staged_dataset = container.join(&id);
-            fs::create_dir(&staged_dataset)?;
-            fs::rename(staged_public, staged_dataset.join("public"))?;
-            write_atomic(
+            io.create_dir(&staged_dataset)?;
+            io.rename(staged_public, &staged_dataset.join("public"))?;
+            io.write_atomic(
                 &staged_dataset.join("metadata.json"),
                 br#"{"schema_version":1}"#,
             )?;
-            fs::rename(staged_dataset, &destination)?;
+            io.rename(&staged_dataset, &destination)?;
         }
-        let active = ActiveDataset {
-            schema_version: 1,
-            dataset_id: id,
-            source_sha256,
-        };
-        if let Some(current) = current
-            && current.dataset_id != active.dataset_id
-            && !replace_active
-        {
-            bail!("E_REPLACE_REQUIRED: use --replace-active to select a new dataset");
-        }
-        write_atomic(&self.active_path(), &serde_json::to_vec_pretty(&active)?)?;
+        io.write_atomic(&self.active_path(), &serde_json::to_vec_pretty(&active)?)?;
         Ok(active)
     }
 }
@@ -277,4 +314,106 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> Result<()>) -> Result<()> 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum FailurePoint {
+        CreateStagedDataset,
+        MovePublicTree,
+        WriteMetadata,
+        MoveImmutableDataset,
+        WriteActiveSelection,
+    }
+
+    struct FailingPublicationIo(FailurePoint);
+
+    impl FailingPublicationIo {
+        fn fail(&self, point: FailurePoint) -> Result<()> {
+            if self.0 == point {
+                bail!("injected publication failure at {point:?}");
+            }
+            Ok(())
+        }
+    }
+
+    impl PublicationIo for FailingPublicationIo {
+        fn create_dir(&self, path: &Path) -> Result<()> {
+            self.fail(FailurePoint::CreateStagedDataset)?;
+            fs::create_dir(path).map_err(Into::into)
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> Result<()> {
+            let point = if to.file_name().is_some_and(|name| name == "public") {
+                FailurePoint::MovePublicTree
+            } else {
+                FailurePoint::MoveImmutableDataset
+            };
+            self.fail(point)?;
+            fs::rename(from, to).map_err(Into::into)
+        }
+
+        fn write_atomic(&self, path: &Path, bytes: &[u8]) -> Result<()> {
+            let point = if path.file_name().is_some_and(|name| name == "metadata.json") {
+                FailurePoint::WriteMetadata
+            } else {
+                FailurePoint::WriteActiveSelection
+            };
+            self.fail(point)?;
+            write_atomic(path, bytes)
+        }
+    }
+
+    fn fixture(path: &Path) {
+        surface_cli::create_synthetic_fixture(path).unwrap();
+    }
+
+    #[test]
+    fn publication_failures_preserve_the_previous_active_dataset() {
+        for point in [
+            FailurePoint::CreateStagedDataset,
+            FailurePoint::MovePublicTree,
+            FailurePoint::WriteMetadata,
+            FailurePoint::MoveImmutableDataset,
+            FailurePoint::WriteActiveSelection,
+        ] {
+            let temporary = tempfile::tempdir().unwrap();
+            let state = State::new(temporary.path().join("state")).unwrap();
+            state.init().unwrap();
+
+            let first = state.staging().join("first/public");
+            fixture(&first);
+            let selected = state
+                .register_staged_dataset(&first, "a".repeat(64), false)
+                .unwrap();
+
+            let candidate = state.staging().join("candidate/public");
+            fixture(&candidate);
+            fs::write(candidate.join("candidate.txt"), "different dataset").unwrap();
+            let error = state
+                .register_staged_dataset_with_io(
+                    &candidate,
+                    "b".repeat(64),
+                    true,
+                    &FailingPublicationIo(point),
+                )
+                .unwrap_err();
+
+            assert!(error.to_string().contains("injected publication failure"));
+            assert_eq!(
+                state.active().unwrap().unwrap().dataset_id,
+                selected.dataset_id
+            );
+            assert!(
+                state
+                    .datasets()
+                    .join(selected.dataset_id)
+                    .join("public")
+                    .is_dir()
+            );
+        }
+    }
 }

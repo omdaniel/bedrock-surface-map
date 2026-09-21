@@ -56,6 +56,7 @@ fn a_failed_replacement_leaves_the_active_dataset_selected() {
         state.active().unwrap().unwrap().dataset_id,
         active.dataset_id
     );
+    assert_eq!(fs::read_dir(state.datasets()).unwrap().count(), 1);
 }
 
 #[test]
