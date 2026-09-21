@@ -1,0 +1,95 @@
+stages:
+  - common
+  - release-test
+  - publish
+
+# This file is intentionally inert until an owner configures a GitLab mirror,
+# a pinned release image, and native runner tags. It runs repository-owned
+# scripts, not a provider-specific copy of the release pipeline.
+.native-release:
+  stage: release-test
+  image: $BEDROCK_MAP_RELEASE_IMAGE
+  before_script:
+    - test -n "$BEDROCK_MAP_RELEASE_IMAGE"
+    - node --version
+    - cargo --version
+    - npm ci
+    - npx playwright install --with-deps chromium
+  script:
+    - node ci/release.mjs "$RELEASE_TARGET" .local/release/common
+  artifacts:
+    when: always
+    expire_in: 14 days
+    paths:
+      - .local/release/$RELEASE_TARGET/dist/
+
+common-resources:
+  stage: common
+  image: $BEDROCK_MAP_RELEASE_IMAGE
+  before_script:
+    - test -n "$BEDROCK_MAP_RELEASE_IMAGE"
+    - node --version
+    - cargo --version
+    - npm ci
+  script:
+    - node scripts/release/build-common-artifact.mjs .local/release/common
+  artifacts:
+    expire_in: 14 days
+    paths:
+      - .local/release/common/
+  rules:
+    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
+
+native-amd64:
+  extends: .native-release
+  needs: [common-resources]
+  variables:
+    RELEASE_TARGET: x86_64-unknown-linux-musl
+  tags:
+    - $BEDROCK_MAP_AMD64_RUNNER_TAG
+  rules:
+    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
+
+native-arm64:
+  extends: .native-release
+  needs: [common-resources]
+  variables:
+    RELEASE_TARGET: aarch64-unknown-linux-musl
+  tags:
+    - $BEDROCK_MAP_ARM64_RUNNER_TAG
+  rules:
+    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
+
+release-dry-run:
+  stage: publish
+  image: $BEDROCK_MAP_RELEASE_IMAGE
+  needs:
+    - job: native-amd64
+      artifacts: true
+    - job: native-arm64
+      artifacts: true
+  script:
+    - node ci/collect-release.mjs .local/release/candidate .local/release/x86_64-unknown-linux-musl/dist .local/release/aarch64-unknown-linux-musl/dist
+    - node scripts/release/publish.mjs --dist .local/release/candidate
+  rules:
+    - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
+      when: manual
+
+publish-github-release:
+  stage: publish
+  image: $BEDROCK_MAP_RELEASE_IMAGE
+  needs:
+    - job: native-amd64
+      artifacts: true
+    - job: native-arm64
+      artifacts: true
+  environment:
+    name: protected-release
+  script:
+    - node scripts/release/validate-tag.mjs --required
+    - node ci/collect-release.mjs .local/release/candidate .local/release/x86_64-unknown-linux-musl/dist .local/release/aarch64-unknown-linux-musl/dist
+    - node scripts/release/publish.mjs --publish --dist .local/release/candidate
+  rules:
+    - if: "$CI_COMMIT_TAG && $BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
+      when: manual
+      allow_failure: false

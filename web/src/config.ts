@@ -5,7 +5,9 @@ export interface ViewerConfiguration {
   demo?: { scenario: string; poster: string };
 }
 export function appUrl(path: string) {
-  return new URL(path, new URL(import.meta.env.BASE_URL, location.origin));
+  // The packaged viewer can be mounted at either `/` or a subpath without a
+  // rebuild. `document.baseURI` is canonical after the native server redirect.
+  return new URL(path, new URL(".", document.baseURI));
 }
 export async function loadConfiguration(): Promise<ViewerConfiguration> {
   const response = await fetch(appUrl("viewer-config.json"), {
