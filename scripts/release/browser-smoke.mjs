@@ -8,6 +8,7 @@ const archive = process.argv[2];
 if (!archive) throw Error("usage: browser-smoke.mjs <archive>");
 const { chromium } = await import("playwright");
 const staging = await mkdtemp(join(tmpdir(), "bedrock-map-browser-smoke-"));
+const children = new Set();
 
 function packagedRoot() {
   return execFileSync("tar", ["-tzf", archive], { encoding: "utf8" })
@@ -54,6 +55,7 @@ async function start(binary, resources, state, basePath) {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
+  children.add(child);
   const url = await new Promise((resolve, reject) => {
     let output = "";
     const timer = setTimeout(
@@ -114,8 +116,12 @@ try {
       });
       const failures = [];
       const errors = [];
+      const loaded = [];
       page.on("requestfailed", (request) => failures.push(request.url()));
       page.on("pageerror", (error) => errors.push(String(error)));
+      page.on("response", (response) =>
+        loaded.push({ url: response.url(), status: response.status() }),
+      );
       try {
         await page.goto(url, { waitUntil: "networkidle", timeout: 30000 });
         await page.waitForFunction(
@@ -131,6 +137,34 @@ try {
         if (state.cached < 1 || state.draws < 1)
           throw Error("fixture terrain was not rendered");
         assertTerrainPixels(await page.locator("#map").screenshot());
+        await page.mouse.move(640, 400);
+        await page
+          .locator("#inspect")
+          .waitFor({ state: "visible", timeout: 5000 });
+        const coordinates = await page.locator("#coordinates").textContent();
+        if (!coordinates?.includes("-"))
+          throw Error("synthetic terrain picking failed");
+        const expected = [
+          "viewer-config.json",
+          "manifest.json",
+          ".wasm",
+          ".zst",
+          ".png",
+          ".js",
+        ];
+        for (const suffix of expected)
+          if (
+            !loaded.some(
+              (item) => item.url.includes(suffix) && item.status === 200,
+            )
+          )
+            throw Error(`packaged browser did not load ${suffix}`);
+        if (
+          loaded.some(
+            (item) => !item.url.startsWith(new URL(url).origin + basePath),
+          )
+        )
+          throw Error("packaged browser requested an out-of-prefix resource");
         if (errors.length || failures.length)
           throw Error(
             `browser failures: ${[...errors, ...failures].join("; ")}`,
@@ -139,12 +173,25 @@ try {
         await page.close();
         child.kill("SIGTERM");
         await new Promise((resolve) => child.once("exit", resolve));
+        children.delete(child);
       }
     }
   } finally {
     await browser.close();
   }
-  console.log(JSON.stringify({ ok: true, archive, browser_rendered: true }));
+  console.log(
+    JSON.stringify({
+      ok: true,
+      archive,
+      browser_rendered: true,
+      mount_paths: ["/", "/map/"],
+      terrain_pixels: true,
+      picking: true,
+    }),
+  );
 } finally {
+  for (const child of children) {
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }
   await rm(staging, { recursive: true, force: true });
 }

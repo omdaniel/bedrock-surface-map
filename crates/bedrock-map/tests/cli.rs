@@ -2,9 +2,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
+    net::TcpListener,
     path::Path,
     process::{Child, Command, Stdio},
+    thread,
 };
 
 fn binary() -> &'static str {
@@ -67,6 +69,27 @@ fn output(mut cmd: Command, expected: i32) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+fn unrelated_response(state: &Path, resources: &Path, response: &'static str) -> Value {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let task = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut request = [0u8; 1024];
+        let _ = stream.read(&mut request).unwrap();
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+    let mut cmd = command(state, resources);
+    cmd.arg("doctor")
+        .arg("--url")
+        .arg(format!("http://{address}/"));
+    let result = output(cmd, 3);
+    task.join().unwrap();
+    result
+}
+
 struct Server(Child);
 impl Drop for Server {
     fn drop(&mut self) {
@@ -88,6 +111,18 @@ fn doctor_reports_failures_and_probes_only_a_real_ready_service() {
     let mut cmd = command(&state, &resources);
     cmd.arg("init");
     assert_eq!(output(cmd, 0)["ok"], true);
+    let mut environment_state = Command::new(binary());
+    environment_state
+        .env_remove("HOME")
+        .env("BEDROCK_MAP_STATE", &state)
+        .arg("--json")
+        .arg("status");
+    assert_eq!(output(environment_state, 0)["ok"], true);
+    let mut explicit_wins = command(&state, &resources);
+    explicit_wins
+        .env("BEDROCK_MAP_STATE", temp.path().join("not-selected"))
+        .arg("status");
+    assert_eq!(output(explicit_wins, 0)["ok"], true);
     let mut cmd = command(&state, &resources);
     cmd.arg("doctor");
     assert_eq!(output(cmd, 3)["ok"], false);
@@ -132,6 +167,18 @@ fn doctor_reports_failures_and_probes_only_a_real_ready_service() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
+    let fake_ok = unrelated_response(
+        &state,
+        &resources,
+        "HTTP/1.1 200 OK\r\nContent-Length: 14\r\nConnection: close\r\n\r\n{\"ready\":true}",
+    );
+    assert_eq!(fake_ok["ok"], false);
+    let redirect = unrelated_response(
+        &state,
+        &resources,
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
+    assert_eq!(redirect["ok"], false);
     let mut server = command(&state, &resources);
     server
         .arg("serve")

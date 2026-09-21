@@ -95,6 +95,13 @@ impl Resources {
                 commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
                 "E_RESOURCE_MISMATCH: invalid release commit"
             );
+            let executable_commit = env!("BEDROCK_MAP_BUILD_COMMIT");
+            if executable_commit != "source" {
+                ensure!(
+                    commit == executable_commit,
+                    "E_RESOURCE_MISMATCH: executable and release manifest commits differ"
+                );
+            }
         }
         if let Some(target) = &manifest.target {
             ensure!(
@@ -105,18 +112,33 @@ impl Resources {
                 "E_RESOURCE_MISMATCH: unsupported release target"
             );
         }
+        ensure!(
+            manifest
+                .files
+                .iter()
+                .any(|file| file.path == "share/bedrock-surface-map/web/index.html"),
+            "E_RESOURCE_MISMATCH: viewer entry is absent from release inventory"
+        );
+        let package_root = self
+            .root
+            .parent()
+            .unwrap_or(&self.root)
+            .parent()
+            .unwrap_or(&self.root);
         for file in manifest.files {
             ensure!(
-                !file.path.contains("..") && !file.path.starts_with('/'),
+                safe_relative(&file.path).is_ok(),
                 "E_RESOURCE_MISMATCH: unsafe manifest entry"
             );
-            let full = self
-                .root
-                .parent()
-                .unwrap_or(&self.root)
-                .parent()
-                .unwrap_or(&self.root)
-                .join(&file.path);
+            let full = package_root.join(&file.path);
+            let canonical = fs::canonicalize(&full).with_context(|| {
+                format!("E_RESOURCE_MISMATCH: missing bundled file {}", file.path)
+            })?;
+            ensure!(
+                canonical.starts_with(package_root) && canonical.is_file(),
+                "E_RESOURCE_MISMATCH: unsafe bundled file {}",
+                file.path
+            );
             let bytes = fs::read(&full).with_context(|| {
                 format!("E_RESOURCE_MISMATCH: missing bundled file {}", file.path)
             })?;

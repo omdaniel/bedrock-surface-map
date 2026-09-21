@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
@@ -40,13 +40,26 @@ export async function installGitleaks(root, pins, offline = false) {
     platform(),
   );
   const binary = resolve(destination, "gitleaks");
-  try {
-    await access(binary);
-    return binary;
-  } catch {}
-  if (offline) throw new Error(`Offline setup is missing ${binary}`);
-  await mkdir(destination, { recursive: true, mode: 0o700 });
   const archive = resolve(destination, "archive.tar.gz");
+  try {
+    const metadata = await lstat(archive);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      (await checksum(archive)) !== entry.sha256
+    )
+      throw new Error("Cached Gitleaks archive checksum mismatch");
+    run("tar", ["-xzf", archive, "-C", destination, "gitleaks"]);
+    run("chmod", ["0755", binary]);
+    return binary;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  if (offline)
+    throw new Error(
+      `Offline setup is missing verified Gitleaks archive: ${archive}`,
+    );
+  await mkdir(destination, { recursive: true, mode: 0o700 });
   const partial = `${archive}.part`;
   await rm(partial, { force: true });
   const response = await fetch(entry.url, {

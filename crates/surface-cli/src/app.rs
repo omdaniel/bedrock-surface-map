@@ -715,6 +715,16 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
+    #[ignore = "explicit CI fixture generation; writes only to BEDROCK_MAP_FIXTURE_DIR"]
+    fn ci_generate_world_fixture() {
+        let output = PathBuf::from(
+            std::env::var("BEDROCK_MAP_FIXTURE_DIR").expect("fixture directory required"),
+        );
+        fs::create_dir_all(&output).unwrap();
+        write_generated_mcworld(&output.join("generated.mcworld"));
+        write_test_asset_archive(&output.join("assets.zip"));
+    }
+    #[test]
     fn reject_live_directory() {
         assert!(unpack(Path::new("/tmp/world"), Path::new("/tmp/no-write")).is_err());
     }

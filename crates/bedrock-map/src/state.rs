@@ -158,8 +158,8 @@ impl State {
             "E_STATE_UNSAFE: invalid active dataset selection"
         );
         ensure!(
-            self.datasets().join(&active.dataset_id).is_dir(),
-            "E_STATE_UNSAFE: selected dataset is missing"
+            self.registered(&active.dataset_id)?.is_some(),
+            "E_STATE_UNSAFE: selected dataset is missing or unregistered"
         );
         Ok(Some(active))
     }
@@ -187,7 +187,13 @@ impl State {
             fs::read(&metadata)? == br#"{"schema_version":1}"#,
             "E_STATE_UNSAFE: invalid dataset registration"
         );
-        Ok(Some(dataset.join("public")))
+        let public = dataset.join("public");
+        reject_symlink(&public)?;
+        ensure!(
+            public.is_dir(),
+            "E_STATE_UNSAFE: registered dataset is missing public content"
+        );
+        Ok(Some(public))
     }
 
     pub fn register_staged_dataset(
@@ -332,9 +338,14 @@ fn validate_public_tree(root: &Path) -> Result<()> {
             .iter()
             .map(|region| PathBuf::from(&region.url)),
     );
-    let notice = root.join("assets/NOTICE.txt");
-    if notice.exists() {
-        expected.insert(PathBuf::from("assets/NOTICE.txt"));
+    for notice in ["assets/NOTICE.txt", "assets/MOJANG-LICENSE.md"] {
+        if root.join(notice).exists() {
+            ensure!(
+                fs::metadata(root.join(notice))?.len() <= 1024 * 1024,
+                "E_RESOURCE_MISMATCH: oversized asset notice"
+            );
+            expected.insert(PathBuf::from(notice));
+        }
     }
     walk(root, &mut |path| {
         ensure!(

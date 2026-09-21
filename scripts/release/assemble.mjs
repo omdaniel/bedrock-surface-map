@@ -12,6 +12,7 @@ import {
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve, relative } from "node:path";
+import { verifyCommon } from "./verify-common.mjs";
 
 const [target, nativeArg, commonArg, outputArg] = process.argv.slice(2);
 if (!target || !nativeArg || !commonArg || !outputArg)
@@ -20,6 +21,10 @@ const native = resolve(nativeArg),
   common = resolve(commonArg),
   output = resolve(outputArg);
 const version = JSON.parse(await readFile("package.json", "utf8")).version;
+const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+  encoding: "utf8",
+}).trim();
+await verifyCommon(common, commit);
 const epoch = Number(
   execFileSync("git", ["show", "-s", "--format=%ct", "HEAD"], {
     encoding: "utf8",
@@ -100,6 +105,18 @@ await cp(
 );
 for (const file of ["LICENSE", "THIRD_PARTY.md"])
   await cp(file, resolve(root, file));
+await mkdir(resolve(root, "docs"), { recursive: true });
+for (const file of ["INSTALL.md", "CI.md"])
+  await cp(resolve("docs", file), resolve(root, "docs", file));
+await cp("CONTRIBUTING.md", resolve(root, "docs/CONTRIBUTING.md"));
+await cp("sources/build-tools.json", resolve(root, "docs/build-tools.json"));
+await writeFile(
+  resolve(root, "BUILDING.txt"),
+  `The matching bedrock-surface-map-v${version}-source.tar.gz archive contains the complete source and lockfiles.\n` +
+    `Check out commit ${commit} and follow docs/GETTING_STARTED.md and docs/CI.md in that source archive.\n` +
+    `The pinned developer prerequisites are listed in docs/build-tools.json here and sources/build-tools.json in source.\n` +
+    `Dependency and asset notices are in THIRD_PARTY.md and share/bedrock-surface-map/provenance/.\n`,
+);
 await writeFile(
   resolve(root, "README.txt"),
   `Bedrock Surface Map snapshot runtime\n\n` +
@@ -114,9 +131,6 @@ await writeFile(
     `Then run ./bedrock-map import --state ./map-data --input /path/to/world.mcworld --name "My World" --replace-active\n`,
 );
 const files = await inventory(root);
-const commit = execFileSync("git", ["rev-parse", "HEAD"], {
-  encoding: "utf8",
-}).trim();
 await writeFile(
   resolve(root, "release-manifest.json"),
   JSON.stringify(

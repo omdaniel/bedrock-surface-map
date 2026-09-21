@@ -15,6 +15,14 @@ Configure these protected GitLab variables before enabling its jobs:
 
 The release jobs are intentionally skipped until those variables exist. A
 cross-compiled archive is build evidence, not native-runtime evidence.
+The buildable prerequisite recipe is `ci/release-image/Dockerfile`. Build its
+AMD64 and ARM64 variants from a Node base image selected by immutable digest,
+publish the image to an operator-controlled registry, and set
+`BEDROCK_MAP_RELEASE_IMAGE` to the resulting digest-qualified image reference.
+That external registry and the native runners are not provisioned by this
+repository. Verify `node --version`, `rustc --version`, `cargo-zigbuild
+--version`, `python-zig version`, and `wasm-bindgen --version` on each platform
+before assigning the runner tags.
 
 `node ci/release.mjs <target> <common-artifact>` packages and validates one
 exact archive. The harness extracts it, uses only the packaged executable and
@@ -32,4 +40,6 @@ credentials is an owner operation; this repository does not provision them.
 `node ci/collect-release.mjs <candidate-dir> <amd64-dist> <arm64-dist>` combines
 the two native job artifacts before the release validation/publisher runs. It
 requires duplicate source archives and embedded common-resource manifests to
-be byte-identical.
+be byte-identical, checks common-file hashes and source identity, and requires
+native smoke and browser evidence bound to each exact archive SHA-256. The
+dry run rejects missing evidence; it does not upload anything.

@@ -1,0 +1,11 @@
+{
+  "name": "Bedrock Surface Map",
+  "build": { "dockerfile": "Dockerfile" },
+  "remoteUser": "node",
+  "updateRemoteUserUID": true,
+  "postCreateCommand": "./dev setup",
+  "forwardPorts": [5173],
+  "portsAttributes": {
+    "5173": { "label": "Synthetic map developer preview" }
+  }
+}

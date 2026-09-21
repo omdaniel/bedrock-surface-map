@@ -18,6 +18,8 @@ fixture. It does not download Minecraft assets or contact a Minecraft server.
 `npm run bootstrap` is a compatibility alias for this same safe setup path.
 `setup --offline` checks a warmed local cache and reports exactly what is absent
 without accessing the network.
+The optional `.devcontainer/` uses the same `./dev setup` command after creating
+its Node/Rust environment; it is not a separate project bootstrap path.
 
 Run `./dev check --profile fast` before a focused change. `--profile full`
 also runs workspace and WASM lints, renderer/browser checks, tracking and

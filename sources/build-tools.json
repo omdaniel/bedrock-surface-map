@@ -1,5 +1,6 @@
 {
   "schema_version": 1,
+  "wasm_bindgen": { "version": "0.2.127" },
   "gitleaks": {
     "version": "8.30.1",
     "archives": {

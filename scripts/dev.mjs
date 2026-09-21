@@ -1,14 +1,33 @@
-import { access, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { probe, run } from "./onramp/process.mjs";
 import { installGitleaks, readPins } from "./onramp/tools.mjs";
 
-const root = resolve(new URL("..", import.meta.url).pathname);
+const root = fileURLToPath(new URL("..", import.meta.url));
 const [command = "doctor", ...arguments_] = process.argv.slice(2);
 const offline = arguments_.includes("--offline");
 const hooks = arguments_.includes("--install-hooks");
 const nodePin = (await readFile(resolve(root, ".node-version"), "utf8")).trim();
 const pins = await readPins(root);
+const rustToolchain = await readFile(
+  resolve(root, "rust-toolchain.toml"),
+  "utf8",
+);
+const rustPin = rustToolchain.match(/^channel\s*=\s*"([^"]+)"/m)?.[1];
+const cargoLock = await readFile(resolve(root, "Cargo.lock"), "utf8");
+const lockedWasm = cargoLock.match(
+  /\[\[package\]\]\s+name = "wasm-bindgen"\s+version = "([^"]+)"/,
+)?.[1];
+if (!rustPin || !lockedWasm || lockedWasm !== pins.wasm_bindgen.version)
+  throw new Error("tool pins disagree with rust-toolchain.toml or Cargo.lock");
+const wasmRoot = resolve(root, ".sources/tools/wasm-bindgen", lockedWasm);
+const localWasm = resolve(wasmRoot, "bin/wasm-bindgen");
+process.env.PATH = `${resolve(wasmRoot, "bin")}:${process.env.PATH ?? ""}`;
+if (offline) {
+  process.env.CARGO_NET_OFFLINE = "true";
+  process.env.npm_config_offline = "true";
+}
 
 function requireVersion(command, args, expected, label) {
   const value = probe(command, args);
@@ -19,24 +38,16 @@ function requireVersion(command, args, expected, label) {
 }
 function prerequisites() {
   requireVersion("node", ["--version"], nodePin, "Node");
-  requireVersion("rustc", ["--version"], "1.92.0", "Rust");
+  requireVersion("rustc", ["--version"], rustPin, "Rust");
   if (!probe("git", ["--version"])) throw new Error("Git is required");
 }
-async function cached(path, label) {
-  try {
-    await access(path);
-  } catch {
-    throw new Error(`Offline setup is missing ${label}: ${path}`);
-  }
-}
-
 try {
   if (command === "doctor") {
     prerequisites();
     const report = {
       node: probe("node", ["--version"]),
       rust: probe("rustc", ["--version"]),
-      wasm_bindgen: probe("wasm-bindgen", ["--version"]),
+      wasm_bindgen: probe(localWasm, ["--version"]),
       cargo_zigbuild: probe("cargo-zigbuild", ["--version"]),
       zig: probe("python-zig", ["version"]),
       synthetic_only: true,
@@ -44,13 +55,8 @@ try {
     console.log(JSON.stringify(report, null, 2));
   } else if (command === "setup") {
     prerequisites();
-    const setupEnv = offline
-      ? { ...process.env, CARGO_NET_OFFLINE: "true", npm_config_offline: "true" }
-      : process.env;
+    const setupEnv = process.env;
     if (offline) {
-      await cached(resolve(root, "node_modules"), "npm dependencies");
-      if (!probe("wasm-bindgen", ["--version"])?.includes("0.2.127"))
-        throw new Error("Offline setup is missing wasm-bindgen 0.2.127");
       if (
         !probe("rustup", ["target", "list", "--installed"])?.includes(
           "wasm32-unknown-unknown",
@@ -63,18 +69,41 @@ try {
         "add",
         "wasm32-unknown-unknown",
         "--toolchain",
-        "1.92.0",
+        rustPin,
       ]);
-      if (!probe("wasm-bindgen", ["--version"])?.includes("0.2.127"))
-        run("cargo", [
-          "install",
-          "wasm-bindgen-cli",
-          "--version",
-          "0.2.127",
-          "--locked",
-        ]);
-      run("npm", ["ci"], { cwd: root, env: setupEnv });
     }
+    run("cargo", ["fetch", "--locked", ...(offline ? ["--offline"] : [])], {
+      cwd: root,
+      env: setupEnv,
+    });
+    if (!probe(localWasm, ["--version"])?.includes(lockedWasm)) {
+      try {
+        run(
+          "cargo",
+          [
+            "install",
+            "wasm-bindgen-cli",
+            "--version",
+            lockedWasm,
+            "--locked",
+            "--root",
+            wasmRoot,
+            ...(offline ? ["--offline"] : []),
+          ],
+          { cwd: root, env: setupEnv },
+        );
+      } catch (error) {
+        if (offline)
+          throw new Error(
+            `Offline setup is missing wasm-bindgen ${lockedWasm} cache: ${error.message}`,
+          );
+        throw error;
+      }
+    }
+    run("npm", ["ci", ...(offline ? ["--offline"] : [])], {
+      cwd: root,
+      env: setupEnv,
+    });
     // The scanner is project-local. It does not change Git configuration unless
     // the caller separately asks to install the optional hook path.
     const scanner = await installGitleaks(root, pins, offline);
@@ -123,6 +152,7 @@ try {
     run("cargo", ["fmt", "--all", "--check"], { cwd: root });
     run("npm", ["run", "format:check"], { cwd: root });
     run("npm", ["run", "check"], { cwd: root });
+    run("npm", ["run", "release:test"], { cwd: root });
     run(
       "cargo",
       ["test", "-p", "bedrock-map", "-p", "surface-cli", "--locked"],

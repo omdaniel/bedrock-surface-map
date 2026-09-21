@@ -86,7 +86,7 @@ publish-github-release:
   environment:
     name: protected-release
   script:
-    - test "$CI_COMMIT_TAG" = "v$(node -p \"require('./package.json').version\")"
+    - node scripts/release/validate-tag.mjs --required
     - node ci/collect-release.mjs .local/release/candidate .local/release/x86_64-unknown-linux-musl/dist .local/release/aarch64-unknown-linux-musl/dist
     - node scripts/release/publish.mjs --publish --dist .local/release/candidate
   rules:

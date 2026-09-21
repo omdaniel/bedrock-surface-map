@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { verifyCommon } from "./verify-common.mjs";
 
 const args = process.argv.slice(2);
 const target = args[0] ?? "x86_64-unknown-linux-musl";
@@ -29,19 +30,10 @@ if (!suppliedCommon)
       stdio: "inherit",
     },
   );
-if (
-  !(await (async () => {
-    try {
-      return (
-        (await readFile(resolve(common, "common-manifest.json"), "utf8"))
-          .length > 0
-      );
-    } catch {
-      return false;
-    }
-  })())
-)
-  throw Error("common artifact manifest is missing");
+await verifyCommon(
+  common,
+  execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+);
 execFileSync(
   process.execPath,
   ["scripts/release/build-native.mjs", target, resolve(stage, "native")],

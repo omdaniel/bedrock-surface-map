@@ -40,6 +40,7 @@ jobs:
       - run: npm ci
       - run: npm run format:check
       - run: npm run config:test
+      - run: npm run release:test
       - run: npm run build
       - run: npm run tracking:build
       - run: npm run tracking:test
