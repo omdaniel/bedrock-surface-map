@@ -6,20 +6,27 @@ import { join, relative } from "node:path";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: audit.mjs <archive>");
-const entries = execFileSync("tar", ["-tzf", archive], { encoding: "utf8" })
-  .trim()
-  .split("\n");
-const forbidden =
-  /(^|\/)(\.git|\.env[^/]*|\.local|node_modules|target|worlds|db|secrets|config\.toml|import-report\.json)(\/|$)|\.(mcworld|ldb|zip)$/i;
-const root = entries.find((entry) =>
-  /^bedrock-surface-map-v[^/]+-linux-(amd64|arm64)\/$/.test(entry),
+const members = JSON.parse(
+  execFileSync("python3", ["scripts/release/tar-members.py", archive], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  }),
 );
-if (!root) throw Error("archive has no expected release root");
+const entries = members.map((member) => member.name);
+const forbidden =
+  /(^|\/)(\._[^/]*|\.git|\.env[^/]*|\.local|node_modules|target|worlds|db|secrets|config\.toml|import-report\.json)(\/|$)|\.(mcworld|ldb|zip)$/i;
+const rootName = members.find(
+  (member) =>
+    member.type === "dir" &&
+    /^bedrock-surface-map-v[^/]+-linux-(amd64|arm64)$/.test(member.name),
+)?.name;
+if (!rootName) throw Error("archive has no expected release root");
+const root = `${rootName}/`;
 if (new Set(entries).size !== entries.length)
   throw Error("release contains duplicate archive entries");
 for (const entry of entries) {
   if (
-    !entry.startsWith(root) ||
+    (entry !== rootName && !entry.startsWith(root)) ||
     entry.includes("\\") ||
     entry.split("/").some((part) => part === "." || part === "..") ||
     /[\x00-\x1f]/.test(entry) ||
@@ -27,13 +34,7 @@ for (const entry of entries) {
   )
     throw Error(`release contains forbidden path: ${entry}`);
 }
-const verbose = execFileSync("tar", ["-tvzf", archive], { encoding: "utf8" })
-  .trim()
-  .split("\n");
-if (
-  verbose.length !== entries.length ||
-  verbose.some((line) => !["-", "d"].includes(line[0]))
-)
+if (members.some((member) => !["file", "dir"].includes(member.type)))
   throw Error("release contains a link or unsupported archive entry");
 if (entries.some((entry) => /\/packs\/.*probe/i.test(entry)))
   throw Error("release contains a diagnostic probe pack");

@@ -1,11 +1,27 @@
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: browser-smoke.mjs <archive>");
+const externalIndex = process.argv.indexOf("--external-url");
+const externalUrl = externalIndex < 0 ? null : process.argv[externalIndex + 1];
+if (externalIndex >= 0 && !externalUrl)
+  throw Error("--external-url requires a URL");
+if (externalUrl) {
+  const target = new URL(externalUrl);
+  if (
+    target.protocol !== "http:" ||
+    !["127.0.0.1", "[::1]"].includes(target.hostname) ||
+    !["/", "/map/"].includes(target.pathname)
+  )
+    throw Error("external browser smoke requires a loopback root or /map/ URL");
+}
+const mountPaths = externalUrl
+  ? [new URL(externalUrl).pathname]
+  : ["/", "/map/"];
 const { chromium } = await import("playwright");
 const staging = await mkdtemp(join(tmpdir(), "bedrock-map-browser-smoke-"));
 const children = new Set();
@@ -104,13 +120,40 @@ try {
     args: ["--use-angle=swiftshader", "--enable-unsafe-webgpu"],
   });
   try {
-    for (const basePath of ["/", "/map/"]) {
-      const { child, url } = await start(
-        binary,
-        resources,
-        join(staging, `state-${basePath === "/" ? "root" : "subpath"}`),
-        basePath,
-      );
+    for (const basePath of mountPaths) {
+      const { child, url } = externalUrl
+        ? { child: null, url: externalUrl }
+        : await start(
+            binary,
+            resources,
+            join(staging, `state-${basePath === "/" ? "root" : "subpath"}`),
+            basePath,
+          );
+      if (externalUrl) {
+        const web = join(resources, "web");
+        const html = Buffer.from(
+          await (
+            await fetch(url, { signal: AbortSignal.timeout(5000) })
+          ).arrayBuffer(),
+        );
+        if (!html.equals(await readFile(join(web, "index.html"))))
+          throw Error(
+            "remote server is not serving the exact packaged frontend",
+          );
+        const wasm = (await readdir(join(web, "assets"))).find((file) =>
+          file.endsWith(".wasm"),
+        );
+        if (!wasm) throw Error("packaged WASM asset is missing");
+        const servedWasm = Buffer.from(
+          await (
+            await fetch(new URL(`assets/${wasm}`, url), {
+              signal: AbortSignal.timeout(5000),
+            })
+          ).arrayBuffer(),
+        );
+        if (!servedWasm.equals(await readFile(join(web, "assets", wasm))))
+          throw Error("remote server is not serving the exact packaged WASM");
+      }
       const page = await browser.newPage({
         viewport: { width: 1280, height: 900 },
       });
@@ -171,9 +214,11 @@ try {
           );
       } finally {
         await page.close();
-        child.kill("SIGTERM");
-        await new Promise((resolve) => child.once("exit", resolve));
-        children.delete(child);
+        if (child) {
+          child.kill("SIGTERM");
+          await new Promise((resolve) => child.once("exit", resolve));
+          children.delete(child);
+        }
       }
     }
   } finally {
@@ -184,7 +229,8 @@ try {
       ok: true,
       archive,
       browser_rendered: true,
-      mount_paths: ["/", "/map/"],
+      mount_paths: mountPaths,
+      browser_host: `${process.platform}-${process.arch}`,
       terrain_pixels: true,
       picking: true,
     }),

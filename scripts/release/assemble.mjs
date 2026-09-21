@@ -145,7 +145,7 @@ await normalizeMtime(root, epoch);
 const rawArchive = `${archive}.tar`;
 const tarArgs =
   process.platform === "darwin"
-    ? ["-C", output, "-cf", rawArchive, rootName]
+    ? ["--format=ustar", "-C", output, "-cf", rawArchive, rootName]
     : [
         "-C",
         output,
@@ -160,7 +160,10 @@ const tarArgs =
         rawArchive,
         rootName,
       ];
-execFileSync("tar", tarArgs, { stdio: "inherit" });
+execFileSync("tar", tarArgs, {
+  stdio: "inherit",
+  env: { ...process.env, COPYFILE_DISABLE: "1" },
+});
 execFileSync("gzip", ["-n", "-f", rawArchive], { stdio: "inherit" });
 await rename(`${rawArchive}.gz`, archive);
 console.log(JSON.stringify({ archive, target, files: files.length }));
