@@ -229,3 +229,123 @@ fn mime(path: &Path) -> &'static str {
 async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, ServerConfig};
+    use sha2::{Digest, Sha256};
+    use std::fs;
+
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let from = entry.path();
+            let to = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&from, &to);
+            } else {
+                fs::copy(from, to).unwrap();
+            }
+        }
+    }
+
+    fn manifest(root: &Path) {
+        fn walk(root: &Path, dir: &Path, records: &mut Vec<serde_json::Value>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    walk(root, &path, records);
+                } else {
+                    let bytes = fs::read(&path).unwrap();
+                    records.push(serde_json::json!({"path":path.strip_prefix(root).unwrap().to_string_lossy(),"sha256":format!("{:x}", Sha256::digest(&bytes)),"bytes":bytes.len()}));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(root, root, &mut files);
+        fs::write(
+            root.join("release-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({"schema_version":1,"files":files})).unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_a_verified_snapshot_only_under_its_configured_prefix() {
+        let temporary = tempfile::tempdir().unwrap();
+        let package = temporary.path().join("package");
+        let resources_root = package.join("share/bedrock-surface-map");
+        fs::create_dir_all(resources_root.join("web/assets")).unwrap();
+        fs::write(
+            resources_root.join("web/index.html"),
+            "<title>Bedrock Surface Map</title>",
+        )
+        .unwrap();
+        fs::write(
+            resources_root.join("web/assets/app.js"),
+            "console.log('fixture')",
+        )
+        .unwrap();
+        fs::create_dir_all(resources_root.join("fixtures/surface-v1")).unwrap();
+        surface_cli::create_synthetic_fixture(&resources_root.join("fixtures/surface-v1")).unwrap();
+        fs::write(package.join("bedrock-map"), "test binary").unwrap();
+        manifest(&package);
+        let resources = Resources::discover(Some(resources_root)).unwrap();
+        let state = State::new(temporary.path().join("state")).unwrap();
+        state.init().unwrap();
+        let staged = state.staging().join("fixture/public");
+        copy_tree(&resources.fixture(), &staged);
+        state
+            .register_staged_dataset(&staged, "c".repeat(64), false)
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = Config {
+            schema_version: 1,
+            server: ServerConfig {
+                bind: address.to_string(),
+                base_path: "/map/".into(),
+            },
+        };
+        let task = tokio::spawn(serve(state, resources, config, listener));
+        let client = reqwest::Client::new();
+        let html = client
+            .get(format!("http://{address}/map/"))
+            .send()
+            .await
+            .unwrap();
+        assert!(html.status().is_success());
+        assert!(html.text().await.unwrap().contains("Bedrock Surface Map"));
+        let config = client
+            .get(format!("http://{address}/map/viewer-config.json"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(config.headers()[header::CACHE_CONTROL], "no-store");
+        let viewer: serde_json::Value =
+            serde_json::from_str(&config.text().await.unwrap()).unwrap();
+        assert!(viewer["map"].as_str().unwrap().starts_with("maps/"));
+        assert_eq!(
+            client
+                .get(format!("http://{address}/config.toml"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            client
+                .get(format!("http://{address}/map/../../active.json"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+        task.abort();
+    }
+}
