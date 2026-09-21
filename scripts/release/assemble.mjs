@@ -6,6 +6,8 @@ import {
   readdir,
   readFile,
   rm,
+  rename,
+  utimes,
   writeFile,
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -18,6 +20,13 @@ const native = resolve(nativeArg),
   common = resolve(commonArg),
   output = resolve(outputArg);
 const version = JSON.parse(await readFile("package.json", "utf8")).version;
+const epoch = Number(
+  execFileSync("git", ["show", "-s", "--format=%ct", "HEAD"], {
+    encoding: "utf8",
+  }).trim(),
+);
+if (!Number.isSafeInteger(epoch) || epoch <= 0)
+  throw Error("invalid source commit timestamp");
 const architecture = target.startsWith("x86_64")
   ? "amd64"
   : target.startsWith("aarch64")
@@ -115,21 +124,28 @@ await writeFile(
 );
 await mkdir(output, { recursive: true });
 const archive = resolve(output, `${rootName}.tar.gz`);
+await normalizeMtime(root, epoch);
+const rawArchive = `${archive}.tar`;
 const tarArgs =
   process.platform === "darwin"
-    ? ["-C", output, "-czf", archive, rootName]
+    ? ["-C", output, "-cf", rawArchive, rootName]
     : [
         "-C",
         output,
         "--sort=name",
+        `--mtime=@${epoch}`,
         "--owner=0",
         "--group=0",
         "--numeric-owner",
-        "-czf",
-        archive,
+        "--format=posix",
+        "--pax-option=delete=atime,delete=ctime",
+        "-cf",
+        rawArchive,
         rootName,
       ];
 execFileSync("tar", tarArgs, { stdio: "inherit" });
+execFileSync("gzip", ["-n", "-f", rawArchive], { stdio: "inherit" });
+await rename(`${rawArchive}.gz`, archive);
 console.log(JSON.stringify({ archive, target, files: files.length }));
 
 async function inventory(root) {
@@ -150,4 +166,15 @@ async function inventory(root) {
   }
   await walk(root);
   return records.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function normalizeMtime(path, timestamp) {
+  for (const entry of await readdir(path, { withFileTypes: true })) {
+    const child = resolve(path, entry.name);
+    if (entry.isDirectory()) await normalizeMtime(child, timestamp);
+    else if (!entry.isFile())
+      throw Error(`unsupported release entry: ${child}`);
+    await utimes(child, timestamp, timestamp);
+  }
+  await utimes(path, timestamp, timestamp);
 }

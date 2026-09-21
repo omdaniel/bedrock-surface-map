@@ -14,6 +14,16 @@ execFileSync(
     stdio: "inherit",
   },
 );
+execFileSync(
+  process.execPath,
+  [
+    "scripts/release/reproducible.mjs",
+    target,
+    resolve(".local/release", target, "native"),
+    resolve(common),
+  ],
+  { stdio: "inherit" },
+);
 const version = JSON.parse(
   await (await import("node:fs/promises")).readFile("package.json", "utf8"),
 ).version;
