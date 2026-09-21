@@ -13,9 +13,9 @@ const BUILD_COMMIT: &str = env!("BEDROCK_MAP_BUILD_COMMIT");
     about = "Serve immutable Bedrock Surface Map snapshots"
 )]
 struct Args {
-    #[arg(long, env = "BEDROCK_MAP_STATE")]
+    #[arg(long, global = true, env = "BEDROCK_MAP_STATE")]
     state: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, global = true)]
     resources: Option<PathBuf>,
     #[arg(long, global = true)]
     json: bool,
@@ -262,11 +262,10 @@ async fn run() -> Result<()> {
         }
         Command::Doctor { url } => {
             let config = state.config()?;
-            let resources = args
-                .resources
-                .as_ref()
-                .map(|_| resource(&args))
-                .transpose()?;
+            // A packaged invocation normally discovers resources adjacent to
+            // its executable. Doctor reports discovery failures as a check
+            // result instead of requiring an otherwise unnecessary flag.
+            let resources = resource(&args).ok();
             let report = doctor::check(&state, resources.as_ref(), &config);
             if let Some(url) = url {
                 ensure!(

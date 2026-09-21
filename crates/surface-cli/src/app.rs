@@ -90,9 +90,9 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
 
 /// Parameters for a complete, read-only offline snapshot import.
 ///
-/// Callers own both output and scratch directories. This keeps the importer
-/// independent of a checkout-local `.local` directory and lets an operator
-/// transaction place both paths on one filesystem.
+/// Callers own both output and scratch directories. The importer makes its
+/// scratch tree private before extracting an offline world, independent of a
+/// checkout-local `.local` directory or the caller's umask.
 #[derive(Debug, Clone)]
 pub struct ImportOptions {
     pub input_archive: PathBuf,
@@ -158,6 +158,24 @@ fn unpack(input: &Path, cache: &Path) -> Result<()> {
         cache.join("db/CURRENT").is_file() && cache.join("level.dat").is_file(),
         "world files must be at archive root"
     );
+    Ok(())
+}
+
+fn create_private_directory(path: &Path) -> Result<()> {
+    if path.exists() {
+        let metadata = fs::symlink_metadata(path)?;
+        ensure!(
+            !metadata.file_type().is_symlink() && metadata.is_dir(),
+            "scratch directory must be a real directory"
+        );
+    } else {
+        fs::create_dir_all(path)?;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    }
     Ok(())
 }
 
@@ -335,12 +353,14 @@ pub fn import_snapshot(options: &ImportOptions) -> Result<ImportReport> {
     );
     let start = Instant::now();
     let source = file_hash(&options.input_archive)?;
+    create_private_directory(&options.scratch_directory)?;
     let cache = options.scratch_directory.join("world");
     ensure!(
         !cache.exists(),
         "scratch world directory already exists; use an operation-owned empty scratch directory"
     );
-    fs::create_dir_all(&cache)?;
+    fs::create_dir(&cache)?;
+    create_private_directory(&cache)?;
     unpack(&options.input_archive, &cache)?;
     if options.surface_only {
         return stream_publish(
@@ -759,6 +779,26 @@ mod tests {
             serde_json::from_slice(&fs::read(temp.join("output/manifest.json")).unwrap()).unwrap();
         assert_eq!(manifest.bounds, [-256, -256, 0, 0]);
         assert_eq!(manifest.regions.len(), 1);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(temp.join("scratch"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(temp.join("scratch/world"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+        }
         fs::remove_dir_all(temp).unwrap();
     }
 }

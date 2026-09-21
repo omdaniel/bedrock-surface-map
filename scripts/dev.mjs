@@ -44,6 +44,9 @@ try {
     console.log(JSON.stringify(report, null, 2));
   } else if (command === "setup") {
     prerequisites();
+    const setupEnv = offline
+      ? { ...process.env, CARGO_NET_OFFLINE: "true", npm_config_offline: "true" }
+      : process.env;
     if (offline) {
       await cached(resolve(root, "node_modules"), "npm dependencies");
       if (!probe("wasm-bindgen", ["--version"])?.includes("0.2.127"))
@@ -70,7 +73,7 @@ try {
           "0.2.127",
           "--locked",
         ]);
-      run("npm", ["ci"], { cwd: root });
+      run("npm", ["ci"], { cwd: root, env: setupEnv });
     }
     // The scanner is project-local. It does not change Git configuration unless
     // the caller separately asks to install the optional hook path.
@@ -91,7 +94,7 @@ try {
       });
       console.log(`Installed project hooks with ${scanner}`);
     }
-    run("npm", ["run", "wasm"], { cwd: root });
+    run("npm", ["run", "wasm"], { cwd: root, env: setupEnv });
     run(
       "cargo",
       [
@@ -105,7 +108,7 @@ try {
         "--output",
         "web/public/maps/fixture",
       ],
-      { cwd: root },
+      { cwd: root, env: setupEnv },
     );
     console.log(
       `Developer setup complete with ${scanner}. No Minecraft assets were downloaded.`,
