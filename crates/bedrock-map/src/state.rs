@@ -87,7 +87,9 @@ impl State {
         );
         let root = self.staging();
         reject_symlink(&root)?;
-        Ok(tempfile::Builder::new().prefix(prefix).tempdir_in(root)?)
+        let operation = tempfile::Builder::new().prefix(prefix).tempdir_in(root)?;
+        create_private_dir(operation.path())?;
+        Ok(operation)
     }
     pub fn asset_archive(&self, sha256: &str) -> Result<PathBuf> {
         ensure!(valid_hash(sha256), "E_ASSET_HASH: invalid asset checksum");
@@ -404,6 +406,21 @@ fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> Result<()>) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn operation_directory_is_private_before_extraction() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let state = State::new(temporary.path().join("state")).unwrap();
+        state.init().unwrap();
+        let operation = state.operation("import").unwrap();
+        assert_eq!(
+            fs::metadata(operation.path()).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum FailurePoint {
