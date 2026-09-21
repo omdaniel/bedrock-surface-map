@@ -308,6 +308,35 @@ mod tests {
         state
             .register_staged_dataset(&staged, "c".repeat(64), false)
             .unwrap();
+        let root_app = App {
+            state: state.clone(),
+            resources: resources.clone(),
+            base_path: "/".into(),
+        };
+        let root = handle(
+            AxumState(Arc::new(root_app.clone())),
+            Request::builder().uri("/").body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(root.status(), StatusCode::OK);
+        let head = handle(
+            AxumState(Arc::new(root_app)),
+            Request::builder()
+                .method("HEAD")
+                .uri("/assets/app.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(head.status(), StatusCode::OK);
+        assert_eq!(
+            head.headers()[header::CONTENT_TYPE],
+            "text/javascript; charset=utf-8"
+        );
+        assert_eq!(
+            head.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let config = Config {
