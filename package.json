@@ -21,6 +21,7 @@
     "tracking:test": "node --test tracking/pack/test/*.test.ts tracking/test/*.test.ts scripts/tracker-proxy.test.mjs",
     "bootstrap": "node scripts/bootstrap.mjs",
     "package:linux": "node scripts/release/build-package.mjs",
+    "release:audit": "node scripts/release/audit.mjs",
     "assets": "node scripts/assets.mjs",
     "wasm": "node scripts/wasm.mjs",
     "import": "cargo run --release --locked -p surface-cli -- import",

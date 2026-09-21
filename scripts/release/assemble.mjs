@@ -37,6 +37,10 @@ await mkdir(resolve(root, "share/bedrock-surface-map/packs"), {
   recursive: true,
   mode: 0o755,
 });
+await mkdir(resolve(root, "share/bedrock-surface-map/provenance"), {
+  recursive: true,
+  mode: 0o755,
+});
 for (const binary of [
   "bedrock-map",
   "surface-map",
@@ -77,6 +81,7 @@ await cp(
   resolve(root, "share/bedrock-surface-map/packs/tracking"),
   { recursive: true },
 );
+await cp("sources/mojang.json", resolve(root, "share/bedrock-surface-map/provenance/mojang.json"));
 for (const file of ["LICENSE", "THIRD_PARTY.md"])
   await cp(file, resolve(root, file));
 await writeFile(

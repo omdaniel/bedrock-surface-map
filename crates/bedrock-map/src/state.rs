@@ -54,6 +54,25 @@ impl State {
     pub fn staging(&self) -> PathBuf {
         self.root.join("staging")
     }
+    pub fn asset_archive(&self, sha256: &str) -> Result<PathBuf> {
+        ensure!(valid_hash(sha256), "E_ASSET_HASH: invalid asset checksum");
+        let path = self
+            .root
+            .join("assets/archives")
+            .join(format!("{sha256}.zip"));
+        ensure!(
+            path.is_file(),
+            "E_ASSET_MISSING: supported material asset archive is not available"
+        );
+        Ok(path)
+    }
+    pub fn asset_record_path(&self, sha256: &str) -> Result<PathBuf> {
+        ensure!(valid_hash(sha256), "E_ASSET_HASH: invalid asset checksum");
+        Ok(self
+            .root
+            .join("assets/records")
+            .join(format!("{sha256}.json")))
+    }
 
     pub fn init(&self) -> Result<Config> {
         if self.root.exists() {

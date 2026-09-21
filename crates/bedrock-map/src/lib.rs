@@ -3,6 +3,7 @@
 //! This crate intentionally has no live-BDS, tracking, or terrain-ingest
 //! dependency. It serves verified immutable snapshot data from operator state.
 
+pub mod assets;
 pub mod config;
 pub mod doctor;
 pub mod resources;

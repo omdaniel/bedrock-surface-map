@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
 const target = process.argv[2] ?? "x86_64-unknown-linux-musl";
@@ -49,4 +50,34 @@ execFileSync(
     resolve(stage, "dist"),
   ],
   { stdio: "inherit" },
+);
+const dist = resolve(stage, "dist");
+const version = JSON.parse(await readFile("package.json", "utf8")).version;
+const source = resolve(dist, `bedrock-surface-map-v${version}-source.tar.gz`);
+execFileSync(
+  "git",
+  ["archive", "--format=tar.gz", "--output", source, "HEAD"],
+  {
+    stdio: "inherit",
+  },
+);
+const archives = (await readdir(dist)).filter((name) =>
+  name.endsWith(".tar.gz"),
+);
+const sums = [];
+for (const name of archives) {
+  const digest = createHash("sha256")
+    .update(await readFile(resolve(dist, name)))
+    .digest("hex");
+  sums.push(`${digest}  ${name}`);
+}
+await writeFile(resolve(dist, "SHA256SUMS"), sums.sort().join("\n") + "\n");
+const release = archives.find((name) => name.includes("-linux-"));
+if (!release) throw Error("platform archive missing");
+execFileSync(
+  process.execPath,
+  ["scripts/release/audit.mjs", resolve(dist, release)],
+  {
+    stdio: "inherit",
+  },
 );

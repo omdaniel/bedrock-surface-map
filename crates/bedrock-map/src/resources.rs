@@ -57,6 +57,9 @@ impl Resources {
     pub fn fixture(&self) -> PathBuf {
         self.root.join("fixtures/surface-v1")
     }
+    pub fn mojang_source(&self) -> PathBuf {
+        self.root.join("provenance/mojang.json")
+    }
     pub fn release_manifest(&self) -> PathBuf {
         self.root
             .parent()

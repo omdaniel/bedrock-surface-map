@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail, ensure};
-use bedrock_map::{config, doctor, resources::Resources, result, server, state::State};
+use bedrock_map::{assets, config, doctor, resources::Resources, result, server, state::State};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -32,7 +32,7 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
         #[arg(long)]
-        assets: PathBuf,
+        assets: Option<PathBuf>,
         #[arg(long, default_value = "Bedrock World")]
         name: String,
         #[arg(long)]
@@ -169,11 +169,27 @@ async fn run() -> Result<()> {
                 .join(format!("import-{}", std::process::id()));
             fs::create_dir(&operation)?;
             let public = operation.join("public");
+            let asset_archive = match assets {
+                Some(archive) => {
+                    let digest = assets::verify(archive, None)?;
+                    bedrock_map::state::write_atomic(
+                        &state.asset_record_path(&digest)?,
+                        &serde_json::to_vec_pretty(
+                            &json!({"schema_version":1,"provenance":"user_supplied","sha256":digest}),
+                        )?,
+                    )?;
+                    archive.clone()
+                }
+                None => {
+                    let resources = resource(&args)?;
+                    state.asset_archive(&assets::managed_digest(&resources)?)?
+                }
+            };
             let report = surface_cli::import_snapshot(&surface_cli::ImportOptions {
                 input_archive: input.clone(),
                 output_directory: public.clone(),
                 scratch_directory: operation.join("scratch"),
-                asset_archive: assets.clone(),
+                asset_archive,
                 display_name: name.clone(),
                 surface_only: false,
             });
@@ -259,13 +275,7 @@ async fn run() -> Result<()> {
                 archive,
                 expected_asset_sha256,
             } => {
-                let found = hash_file(archive)?;
-                if let Some(expected) = expected_asset_sha256 {
-                    ensure!(
-                        expected == &found,
-                        "E_ASSET_HASH: supplied asset archive checksum differs"
-                    );
-                }
+                let found = assets::verify(archive, expected_asset_sha256.as_deref())?;
                 print(
                     result(
                         "assets.verify",
@@ -281,8 +291,15 @@ async fn run() -> Result<()> {
                     *acknowledge_asset_terms,
                     "E_NETWORK: assets fetch requires --acknowledge-asset-terms"
                 );
-                bail!(
-                    "E_NETWORK: managed asset fetching is not implemented yet; provide --assets to import instead"
+                let _lock = state.lock_mutation()?;
+                let resources = resource(&args)?;
+                let (archive, sha256) = assets::fetch(&state, &resources).await?;
+                print(
+                    result(
+                        "assets.fetch",
+                        json!({"archive":archive,"sha256":sha256,"provenance":"verified_mojang"}),
+                    )?,
+                    args.json,
                 );
             }
         },
