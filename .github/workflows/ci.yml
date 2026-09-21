@@ -73,6 +73,12 @@ jobs:
       WGPU_BACKEND: vulkan
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Verify exact candidate commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: '26.8.1'
@@ -104,7 +110,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: native-amd64-${{ github.sha }}
+          name: native-amd64-${{ github.event.pull_request.head.sha || github.sha }}
           path: .local/release/x86_64-unknown-linux-musl/dist/
           if-no-files-found: ignore
           retention-days: 14
