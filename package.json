@@ -22,7 +22,7 @@
     "bootstrap": "node scripts/bootstrap.mjs",
     "package:linux": "node scripts/release/build-package.mjs",
     "release:audit": "node scripts/release/audit.mjs",
-    "release:test": "node --test scripts/release/*.test.mjs",
+    "release:test": "node --test scripts/release/*.test.mjs scripts/onramp/*.test.mjs",
     "secrets:check": "node scripts/scan-secrets.mjs",
     "assets": "node scripts/assets.mjs",
     "wasm": "node scripts/wasm.mjs",

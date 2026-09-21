@@ -27,6 +27,7 @@ process.env.PATH = `${resolve(wasmRoot, "bin")}:${process.env.PATH ?? ""}`;
 if (offline) {
   process.env.CARGO_NET_OFFLINE = "true";
   process.env.npm_config_offline = "true";
+  process.env.RUSTUP_AUTO_INSTALL = "0";
 }
 
 function requireVersion(command, args, expected, label) {
@@ -38,6 +39,16 @@ function requireVersion(command, args, expected, label) {
 }
 function prerequisites() {
   requireVersion("node", ["--version"], nodePin, "Node");
+  if (offline) {
+    const installed = probe("rustup", ["toolchain", "list"]);
+    if (
+      !installed?.split("\n").some((line) => {
+        const name = line.split(/\s/, 1)[0];
+        return name === rustPin || name.startsWith(`${rustPin}-`);
+      })
+    )
+      throw new Error(`Offline setup is missing Rust toolchain ${rustPin}`);
+  }
   requireVersion("rustc", ["--version"], rustPin, "Rust");
   if (!probe("git", ["--version"])) throw new Error("Git is required");
 }

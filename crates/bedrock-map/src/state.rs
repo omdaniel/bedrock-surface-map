@@ -169,7 +169,12 @@ impl State {
     pub fn active_validated(&self) -> Result<Option<ActiveDataset>> {
         let active = self.active()?;
         if let Some(selected) = &active {
-            validate_public_tree(&self.datasets().join(&selected.dataset_id).join("public"))?;
+            let public = self.datasets().join(&selected.dataset_id).join("public");
+            validate_public_tree(&public)?;
+            ensure!(
+                tree_hash(&public)? == selected.dataset_id,
+                "E_RESOURCE_MISMATCH: selected immutable dataset differs from its identity"
+            );
         }
         Ok(active)
     }

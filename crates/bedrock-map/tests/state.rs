@@ -157,3 +157,24 @@ fn runtime_validation_detects_modified_immutable_objects() {
     fs::write(public.join(&manifest.regions[0].url), b"tampered").unwrap();
     assert!(state.active_validated().is_err());
 }
+
+#[test]
+fn runtime_validation_rejects_modified_unhashed_notice() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = State::new(temp.path().join("state")).unwrap();
+    state.init().unwrap();
+    let public = state.staging().join("candidate/public");
+    fixture(&public);
+    let selected = state
+        .register_staged_dataset(&public, sha(), false)
+        .unwrap();
+    let public = state.datasets().join(selected.dataset_id).join("public");
+    fs::write(public.join("assets/NOTICE.txt"), b"tampered notice").unwrap();
+    assert!(
+        state
+            .active_validated()
+            .unwrap_err()
+            .to_string()
+            .contains("E_RESOURCE_MISMATCH")
+    );
+}
