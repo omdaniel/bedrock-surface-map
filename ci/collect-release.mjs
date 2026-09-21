@@ -18,7 +18,13 @@ for (const source of sources.map((source) => resolve(source))) {
     try {
       await cp(resolve(source, name), target, { errorOnExist: true });
     } catch (error) {
-      if (name.endsWith("-source.tar.gz")) continue;
+      if (name.endsWith("-source.tar.gz")) {
+        const existing = await readFile(target);
+        const duplicate = await readFile(resolve(source, name));
+        if (!existing.equals(duplicate))
+          throw Error(`source archive differs between target jobs: ${name}`);
+        continue;
+      }
       throw error;
     }
   }

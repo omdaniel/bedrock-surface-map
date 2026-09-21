@@ -85,11 +85,21 @@ await cp(
   "sources/mojang.json",
   resolve(root, "share/bedrock-surface-map/provenance/mojang.json"),
 );
+await cp(
+  resolve(common, "common-manifest.json"),
+  resolve(root, "share/bedrock-surface-map/provenance/common-manifest.json"),
+);
 for (const file of ["LICENSE", "THIRD_PARTY.md"])
   await cp(file, resolve(root, file));
 await writeFile(
   resolve(root, "README.txt"),
-  "Bedrock Surface Map snapshot runtime. See docs/INSTALL.md in the source archive.\n",
+  `Bedrock Surface Map snapshot runtime\n\n` +
+    `1. ./bedrock-map init --state ./map-data\n` +
+    `2. ./bedrock-map demo --state ./map-data\n` +
+    `3. ./bedrock-map serve --state ./map-data\n\n` +
+    `The service prints a loopback URL. To import an offline .mcworld, fetch assets explicitly:\n` +
+    `./bedrock-map assets fetch --state ./map-data --acknowledge-asset-terms\n` +
+    `Then run ./bedrock-map import --state ./map-data --input /path/to/world.mcworld --name "My World" --replace-active\n`,
 );
 const files = await inventory(root);
 const commit = execFileSync("git", ["rev-parse", "HEAD"], {
