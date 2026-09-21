@@ -1,10 +1,41 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { test } from "node:test";
+import { platformFor } from "./tools.mjs";
+import { probe } from "./process.mjs";
+
+test("unsupported developer platforms are rejected before setup work", () => {
+  assert.equal(platformFor("darwin", "arm64"), "darwin-arm64");
+  assert.equal(platformFor("linux", "x64"), "linux-x86_64");
+  assert.throws(
+    () => platformFor("win32", "x64"),
+    /Unsupported developer-tool platform/,
+  );
+});
+
+test("Git preference probes use the selected checkout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "bedrock-hooks-checkout-"));
+  try {
+    assert.equal(spawnSync("git", ["init", root]).status, 0);
+    assert.equal(
+      spawnSync("git", ["-C", root, "config", "core.hooksPath", "custom-hooks"])
+        .status,
+      0,
+    );
+    assert.equal(
+      probe("git", ["config", "--local", "--get", "core.hooksPath"], {
+        cwd: root,
+      }),
+      "custom-hooks",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("offline setup rejects a missing Rust toolchain without contacting rustup", async () => {
   const home = await mkdtemp(join(tmpdir(), "bedrock-rustup-empty-"));

@@ -13,15 +13,14 @@ export async function readPins(root) {
 }
 
 export function platform() {
-  if (process.platform === "darwin" && process.arch === "arm64")
-    return "darwin-arm64";
-  if (process.platform === "linux" && process.arch === "x64")
-    return "linux-x86_64";
-  if (process.platform === "linux" && process.arch === "arm64")
-    return "linux-aarch64";
-  throw new Error(
-    `Unsupported developer-tool platform: ${process.platform}-${process.arch}`,
-  );
+  return platformFor(process.platform, process.arch);
+}
+
+export function platformFor(os, arch) {
+  if (os === "darwin" && arch === "arm64") return "darwin-arm64";
+  if (os === "linux" && arch === "x64") return "linux-x86_64";
+  if (os === "linux" && arch === "arm64") return "linux-aarch64";
+  throw new Error(`Unsupported developer-tool platform: ${os}-${arch}`);
 }
 
 export async function checksum(path) {

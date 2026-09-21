@@ -13,7 +13,10 @@ export function run(command, args, options = {}) {
   return result.stdout ?? "";
 }
 
-export function probe(command, args) {
-  const result = spawnSync(command, args, { encoding: "utf8" });
+export function probe(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    cwd: options.cwd,
+  });
   return result.status === 0 ? result.stdout.trim() : null;
 }

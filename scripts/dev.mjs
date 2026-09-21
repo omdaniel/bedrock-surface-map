@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { probe, run } from "./onramp/process.mjs";
-import { installGitleaks, readPins } from "./onramp/tools.mjs";
+import { installGitleaks, platform, readPins } from "./onramp/tools.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const [command = "doctor", ...arguments_] = process.argv.slice(2);
@@ -65,6 +65,18 @@ try {
     };
     console.log(JSON.stringify(report, null, 2));
   } else if (command === "setup") {
+    const host = platform();
+    if (!pins.gitleaks.archives[host])
+      throw new Error(`No verified Gitleaks archive for ${host}`);
+    if (hooks) {
+      const existing = probe("git", ["config", "--local", "--get", "core.hooksPath"], {
+        cwd: root,
+      });
+      if (existing && existing !== ".githooks")
+        throw new Error(
+          `Existing repository hook path is not project-owned: ${existing}`,
+        );
+    }
     prerequisites();
     const setupEnv = process.env;
     if (offline) {
@@ -119,16 +131,6 @@ try {
     // the caller separately asks to install the optional hook path.
     const scanner = await installGitleaks(root, pins, offline);
     if (hooks) {
-      const existing = probe("git", [
-        "config",
-        "--local",
-        "--get",
-        "core.hooksPath",
-      ]);
-      if (existing && existing !== ".githooks")
-        throw new Error(
-          `Existing repository hook path is not project-owned: ${existing}`,
-        );
       run("git", ["config", "--local", "core.hooksPath", ".githooks"], {
         cwd: root,
       });

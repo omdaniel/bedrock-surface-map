@@ -7,7 +7,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -203,6 +203,19 @@ impl State {
         Ok(Some(public))
     }
 
+    pub fn registered_inventory(&self, id: &str) -> Result<Option<HashMap<PathBuf, String>>> {
+        let Some(public) = self.registered(id)? else {
+            return Ok(None);
+        };
+        validate_public_tree(&public)?;
+        let (actual_id, files) = tree_inventory(&public)?;
+        ensure!(
+            actual_id == id,
+            "E_RESOURCE_MISMATCH: registered immutable dataset differs from its identity"
+        );
+        Ok(Some(files))
+    }
+
     pub fn register_staged_dataset(
         &self,
         staged_public: &Path,
@@ -367,14 +380,18 @@ fn validate_public_tree(root: &Path) -> Result<()> {
 }
 
 fn tree_hash(root: &Path) -> Result<String> {
+    Ok(tree_inventory(root)?.0)
+}
+
+fn tree_inventory(root: &Path) -> Result<(String, HashMap<PathBuf, String>)> {
     let mut records = Vec::new();
+    let mut files = HashMap::new();
     walk(root, &mut |path| {
         let relative = path.strip_prefix(root).context("tree escaped root")?;
         let bytes = fs::read(path)?;
-        records.push((
-            relative.to_string_lossy().replace('\\', "/"),
-            Sha256::digest(&bytes),
-        ));
+        let digest = Sha256::digest(&bytes);
+        files.insert(relative.to_path_buf(), format!("{digest:x}"));
+        records.push((relative.to_string_lossy().replace('\\', "/"), digest));
         Ok(())
     })?;
     records.sort_by(|left, right| left.0.cmp(&right.0));
@@ -384,7 +401,7 @@ fn tree_hash(root: &Path) -> Result<String> {
         hash.update([0]);
         hash.update(digest);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok((format!("{:x}", hash.finalize()), files))
 }
 
 fn walk(root: &Path, visit: &mut impl FnMut(&Path) -> Result<()>) -> Result<()> {

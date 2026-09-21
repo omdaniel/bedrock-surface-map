@@ -14,9 +14,10 @@ use axum::{
 };
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 #[derive(Clone)]
@@ -24,6 +25,7 @@ struct App {
     state: State,
     resources: Resources,
     base_path: String,
+    map_hashes: Arc<Mutex<HashMap<String, HashMap<PathBuf, String>>>>,
 }
 
 pub async fn serve(
@@ -39,6 +41,7 @@ pub async fn serve(
         state,
         resources,
         base_path: config.server.base_path,
+        map_hashes: Arc::new(Mutex::new(HashMap::new())),
     };
     axum::serve(listener, router(app))
         .with_graceful_shutdown(shutdown())
@@ -84,13 +87,13 @@ async fn handle(AxumState(app): AxumState<Arc<App>>, request: Request) -> Respon
         return json_response(serde_json::json!({"ok":true}), "no-store");
     }
     if without_base == "api/v1/health/ready" {
-        return match app.state.active() {
+        return match app.state.active_validated() {
             Ok(Some(_)) => json_response(
                 serde_json::json!({"service":"bedrock-map","ready":true}),
                 "no-store",
             ),
             Ok(None) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
-            Err(error) => error_response(error),
+            Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
         };
     }
     let response = (|| -> Result<Response> {
@@ -105,7 +108,13 @@ async fn handle(AxumState(app): AxumState<Arc<App>>, request: Request) -> Respon
                 .registered(id)?
                 .context("dataset is not registered")?;
             resolve_child(&public, rest).and_then(|file| {
-                file_response(&file, &request, "public, max-age=31536000, immutable")
+                let expected = expected_map_digest(&app, id, &public, &file)?;
+                file_response_verified(
+                    &file,
+                    &request,
+                    "public, max-age=31536000, immutable",
+                    &expected,
+                )
             })
         } else {
             anyhow::bail!("not found")
@@ -117,7 +126,7 @@ async fn handle(AxumState(app): AxumState<Arc<App>>, request: Request) -> Respon
 fn viewer_config(app: &App, request: &Request) -> Result<Response> {
     let active = app
         .state
-        .active()?
+        .active_validated()?
         .context("E_NO_DATASET: no selected dataset")?;
     json_response_with_request(
         serde_json::json!({"map": format!("maps/{}/manifest.json", active.dataset_id)}),
@@ -137,9 +146,53 @@ fn resolve_child(root: &Path, relative: &str) -> Result<PathBuf> {
     Ok(canonical)
 }
 
+fn expected_map_digest(app: &App, id: &str, public: &Path, file: &Path) -> Result<String> {
+    let root = fs::canonicalize(public)?;
+    let relative = file.strip_prefix(root)?.to_path_buf();
+    let mut inventories = app
+        .map_hashes
+        .lock()
+        .map_err(|_| anyhow::anyhow!("E_STATE_UNSAFE: map inventory lock failed"))?;
+    if !inventories.contains_key(id) {
+        let files = app
+            .state
+            .registered_inventory(id)?
+            .context("registered dataset is unavailable")?;
+        inventories.insert(id.to_owned(), files);
+    }
+    inventories
+        .get(id)
+        .and_then(|files| files.get(&relative))
+        .cloned()
+        .context("E_RESOURCE_MISMATCH: unlisted immutable map object")
+}
+
 fn file_response(path: &Path, request: &Request, cache: &str) -> Result<Response> {
+    file_response_inner(path, request, cache, None)
+}
+
+fn file_response_verified(
+    path: &Path,
+    request: &Request,
+    cache: &str,
+    expected: &str,
+) -> Result<Response> {
+    file_response_inner(path, request, cache, Some(expected))
+}
+
+fn file_response_inner(
+    path: &Path,
+    request: &Request,
+    cache: &str,
+    expected: Option<&str>,
+) -> Result<Response> {
     let bytes = fs::read(path)?;
-    let tag = format!("\"{:x}\"", Sha256::digest(&bytes));
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    ensure!(
+        expected.is_none_or(|expected| expected == digest),
+        "E_RESOURCE_MISMATCH: immutable map object changed"
+    );
+    let tag = format!("\"{digest}\"");
     if request
         .headers()
         .get(header::IF_NONE_MATCH)
@@ -326,6 +379,7 @@ mod tests {
             state: state.clone(),
             resources: resources.clone(),
             base_path: "/".into(),
+            map_hashes: Arc::new(Mutex::new(HashMap::new())),
         };
         let root = handle(
             AxumState(Arc::new(root_app.clone())),
@@ -416,6 +470,44 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains(&second.dataset_id)
+        );
+        let notice = format!(
+            "http://{address}/map/maps/{}/assets/NOTICE.txt",
+            second.dataset_id
+        );
+        assert_eq!(
+            client.get(&notice).send().await.unwrap().status(),
+            StatusCode::OK
+        );
+        fs::write(
+            state
+                .datasets()
+                .join(&second.dataset_id)
+                .join("public/assets/NOTICE.txt"),
+            "tampered while serving",
+        )
+        .unwrap();
+        assert_eq!(
+            client.get(&notice).send().await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            client
+                .get(format!("http://{address}/map/api/v1/health/ready"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_ne!(
+            client
+                .get(format!("http://{address}/map/viewer-config.json"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
         );
         assert_eq!(
             client
