@@ -4,6 +4,7 @@ export function assertBrowserEvidence(report, archiveSha256, commit) {
     report.browser_rendered !== true ||
     report.terrain_pixels !== true ||
     report.picking !== true ||
+    report.unsupported_webgpu !== true ||
     report.archive_sha256 !== archiveSha256 ||
     report.commit !== commit ||
     !/^[a-z0-9]+-(?:arm64|x64)$/.test(report.browser_host ?? "") ||

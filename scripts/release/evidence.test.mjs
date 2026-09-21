@@ -8,6 +8,7 @@ test("cross-host browser evidence binds both mounts to exact archive and commit"
     browser_rendered: true,
     terrain_pixels: true,
     picking: true,
+    unsupported_webgpu: true,
     browser_host: "darwin-arm64",
     mount_paths: ["/", "/map/"],
     archive_sha256: "a".repeat(64),
@@ -22,6 +23,7 @@ test("cross-host browser evidence binds both mounts to exact archive and commit"
     { commit: "d".repeat(40) },
     { mount_paths: ["/"] },
     { terrain_pixels: false },
+    { unsupported_webgpu: false },
     { browser_host: "" },
   ]) {
     assert.throws(

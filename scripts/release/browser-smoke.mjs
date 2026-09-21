@@ -224,6 +224,24 @@ try {
           throw Error(
             `browser failures: ${[...errors, ...failures].join("; ")}`,
           );
+        const unsupported = await browser.newPage();
+        try {
+          await unsupported.addInitScript(() => {
+            delete Navigator.prototype.gpu;
+          });
+          await unsupported.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000,
+          });
+          await unsupported
+            .locator("#message")
+            .filter({ hasText: "WebGPU is unavailable" })
+            .waitFor({ timeout: 10000 });
+          if (await unsupported.evaluate(() => window.__map?.ready === true))
+            throw Error("unsupported browser reported a ready WebGPU map");
+        } finally {
+          await unsupported.close();
+        }
       } finally {
         await page.close();
         if (child) {
@@ -254,6 +272,7 @@ try {
       browser_host: `${process.platform}-${process.arch}`,
       terrain_pixels: true,
       picking: true,
+      unsupported_webgpu: true,
     }),
   );
 } finally {
