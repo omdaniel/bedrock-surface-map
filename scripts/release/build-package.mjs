@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 
 const target = process.argv[2] ?? "x86_64-unknown-linux-musl";
+if (execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim())
+  throw Error("release package requires a clean tracked checkout");
 const stage = resolve(".local/release", target);
 await rm(stage, { recursive: true, force: true });
 await mkdir(stage, { recursive: true, mode: 0o700 });

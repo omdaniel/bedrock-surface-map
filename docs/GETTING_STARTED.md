@@ -19,18 +19,20 @@ Install the pinned tooling without downloading Minecraft textures:
 ```sh
 git clone https://github.com/omdaniel/bedrock-surface-map.git
 cd bedrock-surface-map
-sh scripts/install-dev-tools.sh
-rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.127 --locked
-npm ci
-npm run wasm
-npm run demo:prepare
-npm run demo:dev
+./dev doctor
+./dev setup
+./dev demo
 ```
 
-Open <http://127.0.0.1:5180/bedrock-surface-map/>. The downloaded packet is verified
-against the committed SHA-256. Only reviewed public assets are staged; no local
-world directory is served. `npm run demo:build` creates `.local/demo-dist`.
+Open the loopback URL printed by Vite. This source path creates a synthetic
+fixture and does not download Minecraft assets. The public showcase is a
+separate reviewed demo packet; `npm run demo:build` creates `.local/demo-dist`.
+
+## Run a Linux Release
+
+See [archive installation](INSTALL.md) for the synthetic and offline-snapshot
+paths. The release executable is separate from the source developer workflow.
+It serves only loopback by default and never manages a game server.
 
 ## Import Your Own Snapshot
 

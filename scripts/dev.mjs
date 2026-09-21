@@ -109,7 +109,10 @@ try {
       "Developer setup complete. No Minecraft assets were downloaded.",
     );
   } else if (command === "demo") {
-    run("npm", ["run", "dev", "--", "--host", "127.0.0.1"], { cwd: root });
+    run("npm", ["run", "dev", "--", "--host", "127.0.0.1"], {
+      cwd: root,
+      env: { ...process.env, SURFACE_MAP: "maps/fixture/manifest.json" },
+    });
   } else if (command === "check") {
     const profile = arguments_[arguments_.indexOf("--profile") + 1] ?? "fast";
     run("cargo", ["fmt", "--all", "--check"], { cwd: root });
@@ -134,7 +137,11 @@ try {
       "cargo-zigbuild",
     );
     requireVersion("python-zig", ["version"], pins.zig.version, "Zig");
-    run("node", ["scripts/release/build-package.mjs", target], { cwd: root });
+    const zig = probe("which", ["python-zig"]);
+    run("node", ["scripts/release/build-package.mjs", target], {
+      cwd: root,
+      env: { ...process.env, CARGO_ZIGBUILD_ZIG_PATH: zig },
+    });
   } else throw new Error(`Unknown dev command: ${command}`);
 } catch (error) {
   console.error(`dev: ${error.message}`);
