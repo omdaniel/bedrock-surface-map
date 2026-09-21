@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { resolve } from "node:path";
+import { assertBrowserEvidence } from "../scripts/release/evidence.mjs";
 
 const [destination, ...sources] = process.argv.slice(2);
 if (!destination || sources.length < 2) {
@@ -100,11 +101,6 @@ for (const item of evidence) {
     item.native_smoke?.ok !== true ||
     item.native_smoke?.generated_world_import == null ||
     item.native_smoke?.corruption_refused !== true ||
-    item.browser_smoke?.ok !== true ||
-    item.browser_smoke?.terrain_pixels !== true ||
-    item.browser_smoke?.picking !== true ||
-    JSON.stringify(item.browser_smoke?.mount_paths) !==
-      JSON.stringify(["/", "/map/"]) ||
     item.repeat_assembly_sha256 !== item.archive_sha256
   )
     throw Error("native release evidence is missing or inconsistent");
@@ -116,6 +112,7 @@ for (const item of evidence) {
       .digest("hex") !== item.archive_sha256
   )
     throw Error("native evidence does not bind the candidate archive bytes");
+  assertBrowserEvidence(item.browser_smoke, item.archive_sha256, item.commit);
   const releaseManifest = embeddedJson(archive, "/release-manifest.json");
   if (
     releaseManifest.commit !== item.commit ||

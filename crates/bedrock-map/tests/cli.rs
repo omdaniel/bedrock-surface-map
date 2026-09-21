@@ -221,3 +221,48 @@ fn failed_import_does_not_leave_private_staging_or_change_selection() {
     cmd.arg("status");
     assert_eq!(output(cmd, 0)["active"]["dataset_id"], selected);
 }
+
+#[test]
+fn json_errors_use_stdout_and_input_errors_exit_two() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("state");
+    let resources = package(temp.path());
+    let mut cmd = command(&state, &resources);
+    cmd.arg("init");
+    assert_eq!(output(cmd, 0)["ok"], true);
+
+    let archive = temp.path().join("world.mcworld");
+    fs::write(&archive, b"not a world").unwrap();
+    let mut cmd = command(&state, &resources);
+    cmd.arg("import")
+        .arg("--input")
+        .arg(&archive)
+        .arg("--assets")
+        .arg(temp.path().join("missing.zip"));
+    let failed = output(cmd, 2);
+    assert_eq!(failed["ok"], false);
+    assert_eq!(failed["command"], "import");
+    assert_eq!(failed["error"]["code"], "E_ASSET_MISSING");
+
+    let mut cmd = command(&state, &resources);
+    cmd.arg("status").arg("--not-an-option");
+    let usage = output(cmd, 2);
+    assert_eq!(usage["command"], "usage");
+    assert_eq!(usage["error"]["code"], "E_USAGE");
+    let help = Command::new(binary()).arg("--help").output().unwrap();
+    assert_eq!(help.status.code(), Some(0));
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
+
+    let release = temp.path().join("package/release-manifest.json");
+    let original: Value = serde_json::from_slice(&fs::read(&release).unwrap()).unwrap();
+    for field in ["commit", "target", "application_version"] {
+        let mut manifest = original.clone();
+        manifest.as_object_mut().unwrap().remove(field);
+        fs::write(&release, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let mut cmd = command(&state, &resources);
+        cmd.arg("doctor");
+        let doctor = output(cmd, 3);
+        assert_eq!(doctor["ok"], false, "missing {field}");
+        assert_eq!(doctor["checks"][3]["status"], "fail", "missing {field}");
+    }
+}

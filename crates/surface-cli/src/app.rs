@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -109,6 +109,28 @@ pub fn prepare_asset_library(assets: &Path, output: &Path) -> Result<serde_json:
     assets::library(assets, output)
 }
 
+fn central_entry_count(path: &Path, start: u64) -> Result<usize> {
+    let mut file = fs::File::open(path)?;
+    file.seek(SeekFrom::Start(start))?;
+    let mut count = 0usize;
+    loop {
+        let mut signature = [0u8; 4];
+        file.read_exact(&mut signature)?;
+        if signature != [0x50, 0x4b, 0x01, 0x02] {
+            break;
+        }
+        let mut header = [0u8; 42];
+        file.read_exact(&mut header)?;
+        let name = u16::from_le_bytes([header[24], header[25]]) as u64;
+        let extra = u16::from_le_bytes([header[26], header[27]]) as u64;
+        let comment = u16::from_le_bytes([header[28], header[29]]) as u64;
+        file.seek(SeekFrom::Current((name + extra + comment) as i64))?;
+        count += 1;
+        ensure!(count <= 100_000, "archive entry limit");
+    }
+    Ok(count)
+}
+
 fn unpack(input: &Path, cache: &Path) -> Result<()> {
     ensure!(
         matches!(
@@ -118,6 +140,11 @@ fn unpack(input: &Path, cache: &Path) -> Result<()> {
         "input must be an offline .mcworld/.zip archive"
     );
     let mut zip = zip::ZipArchive::new(fs::File::open(input)?)?;
+    // zip's name index discards duplicate records; compare against the physical directory.
+    ensure!(
+        central_entry_count(input, zip.central_directory_start())? == zip.len(),
+        "duplicate or inconsistent archive entries"
+    );
     ensure!(zip.len() <= 100000, "archive entry limit");
     let mut total = 0u64;
     let mut names = std::collections::BTreeSet::new();
@@ -311,7 +338,7 @@ fn stream_publish(
     let (atlas, unsupported) = assets::prepare(assets, output, &mut materials)?;
     ensure!(
         file_hash(input)? == source,
-        "input snapshot changed during extraction"
+        "E_INPUT_CHANGED: input snapshot changed during extraction"
     );
     let report = serde_json::json!({"source_sha256":source,"source_unchanged":true,"surface_only":true,"chunks":extracted.chunks,"regions":refs.len(),"extraction_seconds":extraction_seconds,"total_seconds":start.elapsed().as_secs_f64(),"peak_rss_bytes":peak_rss_bytes(),"verified_samples":extracted.verified_samples,"unsupported_materials":unsupported});
     let manifest = MapManifest {
@@ -345,6 +372,13 @@ fn stream_publish(
 /// Import an offline `.mcworld` or ZIP snapshot into an explicitly supplied
 /// output directory. The input is verified before and after extraction.
 pub fn import_snapshot(options: &ImportOptions) -> Result<ImportReport> {
+    import_snapshot_inner(options, || Ok(()))
+}
+
+fn import_snapshot_inner(
+    options: &ImportOptions,
+    after_unpack: impl FnOnce() -> Result<()>,
+) -> Result<ImportReport> {
     ensure!(
         !options.display_name.is_empty()
             && options.display_name.chars().count() <= 128
@@ -362,6 +396,7 @@ pub fn import_snapshot(options: &ImportOptions) -> Result<ImportReport> {
     fs::create_dir(&cache)?;
     create_private_directory(&cache)?;
     unpack(&options.input_archive, &cache)?;
+    after_unpack()?;
     if options.surface_only {
         return stream_publish(
             &cache,
@@ -385,7 +420,7 @@ pub fn import_snapshot(options: &ImportOptions) -> Result<ImportReport> {
     )?;
     ensure!(
         file_hash(&options.input_archive)? == source,
-        "input snapshot changed during extraction"
+        "E_INPUT_CHANGED: input snapshot changed during extraction"
     );
     let manifest = publish(
         &options.output_directory,
@@ -665,11 +700,14 @@ mod tests {
                 .unwrap(),
         );
         fs::write(root.join("levelname.txt"), "Generated test world\n").unwrap();
-        write_level_dat_document(
-            &root.join("level.dat"),
-            &LevelDatDocument::new(10, bedrock_world::NbtTag::Compound(Default::default())),
-        )
-        .unwrap();
+        let mut level = bedrock_world::NbtTag::Compound(Default::default());
+        if let bedrock_world::NbtTag::Compound(values) = &mut level {
+            values.insert("SpawnX".into(), bedrock_world::NbtTag::Int(-8));
+            values.insert("SpawnY".into(), bedrock_world::NbtTag::Int(64));
+            values.insert("SpawnZ".into(), bedrock_world::NbtTag::Int(-8));
+        }
+        write_level_dat_document(&root.join("level.dat"), &LevelDatDocument::new(10, level))
+            .unwrap();
 
         let world = BedrockWorld::open_typed_blocking(
             &root,
@@ -761,6 +799,51 @@ mod tests {
         .unwrap();
         z.finish().unwrap();
         assert!(unpack(&path, &temp.join("symlink-out")).is_err());
+        let path = temp.join("duplicate.zip");
+        let mut z = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for name in ["one", "two"] {
+            z.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            z.write_all(b"x").unwrap();
+        }
+        z.finish().unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        let names: Vec<_> = bytes
+            .windows(3)
+            .enumerate()
+            .filter_map(|(index, window)| (window == b"two").then_some(index))
+            .collect();
+        assert_eq!(names.len(), 2);
+        for index in names {
+            bytes[index..index + 3].copy_from_slice(b"one");
+        }
+        fs::write(&path, bytes).unwrap();
+        let error = unpack(&path, &temp.join("duplicate-out")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("duplicate or inconsistent archive entries"),
+            "{error:#}"
+        );
+        let path = temp.join("oversized.zip");
+        let mut z = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        z.start_file("big", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        z.write_all(b"x").unwrap();
+        z.finish().unwrap();
+        let mut bytes = fs::read(&path).unwrap();
+        let central = bytes
+            .windows(4)
+            .position(|window| window == [0x50, 0x4b, 0x01, 0x02])
+            .unwrap();
+        bytes[central + 24..central + 28]
+            .copy_from_slice(&(512_u32 * 1024 * 1024 + 1).to_le_bytes());
+        fs::write(&path, bytes).unwrap();
+        let error = unpack(&path, &temp.join("oversized-out")).unwrap_err();
+        assert!(
+            error.to_string().contains("archive expansion limit"),
+            "{error:#}"
+        );
         fs::remove_dir_all(temp).unwrap();
     }
 
@@ -816,5 +899,35 @@ mod tests {
             );
         }
         fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn changed_input_after_unpack_cannot_publish_a_manifest() {
+        let temporary = tempfile::tempdir().unwrap();
+        let archive = temporary.path().join("generated.mcworld");
+        let assets = temporary.path().join("assets.zip");
+        let output = temporary.path().join("output");
+        write_generated_mcworld(&archive);
+        write_test_asset_archive(&assets);
+        let error = import_snapshot_inner(
+            &ImportOptions {
+                input_archive: archive.clone(),
+                output_directory: output.clone(),
+                scratch_directory: temporary.path().join("scratch"),
+                asset_archive: assets,
+                display_name: "Changed fixture".into(),
+                surface_only: false,
+            },
+            || {
+                fs::OpenOptions::new()
+                    .append(true)
+                    .open(&archive)?
+                    .write_all(b"changed after extraction")?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("E_INPUT_CHANGED"), "{error:#}");
+        assert!(!output.join("manifest.json").exists());
     }
 }

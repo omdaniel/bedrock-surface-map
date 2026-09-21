@@ -292,20 +292,17 @@ fn reject_symlink(path: &Path) -> Result<()> {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        create_private_dir(parent)?;
-    }
-    let temp = path.with_extension(format!("tmp-{}", std::process::id()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)?;
+    let parent = path
+        .parent()
+        .context("E_STATE_UNSAFE: atomic path has no parent")?;
+    create_private_dir(parent)?;
+    let mut file = tempfile::Builder::new()
+        .prefix(".bedrock-map-")
+        .tempfile_in(parent)?;
     file.write_all(bytes)?;
-    file.sync_all()?;
-    fs::rename(&temp, path)?;
-    if let Some(parent) = path.parent() {
-        sync_dir(parent)?;
-    }
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    sync_dir(parent)?;
     Ok(())
 }
 

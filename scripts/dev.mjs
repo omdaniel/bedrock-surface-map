@@ -159,6 +159,7 @@ try {
       { cwd: root },
     );
     if (profile === "full") {
+      run("npm", ["run", "secrets:check"], { cwd: root });
       run("cargo", ["test", "--workspace", "--locked"], { cwd: root });
       run(
         "cargo",

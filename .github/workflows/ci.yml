@@ -38,6 +38,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/wasm-bindgen.tgz" -C "$RUNNER_TEMP"
           install -m 0755 "$RUNNER_TEMP/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"
       - run: npm ci
+      - run: npm run secrets:check
       - run: npm run format:check
       - run: npm run config:test
       - run: npm run release:test
@@ -63,6 +64,50 @@ jobs:
         with:
           path: .local/demo-dist
       # No raw world imports, Mojang downloads or homelab credentials.
+  native-amd64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_TERM_COLOR: always
+      XDG_RUNTIME_DIR: /tmp
+      WGPU_BACKEND: vulkan
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26.8.1'
+          cache: npm
+      - run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup target add wasm32-unknown-unknown x86_64-unknown-linux-musl --toolchain 1.92.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev python3-venv mesa-vulkan-drivers libvulkan1 xvfb xauth
+      - run: cargo install cargo-zigbuild --version 0.20.1 --locked
+      - name: Install pinned Zig
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ziglang"
+          "$RUNNER_TEMP/ziglang/bin/pip" install --no-cache-dir ziglang==0.15.2
+          echo "$RUNNER_TEMP/ziglang/bin" >> "$GITHUB_PATH"
+      - name: Install SHA-verified wasm-bindgen 0.2.127
+        run: |
+          curl -fL --retry 3 --max-time 180 https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/wasm-bindgen.tgz"
+          printf '%s  %s\n' 61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a "$RUNNER_TEMP/wasm-bindgen.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/wasm-bindgen.tgz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"
+      - run: npm ci
+      - run: node scripts/release/build-common-artifact.mjs .local/release/common
+      - run: npx playwright install --with-deps chromium
+      - run: xvfb-run -a node ci/release.mjs x86_64-unknown-linux-musl .local/release/common
+      - name: Preserve exact native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-amd64-${{ github.sha }}
+          path: .local/release/x86_64-unknown-linux-musl/dist/
+          if-no-files-found: ignore
+          retention-days: 14
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: synthetic

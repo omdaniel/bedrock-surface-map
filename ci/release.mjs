@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { assertBrowserEvidence } from "../scripts/release/evidence.mjs";
 
 const target = process.argv[2];
 const common = process.argv[3];
@@ -83,9 +84,18 @@ const nativeSmoke = checkedReport("scripts/release/smoke.mjs", [
   "--assets",
   resolve(fixture, "assets.zip"),
 ]);
-const browserSmoke = checkedReport("scripts/release/browser-smoke.mjs", [
-  archivePath,
-]);
+const browserSmoke = assertBrowserEvidence(
+  process.env.BEDROCK_MAP_BROWSER_EVIDENCE_FILE
+    ? JSON.parse(
+        await readFile(
+          resolve(process.env.BEDROCK_MAP_BROWSER_EVIDENCE_FILE),
+          "utf8",
+        ),
+      )
+    : checkedReport("scripts/release/browser-smoke.mjs", [archivePath]),
+  archiveSha256,
+  execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
+);
 const listing = execFileSync("tar", ["-tzf", archivePath], {
   encoding: "utf8",
 }).split("\n");

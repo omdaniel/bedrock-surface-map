@@ -57,6 +57,26 @@ try {
   );
   if (resourceCheck?.status !== "pass")
     throw Error("packaged doctor did not discover its bundled resources");
+  const releasePath = join(install, "release-manifest.json");
+  const releaseBytes = await readFile(releasePath);
+  const mismatched = JSON.parse(releaseBytes);
+  mismatched.commit = "0".repeat(40);
+  await writeFile(releasePath, JSON.stringify(mismatched));
+  try {
+    const rejected = spawnSync(binary, ["doctor", "--state", state, "--json"], {
+      cwd: tmpdir(),
+      env: { PATH: "/usr/bin:/bin" },
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    const check = JSON.parse(rejected.stdout).checks.find(
+      (item) => item.id === "resources",
+    );
+    if (rejected.status !== 3 || check?.status !== "fail")
+      throw Error("packaged doctor accepted a mixed release commit");
+  } finally {
+    await writeFile(releasePath, releaseBytes);
+  }
   let imported = null;
   if (world) {
     const response = JSON.parse(

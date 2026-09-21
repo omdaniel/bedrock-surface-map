@@ -1,8 +1,10 @@
 # Release CI
 
-GitHub Actions remains the source and Pages pipeline. The optional GitLab
-pipeline in [`.gitlab-ci.yml`](../.gitlab-ci.yml) builds the same release
-scripts on native Linux runners after an owner creates a mirror.
+GitHub Actions checks source and Pages, and its uncredentialed `native-amd64`
+job assembles and tests the exact AMD64 Linux archive on an AMD64 runner.
+The optional GitLab pipeline in [`.gitlab-ci.yml`](../.gitlab-ci.yml) builds
+the same release scripts on both native Linux architectures after an owner
+creates a mirror. Neither source nor native-test jobs can publish.
 
 Configure these protected GitLab variables before enabling its jobs:
 
@@ -28,8 +30,17 @@ before assigning the runner tags.
 exact archive. The harness extracts it, uses only the packaged executable and
 resources, verifies the loopback HTTP service, and uses Chromium to confirm
 the packaged application initializes WebGPU and renders its synthetic terrain
-at both `/` and `/map/`. The browser gate runs on the same native Linux
-architecture as the archive.
+at both `/` and `/map/`. By default, the browser gate runs on the same native
+Linux architecture as the archive.
+
+When the native server has no suitable browser, a separate browser host can
+run the same smoke script against two loopback tunnels, one serving `/` and
+one serving `/map/` from the exact extracted archive. Supply both URLs with
+`--external-url` and place the resulting JSON report in the native job as
+`BEDROCK_MAP_BROWSER_EVIDENCE_FILE`. The gate checks its archive SHA-256,
+source commit, rendered pixels, picking, and both mount paths. The native
+server smoke remains mandatory on its own architecture; a cross-host browser
+does not count as native runtime execution.
 
 `node scripts/release/publish.mjs --dist <dir>` validates a candidate without
 network publication. `--publish` additionally requires the matching protected

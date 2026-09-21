@@ -114,27 +114,79 @@ async fn main() -> std::process::ExitCode {
         println!("bedrock-map {} ({BUILD_COMMIT})", env!("CARGO_PKG_VERSION"));
         return std::process::ExitCode::SUCCESS;
     }
-    match run().await {
+    let json_output = std::env::args_os().any(|arg| arg == "--json");
+    let args = match Args::try_parse() {
+        Ok(args) => args,
+        Err(error) => {
+            if error.exit_code() == 0 {
+                let _ = error.print();
+                return std::process::ExitCode::SUCCESS;
+            }
+            if json_output {
+                println!(
+                    "{}",
+                    json!({"schema_version":1,"ok":false,"command":"usage","error":{"code":"E_USAGE","message":error.to_string()}})
+                );
+            } else {
+                let _ = error.print();
+            }
+            return std::process::ExitCode::from(2);
+        }
+    };
+    let command = command_name(&args.command);
+    match run(args).await {
         Ok(code) => std::process::ExitCode::from(code),
         Err(error) => {
-            eprintln!(
-                "{}",
-                json!({"schema_version":1,"ok":false,"error":{"code": error_code(&error),"message":format!("{error:#}"),"remediation":"Review the command input and state directory; no automatic repair was attempted."}})
-            );
-            if format!("{error:#}").contains("E_CONFIG")
-                || format!("{error:#}").contains("E_STATE")
-                || format!("{error:#}").contains("E_RESOURCE")
-            {
-                std::process::ExitCode::from(2)
+            let code = error_code(&error);
+            let response = json!({"schema_version":1,"ok":false,"command":command,"error":{"code":code,"message":format!("{error:#}"),"remediation":"Review the command input and state directory; no automatic repair was attempted."}});
+            if json_output {
+                println!("{response}");
             } else {
-                std::process::ExitCode::FAILURE
+                eprintln!("{response}");
             }
+            std::process::ExitCode::from(
+                if matches!(
+                    code,
+                    "E_CONFIG_SCHEMA"
+                        | "E_CONFIG_INVALID"
+                        | "E_STATE_UNSAFE"
+                        | "E_RESOURCE_MISMATCH"
+                        | "E_NO_DATASET"
+                        | "E_ASSET_MISSING"
+                        | "E_ASSET_HASH"
+                        | "E_ARCHIVE_INVALID"
+                        | "E_WORLD_DIRECTORY_UNSUPPORTED"
+                        | "E_INPUT_CHANGED"
+                        | "E_IMPORT_LIMIT"
+                        | "E_REPLACE_REQUIRED"
+                ) {
+                    2
+                } else {
+                    1
+                },
+            )
         }
     }
 }
 
-async fn run() -> Result<u8> {
-    let args = Args::parse();
+fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Init => "init",
+        Command::Demo { .. } => "demo",
+        Command::Import { .. } => "import",
+        Command::Serve { .. } => "serve",
+        Command::Status => "status",
+        Command::Doctor { .. } => "doctor",
+        Command::Assets {
+            command: AssetsCommand::Verify { .. },
+        } => "assets.verify",
+        Command::Assets {
+            command: AssetsCommand::Fetch { .. },
+        } => "assets.fetch",
+    }
+}
+
+async fn run(args: Args) -> Result<u8> {
     let state = State::new(match args.state.clone() {
         Some(path) => path,
         None => default_state()?,
@@ -391,4 +443,40 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         }
     }
     "E_RUNTIME"
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn committed_selection_survives_private_cleanup_failure() {
+        let temporary = tempfile::tempdir().unwrap();
+        let state = State::new(temporary.path().join("state")).unwrap();
+        state.init().unwrap();
+        let selected = with_operation(&state, "demo", |operation| {
+            let public = operation.join("public");
+            surface_cli::create_synthetic_fixture(&public)?;
+            let selected = state.register_staged_dataset(&public, "a".repeat(64), false)?;
+            let blocked = operation.join("blocked");
+            fs::create_dir(&blocked)?;
+            fs::write(blocked.join("retained"), b"private scratch")?;
+            fs::set_permissions(&blocked, fs::Permissions::from_mode(0o000))?;
+            Ok(selected)
+        })
+        .unwrap();
+        assert_eq!(
+            state.active_validated().unwrap().unwrap().dataset_id,
+            selected.dataset_id
+        );
+        let operations: Vec<_> = fs::read_dir(state.staging()).unwrap().collect();
+        assert_eq!(operations.len(), 1);
+        for operation in operations {
+            let operation = operation.unwrap().path();
+            fs::set_permissions(operation.join("blocked"), fs::Permissions::from_mode(0o700))
+                .unwrap();
+            fs::remove_dir_all(operation).unwrap();
+        }
+    }
 }

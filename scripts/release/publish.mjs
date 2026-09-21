@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { checkCurrentTag, currentCommit } from "./validate-tag.mjs";
+import { assertBrowserEvidence } from "./evidence.mjs";
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
@@ -88,16 +89,14 @@ for (const item of evidence.targets) {
     item.native_smoke?.ok !== true ||
     item.native_smoke?.generated_world_import == null ||
     item.native_smoke?.corruption_refused !== true ||
-    item.browser_smoke?.ok !== true ||
-    item.browser_smoke?.terrain_pixels !== true ||
-    item.browser_smoke?.picking !== true ||
-    JSON.stringify(item.browser_smoke?.mount_paths) !==
-      JSON.stringify(["/", "/map/"])
+    item.archive !==
+      `bedrock-surface-map-v${packageJson.version}-linux-${item.target.startsWith("x86_64") ? "amd64" : "arm64"}.tar.gz`
   )
     throw Error(
       "release candidate has missing or inconsistent native test evidence",
     );
   expectedTargets.delete(item.target);
+  assertBrowserEvidence(item.browser_smoke, item.archive_sha256, item.commit);
 }
 if (expectedTargets.size)
   throw Error("release candidate is missing a native target");
@@ -108,6 +107,14 @@ const sourceMember = execFileSync(
 );
 if (JSON.parse(sourceMember).version !== packageJson.version)
   throw Error("source archive version disagrees with candidate");
+const sourceBytes = await readFile(resolve(dist, expected[2]));
+const checkoutArchive = execFileSync(
+  "git",
+  ["archive", "--format=tar.gz", "HEAD"],
+  { maxBuffer: 128 * 1024 * 1024 },
+);
+if (!sourceBytes.equals(checkoutArchive))
+  throw Error("source archive bytes do not match the candidate commit");
 
 const result = { dry_run: !publish, dist, tag: expectedTag, archives };
 if (!publish) {

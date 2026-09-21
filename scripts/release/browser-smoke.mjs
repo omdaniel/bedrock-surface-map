@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,21 +7,31 @@ import { PNG } from "pngjs";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: browser-smoke.mjs <archive>");
-const externalIndex = process.argv.indexOf("--external-url");
-const externalUrl = externalIndex < 0 ? null : process.argv[externalIndex + 1];
-if (externalIndex >= 0 && !externalUrl)
-  throw Error("--external-url requires a URL");
-if (externalUrl) {
-  const target = new URL(externalUrl);
+const externalUrls = [];
+for (let index = 3; index < process.argv.length; index++) {
+  if (process.argv[index] !== "--external-url" || !process.argv[index + 1])
+    throw Error("usage: --external-url <loopback-url> may be supplied twice");
+  const target = new URL(process.argv[++index]);
   if (
     target.protocol !== "http:" ||
     !["127.0.0.1", "[::1]"].includes(target.hostname) ||
-    !["/", "/map/"].includes(target.pathname)
+    !["/", "/map/"].includes(target.pathname) ||
+    target.username ||
+    target.password ||
+    target.search ||
+    target.hash
   )
     throw Error("external browser smoke requires a loopback root or /map/ URL");
+  externalUrls.push(target.href);
 }
-const mountPaths = externalUrl
-  ? [new URL(externalUrl).pathname]
+if (
+  externalUrls.length > 2 ||
+  new Set(externalUrls.map((url) => new URL(url).pathname)).size !==
+    externalUrls.length
+)
+  throw Error("external browser smoke accepts at most one URL per mount path");
+const mountPaths = externalUrls.length
+  ? externalUrls.map((url) => new URL(url).pathname)
   : ["/", "/map/"];
 const { chromium } = await import("playwright");
 const staging = await mkdtemp(join(tmpdir(), "bedrock-map-browser-smoke-"));
@@ -120,7 +131,8 @@ try {
     args: ["--use-angle=swiftshader", "--enable-unsafe-webgpu"],
   });
   try {
-    for (const basePath of mountPaths) {
+    for (const [index, basePath] of mountPaths.entries()) {
+      const externalUrl = externalUrls[index];
       const { child, url } = externalUrl
         ? { child: null, url: externalUrl }
         : await start(
@@ -228,6 +240,15 @@ try {
     JSON.stringify({
       ok: true,
       archive,
+      archive_sha256: createHash("sha256")
+        .update(await readFile(archive))
+        .digest("hex"),
+      commit: JSON.parse(
+        await readFile(
+          join(staging, packagedRoot(), "release-manifest.json"),
+          "utf8",
+        ),
+      ).commit,
       browser_rendered: true,
       mount_paths: mountPaths,
       browser_host: `${process.platform}-${process.arch}`,

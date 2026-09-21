@@ -97,6 +97,13 @@ pub fn validate(root: &Path) -> Result<MapManifest> {
         "E_RESOURCE_MISMATCH: invalid snapshot bounds"
     );
     ensure!(
+        manifest.spawn[0] >= min_x
+            && manifest.spawn[0] < max_x
+            && manifest.spawn[2] >= min_z
+            && manifest.spawn[2] < max_z,
+        "E_RESOURCE_MISMATCH: spawn is outside mapped bounds"
+    );
+    ensure!(
         manifest.height_range[0] <= manifest.height_range[1],
         "E_RESOURCE_MISMATCH: invalid height range"
     );

@@ -15,12 +15,9 @@ pub struct Resources {
 #[serde(deny_unknown_fields)]
 struct ReleaseManifest {
     schema_version: u8,
-    #[serde(default)]
-    application_version: Option<String>,
-    #[serde(default)]
-    commit: Option<String>,
-    #[serde(default)]
-    target: Option<String>,
+    application_version: String,
+    commit: String,
+    target: String,
     files: Vec<ManifestFile>,
 }
 
@@ -79,37 +76,39 @@ impl Resources {
         let manifest: ReleaseManifest = serde_json::from_slice(
             &fs::read(self.release_manifest())
                 .context("E_RESOURCE_MISMATCH: release manifest unavailable")?,
-        )?;
+        )
+        .context("E_RESOURCE_MISMATCH: invalid release manifest")?;
         ensure!(
             manifest.schema_version == 1,
             "E_RESOURCE_MISMATCH: unsupported release manifest schema"
         );
-        if let Some(version) = &manifest.application_version {
+        ensure!(
+            manifest.application_version == env!("CARGO_PKG_VERSION"),
+            "E_RESOURCE_MISMATCH: executable and release versions differ"
+        );
+        ensure!(
+            manifest.commit.len() == 40
+                && manifest.commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "E_RESOURCE_MISMATCH: invalid release commit"
+        );
+        let executable_commit = env!("BEDROCK_MAP_BUILD_COMMIT");
+        if executable_commit != "source" {
             ensure!(
-                !version.trim().is_empty(),
-                "E_RESOURCE_MISMATCH: invalid application version"
+                manifest.commit == executable_commit,
+                "E_RESOURCE_MISMATCH: executable and release manifest commits differ"
             );
         }
-        if let Some(commit) = &manifest.commit {
+        ensure!(
+            matches!(
+                manifest.target.as_str(),
+                "x86_64-unknown-linux-musl" | "aarch64-unknown-linux-musl"
+            ),
+            "E_RESOURCE_MISMATCH: unsupported release target"
+        );
+        if executable_commit != "source" {
             ensure!(
-                commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
-                "E_RESOURCE_MISMATCH: invalid release commit"
-            );
-            let executable_commit = env!("BEDROCK_MAP_BUILD_COMMIT");
-            if executable_commit != "source" {
-                ensure!(
-                    commit == executable_commit,
-                    "E_RESOURCE_MISMATCH: executable and release manifest commits differ"
-                );
-            }
-        }
-        if let Some(target) = &manifest.target {
-            ensure!(
-                matches!(
-                    target.as_str(),
-                    "x86_64-unknown-linux-musl" | "aarch64-unknown-linux-musl"
-                ),
-                "E_RESOURCE_MISMATCH: unsupported release target"
+                manifest.target.starts_with(std::env::consts::ARCH),
+                "E_RESOURCE_MISMATCH: executable and release targets differ"
             );
         }
         ensure!(

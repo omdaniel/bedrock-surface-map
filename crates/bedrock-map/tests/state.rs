@@ -74,6 +74,27 @@ fn concurrent_mutation_is_refused() {
 }
 
 #[test]
+fn stale_atomic_scratch_cannot_block_a_new_selection() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = State::new(temp.path().join("state")).unwrap();
+    state.init().unwrap();
+    let stale = state
+        .root
+        .join(format!("active.tmp-{}", std::process::id()));
+    fs::write(&stale, b"interrupted write").unwrap();
+    let public = state.staging().join("candidate/public");
+    fixture(&public);
+    let selected = state
+        .register_staged_dataset(&public, sha(), false)
+        .unwrap();
+    assert_eq!(
+        state.active_validated().unwrap().unwrap().dataset_id,
+        selected.dataset_id
+    );
+    assert_eq!(fs::read(&stale).unwrap(), b"interrupted write");
+}
+
+#[test]
 fn registration_rejects_corrupt_and_incomplete_public_datasets() {
     for case in [
         "surface-only",
@@ -81,6 +102,7 @@ fn registration_rejects_corrupt_and_incomplete_public_datasets() {
         "changed-height",
         "bad-atlas",
         "bad-material",
+        "outside-spawn",
         "extra-report",
     ] {
         let temp = tempfile::tempdir().unwrap();
@@ -103,6 +125,7 @@ fn registration_rejects_corrupt_and_incomplete_public_datasets() {
             }
             "bad-atlas" => manifest["atlas"] = "../outside.png".into(),
             "bad-material" => manifest["materials"] = serde_json::json!([]),
+            "outside-spawn" => manifest["spawn"] = serde_json::json!([999_999, 64, 999_999]),
             "extra-report" => {
                 fs::write(public.join("import-report.json"), b"private").unwrap();
             }
