@@ -1,9 +1,10 @@
 # Install a Snapshot Viewer
 
-Bedrock Surface Map releases run on Linux x86-64 and Linux ARM64. Extract the
-archive for the matching architecture, verify its SHA-256 entry from the
-adjacent `SHA256SUMS` file, then use the included executable. A release runs
-without Node, npm, Rust, Cargo, Python, Git, Zig, Vite, or a Minecraft server.
+Bedrock Surface Map release archives target Linux x86-64 and Linux ARM64. Use
+only an archive that has passed its matching native Linux smoke check, then
+extract it for the matching architecture and verify its SHA-256 entry from the
+adjacent `SHA256SUMS` file. A release runs without Node, npm, Rust, Cargo,
+Python, Git, Zig, Vite, or a Minecraft server.
 
 ```sh
 tar -xzf bedrock-surface-map-vVERSION-linux-amd64.tar.gz
