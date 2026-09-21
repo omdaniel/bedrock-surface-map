@@ -1,4 +1,4 @@
-use bedrock_map::{config, state::State};
+use bedrock_map::{config, dataset, state::State};
 use std::fs;
 
 fn fixture(path: &std::path::Path) {
@@ -47,7 +47,7 @@ fn a_failed_replacement_leaves_the_active_dataset_selected() {
     let active = state.register_staged_dataset(&first, sha(), false).unwrap();
     let second = state.staging().join("second/public");
     fixture(&second);
-    fs::write(second.join("different-but-public.txt"), "different dataset").unwrap();
+    fs::write(second.join("assets/NOTICE.txt"), "different dataset").unwrap();
     let error = state
         .register_staged_dataset(&second, "b".repeat(64), false)
         .unwrap_err();
@@ -71,4 +71,66 @@ fn concurrent_mutation_is_refused() {
             .to_string()
             .contains("E_STATE_BUSY")
     );
+}
+
+#[test]
+fn registration_rejects_corrupt_and_incomplete_public_datasets() {
+    for case in [
+        "surface-only",
+        "missing-region",
+        "changed-height",
+        "bad-atlas",
+        "bad-material",
+        "extra-report",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let state = State::new(temp.path().join("state")).unwrap();
+        state.init().unwrap();
+        let public = state.staging().join("candidate/public");
+        fixture(&public);
+        let manifest_path = public.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        match case {
+            "surface-only" => manifest["heights"] = "".into(),
+            "missing-region" => {
+                fs::remove_file(public.join(manifest["regions"][0]["url"].as_str().unwrap()))
+                    .unwrap();
+            }
+            "changed-height" => {
+                let height = public.join(manifest["heights"].as_str().unwrap());
+                fs::write(height, b"bad").unwrap();
+            }
+            "bad-atlas" => manifest["atlas"] = "../outside.png".into(),
+            "bad-material" => manifest["materials"] = serde_json::json!([]),
+            "extra-report" => {
+                fs::write(public.join("import-report.json"), b"private").unwrap();
+            }
+            _ => unreachable!(),
+        }
+        fs::write(manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert!(
+            state
+                .register_staged_dataset(&public, sha(), false)
+                .is_err(),
+            "{case}"
+        );
+        assert!(state.active().unwrap().is_none(), "{case}");
+    }
+}
+
+#[test]
+fn runtime_validation_detects_modified_immutable_objects() {
+    let temp = tempfile::tempdir().unwrap();
+    let state = State::new(temp.path().join("state")).unwrap();
+    state.init().unwrap();
+    let public = state.staging().join("candidate/public");
+    fixture(&public);
+    let selected = state
+        .register_staged_dataset(&public, sha(), false)
+        .unwrap();
+    let public = state.datasets().join(selected.dataset_id).join("public");
+    let manifest = dataset::validate(&public).unwrap();
+    fs::write(public.join(&manifest.regions[0].url), b"tampered").unwrap();
+    assert!(state.active_validated().is_err());
 }

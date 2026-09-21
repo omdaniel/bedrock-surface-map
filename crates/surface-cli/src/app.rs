@@ -499,37 +499,31 @@ fn run() -> Result<()> {
     match Args::parse().command {
         Command::Sample { input, x, z } => {
             let source = file_hash(&input)?;
-            let cache = PathBuf::from(format!(
-                ".local/worlds/{source}-sample-{}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&cache)?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(".local", fs::Permissions::from_mode(0o700))?;
-            }
-            unpack(&input, &cache)?;
-            let extracted = bedrock_adapter::extract_chunk(&cache, x, z)?;
-            let region = extracted
-                .regions
-                .values()
-                .next()
-                .context("sample region missing")?;
-            let chunk = terrain::SurfaceChunk::from_region(region, x, z)?;
-            let mut materials = vec![terrain::MaterialSpec {
-                name: "surface:unknown".into(),
-                states: Default::default(),
-            }];
-            for m in extracted.materials.iter().skip(1) {
-                materials.push(terrain::MaterialSpec::from_saved_key(&m.key)?);
-            }
-            ensure!(file_hash(&input)? == source, "sample input changed");
+            let (chunk, materials, verified_samples) = with_private_operation(|operation| {
+                let cache = operation.join("world");
+                create_private_directory(&cache)?;
+                unpack(&input, &cache)?;
+                let extracted = bedrock_adapter::extract_chunk(&cache, x, z)?;
+                let region = extracted
+                    .regions
+                    .values()
+                    .next()
+                    .context("sample region missing")?;
+                let chunk = terrain::SurfaceChunk::from_region(region, x, z)?;
+                let mut materials = vec![terrain::MaterialSpec {
+                    name: "surface:unknown".into(),
+                    states: Default::default(),
+                }];
+                for material in extracted.materials.iter().skip(1) {
+                    materials.push(terrain::MaterialSpec::from_saved_key(&material.key)?);
+                }
+                ensure!(file_hash(&input)? == source, "sample input changed");
+                Ok((chunk, materials, extracted.verified_samples))
+            })?;
             println!(
                 "{}",
-                serde_json::json!({"source_sha256":source,"chunk":chunk,"materials":materials,"verified_samples":extracted.verified_samples})
+                serde_json::json!({"source_sha256":source,"chunk":chunk,"materials":materials,"verified_samples":verified_samples})
             );
-            fs::remove_dir_all(cache)?;
         }
         Command::AssetLibrary { assets, output } => {
             let result = assets::library(&assets, &output)?;
@@ -545,21 +539,17 @@ fn run() -> Result<()> {
             surface_only,
             name,
         } => {
-            let scratch = PathBuf::from(format!(
-                ".local/worlds/{}-{}",
-                file_hash(&input)?,
-                std::process::id()
-            ));
-            let report = import_snapshot(&ImportOptions {
-                input_archive: input,
-                output_directory: output,
-                scratch_directory: scratch.clone(),
-                asset_archive: assets,
-                display_name: name,
-                surface_only,
+            let report = with_private_operation(|operation| {
+                import_snapshot(&ImportOptions {
+                    input_archive: input,
+                    output_directory: output,
+                    scratch_directory: operation.join("scratch"),
+                    asset_archive: assets,
+                    display_name: name,
+                    surface_only,
+                })
             })?;
             println!("{}", serde_json::to_string_pretty(&report)?);
-            fs::remove_dir_all(scratch)?;
         }
         Command::Inspect { path } => {
             let m: MapManifest = serde_json::from_slice(&fs::read(path)?)?;
@@ -587,6 +577,22 @@ fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn with_private_operation<T>(run: impl FnOnce(&Path) -> Result<T>) -> Result<T> {
+    let operation = tempfile::Builder::new().prefix("surface-map-").tempdir()?;
+    let result = run(operation.path());
+    let cleanup = operation.close();
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => {
+            Err(error).context("private operation completed but scratch cleanup failed")
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("private scratch cleanup also failed: {cleanup}")))
+        }
+    }
 }
 
 #[cfg(test)]

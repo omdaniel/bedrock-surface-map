@@ -42,5 +42,13 @@ resources:
 ./bedrock-map doctor --state ./map-data --json
 ```
 
+`doctor` exits with status 3 when a required check fails. To check a running
+server too, add `--url http://127.0.0.1:8080/` (or its configured loopback
+mount path). It refuses non-loopback destinations and does not follow redirects.
+The selected snapshot and packaged resources are checked for integrity before
+`serve` reports readiness. Imports keep temporary world data private; after an
+unclean power loss, inspect `map-data/staging/` and remove only abandoned
+operation directories after confirming no import is running.
+
 `doctor` cannot prove a browser’s WebGPU capability; open the served URL in a
 current WebGPU-capable browser to render a map.

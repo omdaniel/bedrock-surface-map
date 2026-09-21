@@ -5,6 +5,7 @@
 
 pub mod assets;
 pub mod config;
+pub mod dataset;
 pub mod doctor;
 pub mod resources;
 pub mod server;

@@ -1,9 +1,13 @@
-use crate::config::{self, Config};
+use crate::{
+    config::{self, Config},
+    dataset,
+};
 use anyhow::{Context, Result, bail, ensure};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -75,6 +79,15 @@ impl State {
     }
     pub fn staging(&self) -> PathBuf {
         self.root.join("staging")
+    }
+    pub fn operation(&self, prefix: &str) -> Result<tempfile::TempDir> {
+        ensure!(
+            matches!(prefix, "demo" | "import"),
+            "E_STATE_UNSAFE: invalid operation kind"
+        );
+        let root = self.staging();
+        reject_symlink(&root)?;
+        Ok(tempfile::Builder::new().prefix(prefix).tempdir_in(root)?)
     }
     pub fn asset_archive(&self, sha256: &str) -> Result<PathBuf> {
         ensure!(valid_hash(sha256), "E_ASSET_HASH: invalid asset checksum");
@@ -151,6 +164,32 @@ impl State {
         Ok(Some(active))
     }
 
+    pub fn active_validated(&self) -> Result<Option<ActiveDataset>> {
+        let active = self.active()?;
+        if let Some(selected) = &active {
+            validate_public_tree(&self.datasets().join(&selected.dataset_id).join("public"))?;
+        }
+        Ok(active)
+    }
+
+    pub fn registered(&self, id: &str) -> Result<Option<PathBuf>> {
+        if !valid_id(id) {
+            return Ok(None);
+        }
+        let dataset = self.datasets().join(id);
+        let metadata = dataset.join("metadata.json");
+        if !metadata.exists() {
+            return Ok(None);
+        }
+        reject_symlink(&dataset)?;
+        reject_symlink(&metadata)?;
+        ensure!(
+            fs::read(&metadata)? == br#"{"schema_version":1}"#,
+            "E_STATE_UNSAFE: invalid dataset registration"
+        );
+        Ok(Some(dataset.join("public")))
+    }
+
     pub fn register_staged_dataset(
         &self,
         staged_public: &Path,
@@ -193,6 +232,7 @@ impl State {
         }
         let destination = self.datasets().join(&id);
         if destination.exists() {
+            validate_public_tree(&destination.join("public"))?;
             ensure!(
                 tree_hash(&destination.join("public"))? == id,
                 "E_STATE_UNSAFE: existing immutable dataset differs"
@@ -209,6 +249,7 @@ impl State {
                 br#"{"schema_version":1}"#,
             )?;
             io.rename(&staged_dataset, &destination)?;
+            sync_dir(&self.datasets())?;
         }
         io.write_atomic(&self.active_path(), &serde_json::to_vec_pretty(&active)?)?;
         Ok(active)
@@ -256,6 +297,14 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     file.write_all(bytes)?;
     file.sync_all()?;
     fs::rename(&temp, path)?;
+    if let Some(parent) = path.parent() {
+        sync_dir(parent)?;
+    }
+    Ok(())
+}
+
+fn sync_dir(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
     Ok(())
 }
 
@@ -271,7 +320,35 @@ fn validate_public_tree(root: &Path) -> Result<()> {
         root.join("manifest.json").is_file(),
         "E_RESOURCE_MISMATCH: dataset has no manifest"
     );
-    walk(root, &mut |_| Ok(()))
+    let manifest = dataset::validate(root)?;
+    let mut expected = HashSet::from([
+        PathBuf::from("manifest.json"),
+        PathBuf::from(&manifest.atlas),
+        PathBuf::from(&manifest.heights),
+    ]);
+    expected.extend(
+        manifest
+            .regions
+            .iter()
+            .map(|region| PathBuf::from(&region.url)),
+    );
+    let notice = root.join("assets/NOTICE.txt");
+    if notice.exists() {
+        expected.insert(PathBuf::from("assets/NOTICE.txt"));
+    }
+    walk(root, &mut |path| {
+        ensure!(
+            expected.remove(path.strip_prefix(root)?),
+            "E_RESOURCE_MISMATCH: unlisted public dataset file: {}",
+            path.display()
+        );
+        Ok(())
+    })?;
+    ensure!(
+        expected.is_empty(),
+        "E_RESOURCE_MISMATCH: missing public dataset file"
+    );
+    Ok(())
 }
 
 fn tree_hash(root: &Path) -> Result<String> {
@@ -392,7 +469,7 @@ mod tests {
 
             let candidate = state.staging().join("candidate/public");
             fixture(&candidate);
-            fs::write(candidate.join("candidate.txt"), "different dataset").unwrap();
+            fs::write(candidate.join("assets/NOTICE.txt"), "different dataset").unwrap();
             let error = state
                 .register_staged_dataset_with_io(
                     &candidate,

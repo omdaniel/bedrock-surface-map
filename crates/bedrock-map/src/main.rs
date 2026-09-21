@@ -70,18 +70,25 @@ enum AssetsCommand {
 }
 
 fn default_state() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME").context("HOME is required when --state is not supplied")?;
-    let home = PathBuf::from(home);
+    #[cfg(not(target_os = "macos"))]
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
+        let path = PathBuf::from(xdg);
+        ensure!(
+            path.is_absolute(),
+            "E_CONFIG_INVALID: XDG_DATA_HOME must be absolute"
+        );
+        return Ok(path.join("bedrock-surface-map"));
+    }
+    let home = PathBuf::from(
+        std::env::var_os("HOME").context("E_CONFIG_INVALID: HOME or --state is required")?,
+    );
     #[cfg(target_os = "macos")]
     {
         Ok(home.join("Library/Application Support/bedrock-surface-map"))
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Ok(std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local/share"))
-            .join("bedrock-surface-map"))
+        Ok(home.join(".local/share/bedrock-surface-map"))
     }
 }
 
@@ -108,7 +115,7 @@ async fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
     match run().await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
+        Ok(code) => std::process::ExitCode::from(code),
         Err(error) => {
             eprintln!(
                 "{}",
@@ -126,9 +133,12 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
-async fn run() -> Result<()> {
+async fn run() -> Result<u8> {
     let args = Args::parse();
-    let state = State::new(args.state.clone().unwrap_or(default_state()?))?;
+    let state = State::new(match args.state.clone() {
+        Some(path) => path,
+        None => default_state()?,
+    })?;
     match &args.command {
         Command::Init => {
             let config = state.init()?;
@@ -145,12 +155,12 @@ async fn run() -> Result<()> {
                 fixture.join("manifest.json").is_file(),
                 "E_RESOURCE_MISMATCH: bundled synthetic fixture is missing"
             );
-            let operation = state.staging().join(format!("demo-{}", std::process::id()));
-            let public = operation.join("public");
-            copy_tree(&fixture, &public)?;
-            let source = hash_file(&public.join("manifest.json"))?;
-            let active = state.register_staged_dataset(&public, source, *replace_active)?;
-            let _ = fs::remove_dir_all(operation);
+            let active = with_operation(&state, "demo", |operation| {
+                let public = operation.join("public");
+                copy_tree(&fixture, &public)?;
+                let source = hash_file(&public.join("manifest.json"))?;
+                state.register_staged_dataset(&public, source, *replace_active)
+            })?;
             print(
                 result(
                     "demo",
@@ -170,64 +180,60 @@ async fn run() -> Result<()> {
                 input.is_file(),
                 "E_WORLD_DIRECTORY_UNSUPPORTED: import accepts an offline .mcworld/.zip archive, not a directory"
             );
-            let operation = state
-                .staging()
-                .join(format!("import-{}", std::process::id()));
-            fs::create_dir(&operation)?;
-            let public = operation.join("public");
-            let asset_archive = match assets {
-                Some(archive) => {
-                    let digest = assets::verify(archive, None)?;
-                    bedrock_map::state::write_atomic(
-                        &state.asset_record_path(&digest)?,
-                        &serde_json::to_vec_pretty(
-                            &json!({"schema_version":1,"provenance":"user_supplied","sha256":digest}),
-                        )?,
-                    )?;
-                    archive.clone()
+            let (active, report) = with_operation(&state, "import", |operation| {
+                let public = operation.join("public");
+                let asset_archive = match assets {
+                    Some(archive) => {
+                        let digest = assets::verify(archive, None)?;
+                        bedrock_map::state::write_atomic(
+                            &state.asset_record_path(&digest)?,
+                            &serde_json::to_vec_pretty(
+                                &json!({"schema_version":1,"provenance":"user_supplied","sha256":digest}),
+                            )?,
+                        )?;
+                        archive.clone()
+                    }
+                    None => {
+                        let resources = resource(&args)?;
+                        state.asset_archive(&assets::managed_digest(&resources)?)?
+                    }
+                };
+                let report = surface_cli::import_snapshot(&surface_cli::ImportOptions {
+                    input_archive: input.clone(),
+                    output_directory: public.clone(),
+                    scratch_directory: operation.join("scratch"),
+                    asset_archive,
+                    display_name: name.clone(),
+                    surface_only: false,
+                })?;
+                let source = report
+                    .get("source_sha256")
+                    .and_then(|item| item.as_str())
+                    .context("E_ARCHIVE_INVALID: importer omitted source fingerprint")?
+                    .to_owned();
+                let private_report = public.join("import-report.json");
+                if private_report.exists() {
+                    fs::rename(&private_report, operation.join("import-report.json"))?;
                 }
-                None => {
-                    let resources = resource(&args)?;
-                    state.asset_archive(&assets::managed_digest(&resources)?)?
-                }
-            };
-            let report = surface_cli::import_snapshot(&surface_cli::ImportOptions {
-                input_archive: input.clone(),
-                output_directory: public.clone(),
-                scratch_directory: operation.join("scratch"),
-                asset_archive,
-                display_name: name.clone(),
-                surface_only: false,
-            });
-            match report {
-                Ok(report) => {
-                    let source = report
-                        .get("source_sha256")
-                        .and_then(|item| item.as_str())
-                        .context("E_ARCHIVE_INVALID: importer omitted source fingerprint")?
-                        .to_owned();
-                    let active = state.register_staged_dataset(&public, source, *replace_active)?;
-                    let _ = fs::remove_dir_all(operation);
-                    print(
-                        result(
-                            "import",
-                            json!({"dataset":active.dataset_id,"report":report}),
-                        )?,
-                        args.json,
-                    );
-                }
-                Err(error) => {
-                    let _ = fs::remove_dir_all(operation);
-                    return Err(error);
-                }
-            }
+                let active = state.register_staged_dataset(&public, source, *replace_active)?;
+                Ok((active, report))
+            })?;
+            print(
+                result(
+                    "import",
+                    json!({"dataset":active.dataset_id,"report":report}),
+                )?,
+                args.json,
+            );
         }
         Command::Serve { bind } => {
             let config = state.config()?;
             let address = config::socket_address(&config, bind.as_deref())?;
             let resources = resource(&args)?;
+            resources.validate_release()?;
+            resources.require_web()?;
             let _ = state
-                .active()?
+                .active_validated()?
                 .context("E_NO_DATASET: run demo or import before serve")?;
             let listener = tokio::net::TcpListener::bind(address)
                 .await
@@ -255,13 +261,12 @@ async fn run() -> Result<()> {
             print(
                 result(
                     "status",
-                    json!({"state":state.root,"config":config,"active":state.active()?}),
+                    json!({"state":state.root,"config":config,"active":state.active_validated()?}),
                 )?,
                 args.json,
             );
         }
         Command::Doctor { url } => {
-            let config = state.config()?;
             // A packaged invocation normally discovers resources adjacent to
             // its executable. Doctor reports discovery failures as a check
             // result instead of requiring an otherwise unnecessary flag.
@@ -269,15 +274,18 @@ async fn run() -> Result<()> {
             let report = doctor::check(
                 &state,
                 resources.as_ref().map_err(|error| format!("{error:#}")),
-                &config,
+                state.config().map_err(|error| format!("{error:#}")),
+                url.as_deref(),
+            )
+            .await?;
+            let ok = report.ok();
+            print(
+                serde_json::to_string(
+                    &json!({"schema_version":1,"ok":ok,"command":"doctor","checks":report.checks}),
+                )?,
+                args.json,
             );
-            if let Some(url) = url {
-                ensure!(
-                    url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:"),
-                    "E_CONFIG_INVALID: doctor URL must use loopback"
-                );
-            }
-            print(result("doctor", report)?, args.json);
+            return Ok(if ok { 0 } else { 3 });
         }
         Command::Assets { command } => match command {
             AssetsCommand::Verify {
@@ -313,7 +321,30 @@ async fn run() -> Result<()> {
             }
         },
     }
-    Ok(())
+    Ok(0)
+}
+
+fn with_operation<T>(
+    state: &State,
+    prefix: &str,
+    run: impl FnOnce(&std::path::Path) -> Result<T>,
+) -> Result<T> {
+    let operation = state.operation(prefix)?;
+    let outcome = run(operation.path());
+    let cleanup = operation.close();
+    match (outcome, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(value), Err(error)) => {
+            eprintln!(
+                "E_STATE_UNSAFE: operation completed, but private staging cleanup failed: {error}"
+            );
+            Ok(value)
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("private staging cleanup also failed: {cleanup}")))
+        }
+    }
 }
 
 fn hash_file(path: &std::path::Path) -> Result<String> {

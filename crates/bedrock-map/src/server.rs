@@ -85,7 +85,10 @@ async fn handle(AxumState(app): AxumState<Arc<App>>, request: Request) -> Respon
     }
     if without_base == "api/v1/health/ready" {
         return match app.state.active() {
-            Ok(Some(_)) => json_response(serde_json::json!({"ready":true}), "no-store"),
+            Ok(Some(_)) => json_response(
+                serde_json::json!({"service":"bedrock-map","ready":true}),
+                "no-store",
+            ),
             Ok(None) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
             Err(error) => error_response(error),
         };
@@ -97,12 +100,11 @@ async fn handle(AxumState(app): AxumState<Arc<App>>, request: Request) -> Respon
             })
         } else if let Some(relative) = without_base.strip_prefix("maps/") {
             let (id, rest) = relative.split_once('/').context("missing dataset path")?;
-            let active = app
+            let public = app
                 .state
-                .active()?
-                .context("E_NO_DATASET: no selected dataset")?;
-            ensure!(id == active.dataset_id, "dataset is not selected");
-            resolve_child(&app.state.datasets().join(id).join("public"), rest).and_then(|file| {
+                .registered(id)?
+                .context("dataset is not registered")?;
+            resolve_child(&public, rest).and_then(|file| {
                 file_response(&file, &request, "public, max-age=31536000, immutable")
             })
         } else {
@@ -305,7 +307,7 @@ mod tests {
         state.init().unwrap();
         let staged = state.staging().join("fixture/public");
         copy_tree(&resources.fixture(), &staged);
-        state
+        let first = state
             .register_staged_dataset(&staged, "c".repeat(64), false)
             .unwrap();
         let root_app = App {
@@ -346,7 +348,7 @@ mod tests {
                 base_path: "/map/".into(),
             },
         };
-        let task = tokio::spawn(serve(state, resources, config, listener));
+        let task = tokio::spawn(serve(state.clone(), resources, config, listener));
         let client = reqwest::Client::new();
         let html = client
             .get(format!("http://{address}/map/"))
@@ -364,6 +366,45 @@ mod tests {
         let viewer: serde_json::Value =
             serde_json::from_str(&config.text().await.unwrap()).unwrap();
         assert!(viewer["map"].as_str().unwrap().starts_with("maps/"));
+        let old_url = format!(
+            "http://{address}/map/maps/{}/manifest.json",
+            first.dataset_id
+        );
+        assert_eq!(
+            client.get(&old_url).send().await.unwrap().status(),
+            StatusCode::OK
+        );
+        let replacement = state.staging().join("replacement/public");
+        copy_tree(
+            &state.datasets().join(&first.dataset_id).join("public"),
+            &replacement,
+        );
+        fs::write(replacement.join("assets/NOTICE.txt"), "replacement fixture").unwrap();
+        let second = state
+            .register_staged_dataset(&replacement, "d".repeat(64), true)
+            .unwrap();
+        assert_ne!(first.dataset_id, second.dataset_id);
+        assert_eq!(
+            client.get(&old_url).send().await.unwrap().status(),
+            StatusCode::OK
+        );
+        let current: serde_json::Value = serde_json::from_str(
+            &client
+                .get(format!("http://{address}/map/viewer-config.json"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            current["map"]
+                .as_str()
+                .unwrap()
+                .contains(&second.dataset_id)
+        );
         assert_eq!(
             client
                 .get(format!("http://{address}/config.toml"))
