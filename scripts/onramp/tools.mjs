@@ -1,0 +1,68 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { access, mkdir, readFile, rename, rm } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
+import { run } from "./process.mjs";
+
+export async function readPins(root) {
+  return JSON.parse(
+    await readFile(resolve(root, "sources/build-tools.json"), "utf8"),
+  );
+}
+
+export function platform() {
+  if (process.platform === "darwin" && process.arch === "arm64")
+    return "darwin-arm64";
+  if (process.platform === "linux" && process.arch === "x64")
+    return "linux-x86_64";
+  if (process.platform === "linux" && process.arch === "arm64")
+    return "linux-aarch64";
+  throw new Error(
+    `Unsupported developer-tool platform: ${process.platform}-${process.arch}`,
+  );
+}
+
+export async function checksum(path) {
+  const hash = createHash("sha256");
+  for await (const bytes of createReadStream(path)) hash.update(bytes);
+  return hash.digest("hex");
+}
+
+export async function installGitleaks(root, pins, offline = false) {
+  const entry = pins.gitleaks.archives[platform()];
+  if (!entry) throw new Error("No verified Gitleaks archive for this platform");
+  const destination = resolve(
+    root,
+    ".sources/tools/gitleaks",
+    pins.gitleaks.version,
+    platform(),
+  );
+  const binary = resolve(destination, "gitleaks");
+  try {
+    await access(binary);
+    return binary;
+  } catch {}
+  if (offline) throw new Error(`Offline setup is missing ${binary}`);
+  await mkdir(destination, { recursive: true, mode: 0o700 });
+  const archive = resolve(destination, "archive.tar.gz");
+  const partial = `${archive}.part`;
+  await rm(partial, { force: true });
+  const response = await fetch(entry.url, {
+    redirect: "error",
+    signal: AbortSignal.timeout(300000),
+  });
+  if (!response.ok || !response.body)
+    throw new Error(`Gitleaks download failed: ${response.status}`);
+  const file = await (
+    await import("node:fs/promises")
+  ).open(partial, "w", 0o600);
+  await pipeline(Readable.fromWeb(response.body), file.createWriteStream());
+  if ((await checksum(partial)) !== entry.sha256)
+    throw new Error("Gitleaks checksum mismatch; archive was not installed");
+  await rename(partial, archive);
+  run("tar", ["-xzf", archive, "-C", destination, "gitleaks"]);
+  run("chmod", ["0755", binary]);
+  return binary;
+}
