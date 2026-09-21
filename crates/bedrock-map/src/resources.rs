@@ -15,6 +15,12 @@ pub struct Resources {
 #[serde(deny_unknown_fields)]
 struct ReleaseManifest {
     schema_version: u8,
+    #[serde(default)]
+    application_version: Option<String>,
+    #[serde(default)]
+    commit: Option<String>,
+    #[serde(default)]
+    target: Option<String>,
     files: Vec<ManifestFile>,
 }
 
@@ -78,6 +84,27 @@ impl Resources {
             manifest.schema_version == 1,
             "E_RESOURCE_MISMATCH: unsupported release manifest schema"
         );
+        if let Some(version) = &manifest.application_version {
+            ensure!(
+                !version.trim().is_empty(),
+                "E_RESOURCE_MISMATCH: invalid application version"
+            );
+        }
+        if let Some(commit) = &manifest.commit {
+            ensure!(
+                commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "E_RESOURCE_MISMATCH: invalid release commit"
+            );
+        }
+        if let Some(target) = &manifest.target {
+            ensure!(
+                matches!(
+                    target.as_str(),
+                    "x86_64-unknown-linux-musl" | "aarch64-unknown-linux-musl"
+                ),
+                "E_RESOURCE_MISMATCH: unsupported release target"
+            );
+        }
         for file in manifest.files {
             ensure!(
                 !file.path.contains("..") && !file.path.starts_with('/'),
