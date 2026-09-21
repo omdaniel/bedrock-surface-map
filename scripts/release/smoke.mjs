@@ -15,6 +15,13 @@ try {
   if (!root) throw Error("bedrock-map binary missing");
   const install = join(staging, root);
   const binary = join(install, "bedrock-map");
+  const version = execFileSync(binary, ["--version"], {
+    encoding: "utf8",
+    env: { PATH: "/usr/bin:/bin", HOME: staging },
+  });
+  if (!version.includes("bedrock-map") || version.includes("(source)")) {
+    throw Error("packaged executable lacks release commit metadata");
+  }
   const state = join(staging, "state with spaces");
   const invoke = (...args) =>
     execFileSync(binary, ["--state", state, ...args], {

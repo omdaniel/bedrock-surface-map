@@ -9,6 +9,9 @@ const output = resolve(outputArg);
 const zig =
   process.env.CARGO_ZIGBUILD_ZIG_PATH ??
   execFileSync("which", ["python-zig"], { encoding: "utf8" }).trim();
+const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+  encoding: "utf8",
+}).trim();
 const packages = [
   "bedrock-map",
   "surface-cli",
@@ -40,7 +43,14 @@ execFileSync(
     target,
     ...packages.flatMap((name) => ["-p", name]),
   ],
-  { stdio: "inherit", env: { ...process.env, CARGO_ZIGBUILD_ZIG_PATH: zig } },
+  {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      BEDROCK_MAP_BUILD_COMMIT: commit,
+      CARGO_ZIGBUILD_ZIG_PATH: zig,
+    },
+  },
 );
 await mkdir(output, { recursive: true, mode: 0o700 });
 for (const packageName of packages) {

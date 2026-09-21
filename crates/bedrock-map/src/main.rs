@@ -5,6 +5,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf};
 
+const BUILD_COMMIT: &str = env!("BEDROCK_MAP_BUILD_COMMIT");
+
 #[derive(Parser)]
 #[command(
     name = "bedrock-map",
@@ -101,6 +103,10 @@ fn print(value: String, json_output: bool) {
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn main() -> std::process::ExitCode {
+    if std::env::args_os().any(|arg| arg == "--version" || arg == "-V") {
+        println!("bedrock-map {} ({BUILD_COMMIT})", env!("CARGO_PKG_VERSION"));
+        return std::process::ExitCode::SUCCESS;
+    }
     match run().await {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
