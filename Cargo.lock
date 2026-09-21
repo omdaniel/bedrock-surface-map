@@ -196,6 +196,7 @@ dependencies = [
  "rayon",
  "snap",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -2018,6 +2019,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bedrock-adapter",
+ "bedrock-leveldb",
+ "bedrock-world",
  "clap",
  "image",
  "json5",

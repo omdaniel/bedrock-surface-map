@@ -572,6 +572,122 @@ fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bedrock_world::{
+        BedrockWorld, ChunkPos, Dimension, LevelDatDocument, McStructureFile,
+        McStructurePaletteEntry, McStructurePlacement, McStructureRotation, McStructureSize,
+        OpenOptions, WriteGuard, write_level_dat_document,
+    };
+
+    fn add_tree_to_zip(archive: &mut zip::ZipWriter<fs::File>, root: &Path, current: &Path) {
+        for entry in fs::read_dir(current).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                add_tree_to_zip(archive, root, &path);
+                continue;
+            }
+            let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+            archive
+                .start_file(relative, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(&fs::read(path).unwrap()).unwrap();
+        }
+    }
+
+    fn write_test_asset_archive(path: &Path) {
+        const SOURCE: &str = "736072450c26a7c67f07b1661f29d9a5ebaa14b1";
+        let prefix = format!("bedrock-samples-{SOURCE}/");
+        let mut archive = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        let options = zip::write::SimpleFileOptions::default();
+        archive
+            .start_file(format!("{prefix}LICENSE.md"), options)
+            .unwrap();
+        archive.write_all(b"fixture license\n").unwrap();
+        archive
+            .start_file(format!("{prefix}resource_pack/blocks.json"), options)
+            .unwrap();
+        archive
+            .write_all(br#"{"grass":{"textures":"grass"}}"#)
+            .unwrap();
+        archive
+            .start_file(
+                format!("{prefix}resource_pack/textures/terrain_texture.json"),
+                options,
+            )
+            .unwrap();
+        archive
+            .write_all(br#"{"texture_data":{"grass":{"textures":"textures/blocks/grass"}}}"#)
+            .unwrap();
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([70, 170, 80, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        archive
+            .start_file(
+                format!("{prefix}resource_pack/textures/blocks/grass.png"),
+                options,
+            )
+            .unwrap();
+        archive.write_all(&png.into_inner()).unwrap();
+        archive.finish().unwrap();
+    }
+
+    fn write_generated_mcworld(path: &Path) {
+        let root = path.with_extension("world");
+        fs::create_dir_all(root.join("db")).unwrap();
+        drop(
+            bedrock_leveldb::Db::open(root.join("db"), bedrock_leveldb::OpenOptions::default())
+                .unwrap(),
+        );
+        fs::write(root.join("levelname.txt"), "Generated test world\n").unwrap();
+        write_level_dat_document(
+            &root.join("level.dat"),
+            &LevelDatDocument::new(10, bedrock_world::NbtTag::Compound(Default::default())),
+        )
+        .unwrap();
+
+        let world = BedrockWorld::open_typed_blocking(
+            &root,
+            OpenOptions {
+                read_only: false,
+                ..OpenOptions::default()
+            },
+        )
+        .unwrap();
+        let size = McStructureSize::new(16, 1, 16).unwrap();
+        let mut structure = McStructureFile::new_air(size, [-16, 64, -16]).unwrap();
+        structure.palette.push(McStructurePaletteEntry {
+            name: "minecraft:grass".into(),
+            states: Default::default(),
+            version: Some(1),
+        });
+        structure.primary_indices.fill(1);
+        let anchor = ChunkPos {
+            x: -1,
+            z: -1,
+            dimension: Dimension::Overworld,
+        };
+        structure
+            .write_to_world_blocking(
+                &world,
+                McStructurePlacement {
+                    source_anchor: anchor,
+                    target_anchor: anchor,
+                    origin_y: 64,
+                    rotation: McStructureRotation::None,
+                    mirror_x: false,
+                    mirror_z: false,
+                },
+                &WriteGuard::confirmed(root.clone(), "generated parser fixture"),
+                |_| {},
+            )
+            .unwrap();
+        drop(world);
+
+        let mut archive = zip::ZipWriter::new(fs::File::create(path).unwrap());
+        add_tree_to_zip(&mut archive, &root, &root);
+        archive.finish().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn reject_live_directory() {
         assert!(unpack(Path::new("/tmp/world"), Path::new("/tmp/no-write")).is_err());
@@ -609,6 +725,40 @@ mod tests {
         .unwrap();
         z.finish().unwrap();
         assert!(unpack(&path, &temp.join("symlink-out")).is_err());
+        fs::remove_dir_all(temp).unwrap();
+    }
+
+    #[test]
+    fn imports_generated_leveldb_mcworld_with_checked_assets() {
+        let temp = std::env::temp_dir().join(format!(
+            "surface-generated-world-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).unwrap();
+        let archive = temp.join("generated.mcworld");
+        let assets = temp.join("assets.zip");
+        write_generated_mcworld(&archive);
+        write_test_asset_archive(&assets);
+
+        let report = import_snapshot(&ImportOptions {
+            input_archive: archive,
+            output_directory: temp.join("output"),
+            scratch_directory: temp.join("scratch"),
+            asset_archive: assets,
+            display_name: "Generated fixture".into(),
+            surface_only: false,
+        })
+        .unwrap();
+        assert_eq!(report["regions"], 1);
+        assert_eq!(report["surface_columns"], 256);
+        let manifest: MapManifest =
+            serde_json::from_slice(&fs::read(temp.join("output/manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest.bounds, [-256, -256, 0, 0]);
+        assert_eq!(manifest.regions.len(), 1);
         fs::remove_dir_all(temp).unwrap();
     }
 }
