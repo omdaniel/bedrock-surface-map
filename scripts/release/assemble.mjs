@@ -81,7 +81,10 @@ await cp(
   resolve(root, "share/bedrock-surface-map/packs/tracking"),
   { recursive: true },
 );
-await cp("sources/mojang.json", resolve(root, "share/bedrock-surface-map/provenance/mojang.json"));
+await cp(
+  "sources/mojang.json",
+  resolve(root, "share/bedrock-surface-map/provenance/mojang.json"),
+);
 for (const file of ["LICENSE", "THIRD_PARTY.md"])
   await cp(file, resolve(root, file));
 await writeFile(

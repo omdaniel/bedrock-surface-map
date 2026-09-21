@@ -30,8 +30,8 @@
     "serve:lan": "node scripts/serve-lan.mjs",
     "build": "npm run wasm && tsc --noEmit && vite build --config vite.config.ts",
     "check": "tsc --noEmit",
-    "format": "prettier --write web/src web/index.html scripts/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
-    "format:check": "prettier --check web/src web/index.html scripts/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
+    "format": "prettier --write web/src web/index.html scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
+    "format:check": "prettier --check web/src web/index.html scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
     "test": "playwright test",
     "verify": "cargo test --workspace && npm run build && npm run fixture && npm test"
   },

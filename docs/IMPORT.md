@@ -5,6 +5,13 @@ The adapter is pinned to released `bedrock-world = 0.3.5`, using its
 `read_only: true` selects the backend's read-only open with paranoid checksum
 checks. Only an unpacked private copy of an offline archive is opened.
 
+For a packaged Linux runtime, use the native commands in
+[INSTALL.md](INSTALL.md). `bedrock-map assets fetch --acknowledge-asset-terms`
+is the explicit managed download path; `bedrock-map import --assets` validates
+an operator-supplied archive and records it as user-supplied. Neither path
+downloads assets implicitly during initialization, serving, diagnostics, or a
+synthetic demo.
+
 ```sh
 cargo run --release --locked -p surface-cli -- import \
   --input /path/to/your-offline-snapshot.mcworld
