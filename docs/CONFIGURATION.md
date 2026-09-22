@@ -43,11 +43,17 @@ and never require Minecraft or homelab credentials.
 
 ## Viewer and Read Proxies
 
-Serve an operator-owned `viewer-config.json` beside the built site. Its optional
+For the Vite preview or an operator-managed static web server, serve an
+operator-owned `viewer-config.json` beside the built site. Its optional
 `map` selects the offline manifest, relative to the application's base path;
 the default is `maps/world/manifest.json`. An explicit `?map=` overrides it.
 Live `terrain` and `players` bindings follow their respective guides.
 The development server accepts `SURFACE_MAP` for the same offline selection.
+
+The [packaged snapshot server](INSTALL.md) instead generates `viewer-config.json`
+from its selected offline dataset. Its state-directory `config.toml` configures
+only `server.bind` (loopback) and `server.base_path`; it does not accept live-feed
+bindings or proxy settings.
 
 The importer defaults to `web/public/maps/world`; `--output` selects another
 directory and `--name` sets its display name. Import and serving locations must

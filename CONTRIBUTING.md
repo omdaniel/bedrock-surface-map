@@ -3,6 +3,8 @@
 Development requires Git, Node `26.8.1`, Rust `1.92.0` with rustup, and native
 C/C++ tools for your platform. Linux development supports x86-64 and ARM64;
 macOS development supports Apple Silicon. Windows contributors use WSL2/Linux.
+Python 3 is also required by archive checks and the optional Git hook. The
+[development container](.devcontainer/Dockerfile) lists the Linux build packages.
 
 ```sh
 git clone https://github.com/omdaniel/bedrock-surface-map.git
@@ -12,9 +14,10 @@ cd bedrock-surface-map
 ./dev demo
 ```
 
-`setup` installs or verifies the pinned language tools, runs `npm ci`, builds
-WASM, prepares the project-local secret scanner, and creates a local synthetic
-fixture. It does not download Minecraft assets or contact a Minecraft server.
+`setup` verifies Node and Rust, installs the WASM target and project-local
+`wasm-bindgen`, runs `npm ci`, builds WASM, prepares the project-local secret
+scanner, and creates a local synthetic fixture. It does not download Minecraft
+assets or contact a Minecraft server.
 `npm run bootstrap` is a compatibility alias for this same safe setup path.
 `setup --offline` checks a warmed local cache and reports exactly what is absent
 without accessing the network.
@@ -23,10 +26,18 @@ its Node/Rust environment; it is not a separate project bootstrap path.
 
 Run `./dev check --profile fast` before a focused change. `--profile full`
 also runs workspace and WASM lints, renderer/browser checks, tracking and
-terrain protocol suites, and the public-demo audit. Use
-`./dev package --target x86_64-unknown-linux-musl` or
+terrain protocol suites, and the public-demo audit. Local browser checks require
+installed Google Chrome (`chrome` channel).
+Prepare the full profile's additional fixture with `node scripts/terrain-fixture.mjs`
+after setup. CI uses Playwright Chromium and the system packages in the
+[workflow](.github/workflows/ci.yml). For direct npm builds outside `./dev`, use the
+[local tool PATH](docs/GETTING_STARTED.md#run-the-demo-locally).
+
+Use `./dev package --target x86_64-unknown-linux-musl` or
 `aarch64-unknown-linux-musl` only when the pinned cargo-zigbuild and Zig tools
-are available. Cross-compilation is not native runtime proof; each release
+are available and the selected Rust target is installed with
+`rustup target add <target> --toolchain 1.92.0`.
+Cross-compilation is not native runtime proof; each release
 target needs its archive smoke-tested on matching Linux hardware.
 
 `./dev setup --install-hooks` opts into the repository hook path only when no

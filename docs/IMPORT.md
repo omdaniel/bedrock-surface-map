@@ -25,9 +25,11 @@ Run `node scripts/assets.mjs` first to acquire the pinned Mojang resource-pack s
 `--output` sets the derived directory and `--name` its display name; defaults are
 `web/public/maps/world` and `Bedrock World`. Set the viewer's `map` configuration
 to the served manifest path when using another location.
-The private extraction scratch directory is under `.local/worlds` (its parent
-has mode 0700). Successful imports remove their scratch copy. Failed imports
-retain it for local diagnosis; it is ignored by Git and never served by Vite.
+The source CLI uses a private `surface-map-*` operation directory in the system
+temporary directory (`TMPDIR` on Unix). The packaged runtime uses its selected
+state directory's `staging/` instead. Both remove operation scratch after success
+or an ordinary error; a process crash or power loss can leave abandoned files.
+Extracted world directories have mode 0700 and are never served by the viewer.
 
 ZIP safeguards reject path traversal, absolute paths, backslashes, duplicate
 names and symlinks, and limit input to 100,000 entries, 512 MiB per entry and

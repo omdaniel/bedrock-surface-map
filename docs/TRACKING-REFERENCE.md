@@ -90,7 +90,7 @@ including `false` causes `TLSOnlyError`. Keep URI, body and concurrency limits,
 and secret-backed headers. Recheck this version-specific behavior for each
 candidate rather than assuming all beta releases behave identically.
 
-The separate `probe/` pack exercises BDS URI/body/concurrency rejection and
+The separate `tracking/probe/` pack exercises BDS URI/body/concurrency rejection and
 timeouts. Register it only on disposable test worlds, never in the gameplay
 world, with explicit `allow_test_probe: true` module configuration. Activation,
 stopped backups, experiment approval, secrets and update

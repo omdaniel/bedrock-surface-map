@@ -28,11 +28,20 @@ Open the loopback URL printed by Vite. This source path creates a synthetic
 fixture and does not download Minecraft assets. The public showcase is a
 separate reviewed demo packet; `npm run demo:build` creates `.local/demo-dist`.
 
+`./dev` adds its pinned local `wasm-bindgen` to its child processes' `PATH`.
+For direct npm build commands below, run this from the checkout root in each
+new shell after setup:
+
+```sh
+export PATH="$PWD/.sources/tools/wasm-bindgen/0.2.127/bin:$PATH"
+```
+
 ## Run a Linux Release
 
 See [archive installation](INSTALL.md) for the synthetic and offline-snapshot
 paths. The release executable is separate from the source developer workflow.
-It serves only loopback by default and never manages a game server.
+It serves offline snapshots on loopback only and never manages a game server.
+Live feeds require the [separate integration](#optional-live-integration).
 
 ## Import Your Own Snapshot
 

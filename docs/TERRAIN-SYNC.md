@@ -84,6 +84,7 @@ From a [bootstrapped checkout](GETTING_STARTED.md#run-the-demo-locally):
 ```sh
 uv tool install ziglang==0.15.2
 cargo install cargo-zigbuild --version 0.20.1 --locked
+rustup target add x86_64-unknown-linux-musl --toolchain 1.92.0
 npm run terrain:build
 npm run terrain:test
 cargo test --locked -p surface-sync
@@ -95,8 +96,10 @@ npm run terrain:bundle
 
 The bundle contains static x86_64-musl binaries, packs and a synthetic seed, with
 commit/hash verification metadata. Its importer supports isolated repair workers;
-it contains no real terrain or Mojang textures. `surface-cli asset-library`
-prepares the pinned shared atlas. `import --surface-only` emits region-streamed
+it contains no real terrain or Mojang textures.
+`cargo run --release --locked -p surface-cli -- asset-library` prepares the
+pinned shared atlas after the explicit [asset download](IMPORT.md).
+The source CLI's `import --surface-only` emits region-streamed
 repair data without a world-sized heightfield.
 
 A live viewer requires a matching world/generation binding. Polling pauses while
