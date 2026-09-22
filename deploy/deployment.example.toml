@@ -1,0 +1,17 @@
+schema_version = 1
+project = "family-map"
+public_origin = "https://map.example.com"
+ingest_bind = "10.20.0.10"
+bds_source_ipv4 = "10.20.0.20"
+
+[features]
+terrain = true
+players = true
+
+[viewer]
+access = "password"
+username = "map"
+
+[ports]
+terrain = 18082
+players = 18081

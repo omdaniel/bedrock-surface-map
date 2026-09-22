@@ -6,9 +6,27 @@ digest-pinned Caddy image with the same prebuilt frontend. Both images default t
 numeric user `65532:65532`; Compose tests override that with the non-root operator's
 UID/GID to read owner-only bind-mounted files. Neither image contains credentials.
 
-These components are not yet an operator installation workflow. The deployment
-generator, authenticated gateway, BDS handoff and full acceptance gates remain
+These components are not yet an operator installation workflow. Transactional
+preparation, the authenticated gateway, BDS handoff and full acceptance gates remain
 required before this topology is supported.
+
+## Initialization boundary
+
+`bedrock-map deploy init --dir ./map-deploy --config ./deployment.toml` validates
+the separate [deployment schema example](deployment.example.toml), then creates stable world/generation identities,
+independent feed credentials and an optional bcrypt viewer hash. Password access
+is the default; a hidden TTY prompt or `--viewer-password-file` accepts the secret,
+never a password argument. Password files must be operator-owned with mode 0600.
+Repeated initialization verifies existing files without rotating credentials.
+Missing secrets, changed settings, unsafe ownership and unacknowledged public
+access are errors. Snapshot `config.toml` and loopback serving remain separate.
+
+Initialization requires a `deployment-release.json` beside the verified operator
+distribution, pairing registry-verified immutable runtime/gateway images with
+its exact commit and common resources. The packaging candidate alone is not that
+publication record. There is no end-user source-build fallback or image tag.
+Deployment preparation and runtime acceptance are separate from initialization;
+an initialized directory is not a prepared or running deployment.
 
 ## Build and packaging checks
 
@@ -25,6 +43,8 @@ directory must not exist. The second command requires rootful Docker Engine,
 the Compose plugin, Skopeo and a non-root Linux operator on the candidate's native
 architecture. It loads the exact manifests through an ephemeral loopback registry
 using `--preserve-digests`; it does not publish to GHCR or modify a firewall.
+The tested packaging baseline is Docker Engine 28.0.4 and Compose 2.38.2 on
+Ubuntu 24.04-class native runners; older versions are not currently verified.
 
 The packaging fixture tests owner-only tokens, read-only roots, dropped
 capabilities, separate unexposed read listeners, empty-server readiness and

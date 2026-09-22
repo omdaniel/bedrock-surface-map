@@ -4,6 +4,11 @@ Installation addresses, world identity and account policy belong in deployment
 configuration, not application source. Examples use fixtures or loopback; no tool
 automatically connects to a homelab.
 
+The separate [deployment initializer](../deploy/README.md#initialization-boundary)
+uses `deployment.toml` for a dedicated HTTPS hostname, private ingest addresses,
+feed selection and viewer access. It does not reuse the snapshot server's
+`config.toml`; initialization alone does not prepare or start services.
+
 ## Verification Tools
 
 Copy [the example](../examples/verification.json) to an ignored location such as

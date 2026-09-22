@@ -25,6 +25,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare an independently managed live-map deployment.
+    Deploy {
+        #[command(subcommand)]
+        command: DeployCommand,
+    },
     #[command(name = "internal-health", hide = true)]
     InternalHealth {
         #[arg(value_enum)]
@@ -57,6 +62,19 @@ enum Command {
     Assets {
         #[command(subcommand)]
         command: AssetsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DeployCommand {
+    /// Initialize private deployment identity and secrets; does not start services.
+    Init {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        viewer_password_file: Option<PathBuf>,
     },
 }
 
@@ -176,6 +194,9 @@ async fn main() -> std::process::ExitCode {
 
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::Deploy {
+            command: DeployCommand::Init { .. },
+        } => "deploy.init",
         Command::InternalHealth { .. } => "internal-health",
         Command::Init => "init",
         Command::Demo { .. } => "demo",
@@ -193,6 +214,53 @@ fn command_name(command: &Command) -> &'static str {
 }
 
 async fn run(args: Args) -> Result<u8> {
+    if let Command::Deploy { command } = &args.command {
+        match command {
+            DeployCommand::Init {
+                dir,
+                config,
+                viewer_password_file,
+            } => {
+                use bedrock_map::deploy::{
+                    config::{Access, Config},
+                    init,
+                    release::Release,
+                };
+                ensure!(
+                    fs::metadata(config)?.len() <= 16 * 1024,
+                    "E_CONFIG_INVALID: deployment configuration too large"
+                );
+                let config = Config::parse(&fs::read_to_string(config)?)?;
+                let resources = resource(&args)?;
+                let release = Release::load(&resources)?;
+                let existing = dir.try_exists()?;
+                let password = if config.viewer.access == Access::Password
+                    && (!existing || viewer_password_file.is_some())
+                {
+                    Some(init::read_password(
+                        viewer_password_file.as_deref(),
+                        !existing,
+                    )?)
+                } else {
+                    ensure!(
+                        viewer_password_file.is_none(),
+                        "E_CONFIG_INVALID: public access does not use a password"
+                    );
+                    None
+                };
+                let lock = init::initialize(dir, &config, &release, password.as_deref())?;
+                print(
+                    result(
+                        "deploy.init",
+                        json!({"directory":dir,"world_id":lock.world_id,"generation":lock.generation,
+                    "changed":!existing,"status":"initialized","prepared":false,"running":false}),
+                    )?,
+                    args.json,
+                );
+            }
+        }
+        return Ok(0);
+    }
     if let Command::InternalHealth { service } = &args.command {
         bedrock_map::health::check(*service).await?;
         return Ok(0);
@@ -202,6 +270,7 @@ async fn run(args: Args) -> Result<u8> {
         None => default_state()?,
     })?;
     match &args.command {
+        Command::Deploy { .. } => unreachable!("handled before snapshot state resolution"),
         Command::InternalHealth { .. } => unreachable!("handled before snapshot state resolution"),
         Command::Init => {
             let config = state.init()?;
