@@ -16,7 +16,14 @@ Configure these protected GitLab variables before enabling its jobs:
   C/C++ prerequisites for the selected musl targets.
 - `BEDROCK_MAP_AMD64_RUNNER_TAG` and `BEDROCK_MAP_ARM64_RUNNER_TAG`: tags for
   native Linux AMD64 and ARM64 runners. ARM execution is required before an
-  ARM archive is supported.
+ARM archive is supported.
+
+The separate `Deployment Packaging` workflow builds one common artifact and
+packages it into native AMD64 and ARM64 OCI candidates. Its native Docker fixture
+checks numeric users, owner-only secret mounts, listener isolation and signal
+handling. It retains OCI layouts and `oci-native-evidence.json` for fourteen days;
+it publishes neither registry images nor a supported live installer. See
+[`deploy/README.md`](../deploy/README.md) for its scope and local commands.
 
 The release jobs are intentionally skipped until those variables exist. A
 cross-compiled archive is build evidence, not native-runtime evidence.

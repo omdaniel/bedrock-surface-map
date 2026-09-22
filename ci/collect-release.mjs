@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import { resolve } from "node:path";
 import { assertBrowserEvidence } from "../scripts/release/evidence.mjs";
+import { assertReleaseCommon } from "../scripts/release/verify-common.mjs";
 
 const [destination, ...sources] = process.argv.slice(2);
 if (!destination || sources.length < 2) {
@@ -119,27 +120,7 @@ for (const item of evidence) {
     releaseManifest.target !== item.target
   )
     throw Error("native release manifest disagrees with evidence");
-  const files = new Map(
-    releaseManifest.files.map((record) => [record.path, record]),
-  );
-  for (const record of common.files) {
-    const mapped = record.path.startsWith("fixture/")
-      ? `share/bedrock-surface-map/fixtures/surface-v1/${record.path.slice(8)}`
-      : record.path.startsWith("terrain-pack/")
-        ? `share/bedrock-surface-map/packs/terrain/${record.path.slice(13)}`
-        : record.path.startsWith("tracking-pack/")
-          ? `share/bedrock-surface-map/packs/tracking/${record.path.slice(14)}`
-          : `share/bedrock-surface-map/${record.path}`;
-    const bundled = files.get(mapped);
-    if (
-      !bundled ||
-      bundled.sha256 !== record.sha256 ||
-      bundled.bytes !== record.bytes
-    )
-      throw Error(
-        `common resource mismatch in ${item.archive}: ${record.path}`,
-      );
-  }
+  assertReleaseCommon(common, releaseManifest);
   byTarget.set(item.target, item);
 }
 if (byTarget.size !== 2)

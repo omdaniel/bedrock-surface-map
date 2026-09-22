@@ -61,3 +61,25 @@ export async function verifyCommon(root, expectedCommit) {
   if (found.size !== declared.size) throw Error("missing common artifact file");
   return manifest;
 }
+
+export function assertReleaseCommon(common, release) {
+  if (common.commit !== release.commit)
+    throw Error("common/release source mismatch");
+  const files = new Map(release.files.map((record) => [record.path, record]));
+  for (const record of common.files) {
+    const mapped = record.path.startsWith("fixture/")
+      ? `share/bedrock-surface-map/fixtures/surface-v1/${record.path.slice(8)}`
+      : record.path.startsWith("terrain-pack/")
+        ? `share/bedrock-surface-map/packs/terrain/${record.path.slice(13)}`
+        : record.path.startsWith("tracking-pack/")
+          ? `share/bedrock-surface-map/packs/tracking/${record.path.slice(14)}`
+          : `share/bedrock-surface-map/${record.path}`;
+    const bundled = files.get(mapped);
+    if (
+      !bundled ||
+      bundled.sha256 !== record.sha256 ||
+      bundled.bytes !== record.bytes
+    )
+      throw Error(`common resource mismatch: ${record.path}`);
+  }
+}

@@ -1,0 +1,102 @@
+name: Deployment Packaging
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: deployment-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  common:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+          cache: npm
+      - run: rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev
+      - name: Install SHA-verified wasm-bindgen
+        run: |
+          curl -fL --retry 3 --max-time 180 https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/wasm-bindgen.tgz"
+          printf '%s  %s\n' 61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a "$RUNNER_TEMP/wasm-bindgen.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/wasm-bindgen.tgz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"
+      - run: npm ci
+      - run: npm run release:test
+      - run: node scripts/release/build-common-artifact.mjs .local/release/common
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-common-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/common/
+          retention-days: 14
+          if-no-files-found: error
+  native-oci:
+    needs: common
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+          cache: npm
+      - run: rustup toolchain install 1.92.0 --profile minimal --target ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev python3-venv skopeo
+      - run: cargo install cargo-zigbuild --version 0.20.1 --locked
+      - name: Install pinned Zig
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ziglang"
+          "$RUNNER_TEMP/ziglang/bin/pip" install --no-cache-dir ziglang==0.15.2
+          echo "$RUNNER_TEMP/ziglang/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-common-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/common/
+      - run: npm ci
+      - run: node scripts/release/build-package.mjs ${{ matrix.target }} --common .local/release/common
+      - name: Create isolated OCI exporter
+        run: docker buildx create --name surface-oci --driver docker-container --use
+      - name: Package and test the exact OCI images without publication
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          VERSION=$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json")).version')
+          node scripts/release/build-oci.mjs ".local/release/$TARGET/dist/bedrock-surface-map-v$VERSION-linux-$ARCH.tar.gz" .local/release/common ".local/oci/$ARCH"
+          node scripts/deploy/oci-smoke.mjs ".local/oci/$ARCH"
+      - name: Preserve OCI artifacts and native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-oci-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/${{ matrix.arch }}/
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Remove this job's builder
+        if: always()
+        run: docker buildx rm surface-oci
