@@ -1,4 +1,7 @@
-FROM caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d
+FROM caddy:2.11.4-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+# Low ports are enabled only inside this container's network namespace.
+# Remove the inherited executable capability before dropping all capabilities.
+RUN setcap -r /usr/bin/caddy
 ARG APPLICATION_COMMIT
 ARG COMMON_SHA256
 ARG RELEASE_SHA256

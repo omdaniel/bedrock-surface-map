@@ -28,8 +28,10 @@ using `--preserve-digests`; it does not publish to GHCR or modify a firewall.
 
 The packaging fixture tests owner-only tokens, read-only roots, dropped
 capabilities, separate unexposed read listeners, empty-server readiness and
-SIGTERM shutdown. Its temporary gateway is **not** the authenticated public
-deployment. No BDS, public DNS or ACME service is contacted by this fixture.
+SIGTERM shutdown. It tests Caddy's low ports and certificate-store writes as the
+non-root user, trusting its disposable local CA only inside the test process.
+Its temporary gateway is **not** the authenticated public deployment. No BDS,
+public DNS or ACME service is contacted, and no OS trust roots are installed.
 The test removes only its own Compose project, registry and private scratch.
 
 After both native jobs pass, collect their exact manifests into multi-platform

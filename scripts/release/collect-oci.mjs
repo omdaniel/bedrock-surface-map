@@ -26,6 +26,8 @@ export function assertNativeOciEvidence(build, native) {
     native.common_sha256 !== build.common_sha256 ||
     native.nonroot_bind_permissions !== true ||
     native.signal_exit_zero !== true ||
+    native.private_ca_https !== true ||
+    native.unprivileged_low_ports !== true ||
     native.readiness_without_producer !== true ||
     native.private_read_listeners !== true ||
     !native.docker?.Server?.Version ||

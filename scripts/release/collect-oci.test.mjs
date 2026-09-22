@@ -32,6 +32,8 @@ function fixture() {
     images: structuredClone(build.images),
     nonroot_bind_permissions: true,
     signal_exit_zero: true,
+    private_ca_https: true,
+    unprivileged_low_ports: true,
     readiness_without_producer: true,
     private_read_listeners: true,
     docker: { Server: { Version: "fixture" } },
@@ -46,6 +48,8 @@ test("native OCI gate requires execution, permissions, signals and exact images"
     "ok",
     "nonroot_bind_permissions",
     "signal_exit_zero",
+    "private_ca_https",
+    "unprivileged_low_ports",
     "readiness_without_producer",
     "private_read_listeners",
   ])

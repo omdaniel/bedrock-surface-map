@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { request as httpsRequest } from "node:https";
 import {
   chmod,
   mkdir,
@@ -48,7 +49,47 @@ const compose = (...args) =>
   );
 let composeStarted = false,
   registryStarted = false;
+let testCa;
+const tokens = {
+  terrain: randomBytes(32).toString("hex"),
+  players: randomBytes(32).toString("hex"),
+};
 async function request(url, options = {}) {
+  if (url.startsWith("https:"))
+    return new Promise((resolveResponse, reject) => {
+      const req = httpsRequest(
+        url,
+        {
+          method: options.method ?? "GET",
+          ca: testCa,
+          servername: "localhost",
+          headers: { ...options.headers, host: "localhost" },
+          timeout: 5000,
+        },
+        (res) => {
+          const chunks = [];
+          let length = 0;
+          res.on("data", (chunk) => {
+            length += chunk.length;
+            if (length > 2 * 1024 * 1024)
+              req.destroy(Error("fixture response exceeds bound"));
+            else chunks.push(chunk);
+          });
+          res.on("error", reject);
+          res.on("end", () =>
+            resolveResponse(
+              new Response(Buffer.concat(chunks), {
+                status: res.statusCode,
+                headers: res.headers,
+              }),
+            ),
+          );
+        },
+      );
+      req.on("error", reject);
+      req.on("timeout", () => req.destroy(Error("fixture HTTPS timeout")));
+      req.end(options.body);
+    });
   return fetch(url, { ...options, signal: AbortSignal.timeout(5000) });
 }
 async function waitFor(run) {
@@ -105,18 +146,23 @@ try {
   }
   for (const dir of ["secrets", "terrain", "caddy-data", "caddy-config"])
     await mkdir(join(temp, dir), { mode: 0o700 });
-  const token = randomBytes(32).toString("hex");
+  const token = tokens.players;
   for (const name of ["terrain", "players"])
-    await writeFile(join(temp, "secrets", name), token, { mode: 0o600 });
+    await writeFile(join(temp, "secrets", name), tokens[name], { mode: 0o600 });
   // This is a packaging fixture, not the operator's authenticated deployment.
   // Only its disposable gateway and ingest listeners are reachable on loopback.
   await writeFile(
     join(temp, "Caddyfile"),
     `{
   admin off
-  auto_https off
+  auto_https disable_redirects
+  skip_install_trust
 }
 :80 {
+  respond 404
+}
+https://localhost {
+  tls internal
   route {
     @reads path /api/v1/worlds/fixture-world/players
     reverse_proxy @reads players:8110
@@ -172,8 +218,9 @@ try {
     services: {
       gateway: {
         ...hardening,
+        sysctls: { "net.ipv4.ip_unprivileged_port_start": "0" },
         image: images.gateway,
-        ports: [published(80)],
+        ports: [published(80), published(443)],
         volumes: [
           bind("Caddyfile", "/etc/bedrock-map/Caddyfile"),
           bind("caddy-data", "/data", false),
@@ -250,7 +297,10 @@ try {
   }
   const port = (name, containerPort) =>
     containers[name].NetworkSettings.Ports[`${containerPort}/tcp`][0].HostPort;
-  const gateway = `http://127.0.0.1:${port("gateway", 80)}`;
+  testCa = await waitFor(() =>
+    readFile(join(temp, "caddy-data/caddy/pki/authorities/local/root.crt")),
+  );
+  const gateway = `https://127.0.0.1:${port("gateway", 443)}`;
   await waitFor(async () =>
     assert.match(await (await request(gateway)).text(), /Bedrock Surface Map/),
   );
@@ -321,7 +371,7 @@ try {
     );
   }
   const log = compose("logs", "--no-color");
-  assert.ok(!log.includes(token));
+  assert.ok(Object.values(tokens).every((value) => !log.includes(value)));
   // A secret unreadable by the runtime UID must fail, not become world-readable.
   await chmod(join(temp, "secrets/players"), 0o000);
   compose("up", "-d", "players");
@@ -343,6 +393,8 @@ try {
     compose: docker("compose", "version", "--short"),
     nonroot_bind_permissions: true,
     signal_exit_zero: true,
+    private_ca_https: true,
+    unprivileged_low_ports: true,
     readiness_without_producer: true,
     private_read_listeners: true,
     no_public_publication: true,
@@ -352,6 +404,27 @@ try {
     JSON.stringify(evidence, null, 2) + "\n",
   );
   console.log(JSON.stringify(evidence));
+} catch (error) {
+  if (composeStarted) {
+    try {
+      let logs = compose("logs", "--no-color");
+      for (const token of Object.values(tokens))
+        logs = logs.replaceAll(token, "[redacted]");
+      console.error(logs);
+      await writeFile(join(output, "fixture-failure.log"), logs, {
+        mode: 0o600,
+      });
+      for (const id of compose("ps", "-aq").split("\n").filter(Boolean)) {
+        const info = JSON.parse(docker("inspect", id))[0];
+        console.error(
+          JSON.stringify({ container: info.Name, state: info.State }),
+        );
+      }
+    } catch (diagnosticError) {
+      console.error(`fixture diagnostics failed: ${diagnosticError.message}`);
+    }
+  }
+  throw error;
 } finally {
   if (composeStarted) compose("down", "--remove-orphans", "-t", "5");
   if (registryStarted) docker("rm", "-f", registry);

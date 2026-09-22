@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
   "gateway": {
-    "image": "caddy:2.11.2-alpine@sha256:834468128c7696cec0ceea6172f7d692daf645ae51983ca76e39da54a97c570d",
+    "image": "caddy:2.11.4-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e",
     "platforms": {
-      "amd64": "sha256:6d125e80883be8a2bef5f088c7535945b42cdbb8a0f5471bf36eaf18dc0638f1",
-      "arm64": "sha256:df9781ddd351c310248024d964065cd8d41b11fb5d238256d55d30925e8b6ae4"
+      "amd64": "sha256:040e9f7480b80b6d4a7e5013a21159b950a63dcbdb956e38abe2387fb28d9ec0",
+      "arm64": "sha256:c802bf2721a427e961b9fd6a194c3888a180de9990b43f8530a02bd6be017e17"
     }
   },
   "test_registry": "registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
