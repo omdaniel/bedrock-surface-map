@@ -6,6 +6,7 @@ maintenance entry points without making the demo visitor read an operator guide.
 | Component                       | Responsibility                                                              |
 | ------------------------------- | --------------------------------------------------------------------------- |
 | surface-core                    | Retained surface fields, lossless codecs, reference shadow calculations     |
+| bedrock-map                     | Packaged snapshot initialization, import, serving and diagnostics          |
 | bedrock-adapter / surface-cli   | Read-only archive extraction, assets, validation, import and repair exports |
 | surface-gpu                     | Rust/WASM renderer, bounded GPU cache, shadows, filtered overviews          |
 | surface-tracker / tracking pack | Independent player sampling, collection and browser markers                 |
@@ -38,6 +39,10 @@ See [appearance](APPEARANCE.md) and the
 
 ## Verify
 
+Use a [bootstrapped checkout and its local tool PATH](GETTING_STARTED.md#run-the-demo-locally).
+Local browser checks require installed Google Chrome. Linux CI uses Playwright
+Chromium and software Vulkan as configured in the [workflow](../.github/workflows/ci.yml).
+
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -45,6 +50,7 @@ cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warni
 cargo test --workspace --locked
 npm run format:check
 npm run config:test
+npm run release:test
 npm run build
 npm run tracking:build
 npm run tracking:test

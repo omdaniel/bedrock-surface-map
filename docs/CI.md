@@ -4,7 +4,10 @@ GitHub Actions checks source and Pages, and its uncredentialed `native-amd64`
 job assembles and tests the exact AMD64 Linux archive on an AMD64 runner.
 The optional GitLab pipeline in [`.gitlab-ci.yml`](../.gitlab-ci.yml) builds
 the same release scripts on both native Linux architectures after an owner
-creates a mirror. Neither source nor native-test jobs can publish.
+creates a mirror. Neither source nor native-test jobs publish binary releases.
+GitHub retains `native-amd64-<commit>` candidate artifacts for fourteen days;
+successful CI does not create a version tag or a GitHub Release. ARM64 validation
+and versioned publication require the separately configured pipeline below.
 
 Configure these protected GitLab variables before enabling its jobs:
 
