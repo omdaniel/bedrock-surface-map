@@ -160,6 +160,13 @@ try {
     host_ip: "127.0.0.1",
     protocol: "tcp",
   });
+  const healthcheck = (service) => ({
+    test: ["CMD", "/opt/bedrock-map/bedrock-map", "internal-health", service],
+    interval: "5s",
+    timeout: "3s",
+    start_period: "2s",
+    retries: 3,
+  });
   const config = {
     name: project,
     services: {
@@ -175,6 +182,7 @@ try {
       },
       terrain: {
         ...hardening,
+        healthcheck: healthcheck("terrain"),
         image: images.runtime,
         command: [
           "/opt/bedrock-map/libexec/surface-sync",
@@ -200,6 +208,7 @@ try {
       },
       players: {
         ...hardening,
+        healthcheck: healthcheck("players"),
         image: images.runtime,
         command: ["/opt/bedrock-map/libexec/surface-tracker"],
         environment: {
@@ -252,6 +261,14 @@ try {
   assert.ok(
     (await request(`${gateway}/api/v1/worlds/fixture-world/terrain/status`)).ok,
   );
+  for (const name of ["terrain", "players"])
+    await waitFor(async () => {
+      assert.equal(
+        JSON.parse(docker("inspect", containers[name].Id))[0].State.Health
+          .Status,
+        "healthy",
+      );
+    });
   const now = Date.now();
   const snapshot = {
     schema_version: 1,

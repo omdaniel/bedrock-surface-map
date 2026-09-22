@@ -25,6 +25,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(name = "internal-health", hide = true)]
+    InternalHealth {
+        #[arg(value_enum)]
+        service: bedrock_map::health::Service,
+    },
     Init,
     Demo {
         #[arg(long)]
@@ -171,6 +176,7 @@ async fn main() -> std::process::ExitCode {
 
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::InternalHealth { .. } => "internal-health",
         Command::Init => "init",
         Command::Demo { .. } => "demo",
         Command::Import { .. } => "import",
@@ -187,11 +193,16 @@ fn command_name(command: &Command) -> &'static str {
 }
 
 async fn run(args: Args) -> Result<u8> {
+    if let Command::InternalHealth { service } = &args.command {
+        bedrock_map::health::check(*service).await?;
+        return Ok(0);
+    }
     let state = State::new(match args.state.clone() {
         Some(path) => path,
         None => default_state()?,
     })?;
     match &args.command {
+        Command::InternalHealth { .. } => unreachable!("handled before snapshot state resolution"),
         Command::Init => {
             let config = state.init()?;
             print(

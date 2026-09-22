@@ -7,6 +7,7 @@ pub mod assets;
 pub mod config;
 pub mod dataset;
 pub mod doctor;
+pub mod health;
 pub mod resources;
 pub mod server;
 pub mod state;

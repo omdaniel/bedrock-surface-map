@@ -32,6 +32,17 @@ SIGTERM shutdown. Its temporary gateway is **not** the authenticated public
 deployment. No BDS, public DNS or ACME service is contacted by this fixture.
 The test removes only its own Compose project, registry and private scratch.
 
+After both native jobs pass, collect their exact manifests into multi-platform
+indexes without rebuilding or publishing:
+
+```sh
+node scripts/release/collect-oci.mjs .local/oci/combined /path/to/amd64 /path/to/arm64
+```
+
+`oci-candidate.json` binds the resulting index and per-platform digests to the
+shared frontend identity and native reports. It explicitly records that image
+publication and complete deployment acceptance have not occurred.
+
 `.github/workflows/deployment.yml` builds the common artifact once, then runs
 these packaging checks on native Ubuntu AMD64 and ARM64 runners. Its evidence
 records Engine/Compose versions and image identities. This is packaging evidence,

@@ -100,3 +100,29 @@ jobs:
       - name: Remove this job's builder
         if: always()
         run: docker buildx rm surface-oci
+  collect:
+    needs: native-oci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/amd64/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-arm64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/arm64/
+      - run: node scripts/release/collect-oci.mjs .local/oci/combined .local/oci/amd64 .local/oci/arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-oci-combined-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/combined/
+          retention-days: 14
+          if-no-files-found: error

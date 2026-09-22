@@ -9,7 +9,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { assertReleaseCommon, verifyCommon } from "./verify-common.mjs";
 import { inspectOci, sha256 } from "./oci.mjs";
@@ -104,6 +104,7 @@ try {
     }
   }
   await permissions(context);
+  await mkdir(dirname(output), { recursive: true });
   await mkdir(output); // Never erase an existing candidate or operator directory.
   const reports = {};
   for (const [name, dockerfile] of [
