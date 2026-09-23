@@ -2,6 +2,27 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
+export function unusedClientSubnet(routes) {
+  const integer = (ip) =>
+    ip.split(".").reduce((n, b) => n * 256 + Number(b), 0);
+  const occupied = routes
+    .filter((r) => r.dst && r.dst !== "default")
+    .map(({ dst }) => {
+      const [ip, bits = "32"] = dst.split("/"),
+        size = 2 ** (32 - Number(bits));
+      const start = Math.floor(integer(ip) / size) * size;
+      return [start, start + size - 1];
+    });
+  for (const prefix of ["10.249", "172.30", "192.168"])
+    for (let subnet = 0; subnet < 256; subnet++) {
+      const base = `${prefix}.${subnet}`,
+        start = integer(`${base}.0`);
+      if (occupied.every(([lo, hi]) => start + 7 < lo || start > hi))
+        return base;
+    }
+  throw Error("no unused private /29 available for isolated CI client routes");
+}
+
 // Explicitly confined to disposable GitHub-hosted acceptance runners. Never
 // called by the operator CLI or the ordinary local packaging smoke test.
 export function firewallVantages({ docker, image, project }) {
@@ -12,22 +33,32 @@ export function firewallVantages({ docker, image, project }) {
     throw Error(
       "packet-level firewall acceptance requires a disposable GitHub-hosted runner",
     );
-  const network = `${project}-clients`,
-    clients = [],
+  const clients = [],
+    links = [],
     sudo = (...args) =>
       execFileSync("sudo", ["--non-interactive", ...args], {
         encoding: "utf8",
         timeout: 15_000,
         stdio: ["ignore", "pipe", "pipe"],
       }).trim();
-  docker("network", "create", network);
+  const subnet = unusedClientSubnet(
+    JSON.parse(sudo("ip", "-j", "-4", "route", "show", "table", "all")),
+  );
   let appliedScript;
   const cleanup = () => {
     try {
       if (appliedScript) sudo("sh", appliedScript, "remove");
     } finally {
       for (const client of clients) docker("rm", "-f", client.name);
-      docker("network", "rm", network);
+      for (const link of links) {
+        // Destroying the namespace can already remove its veth peer.
+        try {
+          sudo("ip", "link", "show", "dev", link);
+        } catch {
+          continue;
+        }
+        sudo("ip", "link", "delete", "dev", link);
+      }
     }
   };
   try {
@@ -39,19 +70,36 @@ export function firewallVantages({ docker, image, project }) {
         "--name",
         name,
         "--network",
-        network,
+        "none",
         "--read-only",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--entrypoint",
         "/bin/sleep",
         image,
-        "600",
+        "1800",
       );
       clients.push({ name });
       const info = JSON.parse(docker("inspect", name))[0];
-      clients.at(-1).pid = info.State.Pid;
-      clients.at(-1).address = info.NetworkSettings.Networks[network].IPAddress;
+      const client = clients.at(-1);
+      client.pid = info.State.Pid;
+      const offset = role === "allowed" ? 0 : 4,
+        host = `${subnet}.${offset + 1}`,
+        link = `m${project.slice(-8)}${role[0]}h`,
+        peer = `m${project.slice(-8)}${role[0]}c`;
+      client.address = `${subnet}.${offset + 2}`;
+      // A routed veth, not a Docker bridge hairpin, exercises host PREROUTING
+      // DNAT and DOCKER-USER like a separately addressed LAN/VPN client.
+      sudo("ip", "link", "add", link, "type", "veth", "peer", "name", peer);
+      links.push(link);
+      sudo("ip", "link", "set", peer, "netns", String(client.pid));
+      sudo("ip", "address", "add", `${host}/30`, "dev", link);
+      sudo("ip", "link", "set", link, "up");
+      const inside = (...args) =>
+        sudo("nsenter", "--target", String(client.pid), "--net", "ip", ...args);
+      inside("address", "add", `${client.address}/30`, "dev", peer);
+      inside("link", "set", peer, "up");
+      inside("route", "add", "default", "via", host);
     }
   } catch (error) {
     cleanup();
@@ -151,7 +199,7 @@ export function firewallVantages({ docker, image, project }) {
         idempotent_apply_remove: true,
         matched_drop_rules: counters.length,
         scope:
-          "disposable native CI host and Docker client namespaces; not public-internet or actual BDS evidence",
+          "disposable native CI host and separately routed client namespaces; not public-internet or actual BDS evidence",
       };
     },
   };

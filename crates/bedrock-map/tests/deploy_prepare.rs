@@ -226,6 +226,85 @@ fn asset_fixture(path: &Path) {
 }
 
 #[test]
+fn killed_preparation_never_selects_partial_state() {
+    use std::{
+        os::unix::process::ExitStatusExt,
+        process::{Child, Command, Stdio},
+        time::{Duration, Instant},
+    };
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let fixture = Fixture::new(true, true);
+    let before = inventory(&fixture.source.root);
+    let mut child = ChildGuard(
+        Command::new(env!("CARGO_BIN_EXE_bedrock-map"))
+            .arg("--json")
+            .arg("--resources")
+            .arg(&fixture.resources.root)
+            .args(["deploy", "prepare", "--dir"])
+            .arg(&fixture.root)
+            .arg("--snapshot-state")
+            .arg(&fixture.source.root)
+            .arg("--assets")
+            .arg(&fixture.assets)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "prepare must reach private staging before termination"
+        );
+        if fs::read_dir(fixture.root.join("work"))
+            .unwrap()
+            .any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("prepare-")
+            })
+        {
+            child.0.kill().unwrap();
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "bounded preparation interruption"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(child.0.wait().unwrap().signal(), Some(libc::SIGKILL));
+    assert!(!fixture.root.join("prepared").exists());
+    assert_eq!(inventory(&fixture.source.root), before);
+    assert!(
+        fixture
+            .prepare()
+            .unwrap_err()
+            .to_string()
+            .contains("E_STATE_RECOVERY_REQUIRED")
+    );
+    // Recovery removes only the abandoned operation, never selected state.
+    for entry in fs::read_dir(fixture.root.join("work")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_name().to_string_lossy().starts_with("prepare-") {
+            fs::remove_dir_all(entry.path()).unwrap();
+        }
+    }
+    fixture.prepare().unwrap();
+    assert_eq!(inventory(&fixture.source.root), before);
+}
+
+#[test]
 fn preparation_preserves_source_and_repeats_without_reseeding() {
     let f = Fixture::new(true, true);
     let before = inventory(&f.source.root);

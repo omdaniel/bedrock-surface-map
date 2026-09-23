@@ -4,7 +4,13 @@ import { connect as tlsConnect } from "node:tls";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
-export async function verifyGeneratedBrowser({ port, ca, password, producer }) {
+export async function verifyGeneratedBrowser({
+  port,
+  ca,
+  password,
+  producer,
+  features = { terrain: true, players: true },
+}) {
   // Validate the live certificate using the disposable CA first. Pin the leaf
   // presented to Chromium: the server does not send its root in the TLS chain.
   const certificate = await new Promise((resolve, reject) => {
@@ -111,13 +117,16 @@ export async function verifyGeneratedBrowser({ port, ca, password, producer }) {
         );
         const state = await page.evaluate(() => window.__map.state());
         assert.equal(state.failures.length, 0);
-        assert.equal(Boolean(state.terrain), !suffix.includes("terrain=off"));
-        if (suffix.includes("players=off"))
+        assert.equal(
+          Boolean(state.terrain),
+          features.terrain && !suffix.includes("terrain=off"),
+        );
+        if (!features.players || suffix.includes("players=off"))
           assert.ok(
             !requests.some((url) => url.endsWith("/players")),
             "player opt-out must not contact its feed",
           );
-        if (suffix.includes("terrain=off"))
+        if (!features.terrain || suffix.includes("terrain=off"))
           assert.ok(
             !requests.some((url) => url.includes("/terrain/")),
             "terrain opt-out must use the seeded snapshot",
@@ -130,7 +139,7 @@ export async function verifyGeneratedBrowser({ port, ca, password, producer }) {
         );
         assert.deepEqual(errors, []);
         let protocol = null;
-        if (suffix === "/") {
+        if (producer && suffix === "/") {
           await producer.negativeChecks();
           const change = async (height, material, expectedName) => {
             const before = await page.evaluate(
@@ -202,6 +211,18 @@ export async function verifyGeneratedBrowser({ port, ca, password, producer }) {
             changedDraws,
             "player-only updates must not redraw stationary terrain",
           );
+          // A successful HTTP poll must not keep an abandoned sample alive.
+          await page.waitForFunction(
+            () =>
+              document
+                .querySelector(".players-status")
+                ?.textContent?.startsWith("Stale positions"),
+            undefined,
+            { timeout: 20_000 },
+          );
+          await marker.waitFor({ state: "hidden", timeout: 30_000 });
+          await producer.players(-6.5, 180);
+          await marker.waitFor({ state: "visible", timeout: 10_000 });
           await producer.players(null);
           await marker.waitFor({ state: "detached", timeout: 10_000 });
           await change(65, "grass", "grass");
@@ -213,6 +234,7 @@ export async function verifyGeneratedBrowser({ port, ca, password, producer }) {
             marker_heading: true,
             marker_projection: true,
             empty_roster: true,
+            stale_sample_expiry_and_recovery: true,
             player_only_redraws: 0,
             rejected_writes: true,
           };

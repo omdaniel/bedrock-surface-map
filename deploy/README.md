@@ -134,15 +134,20 @@ fixture, and exercise generated preparation, mounts, readiness, authentication,
 feed outage and same-version restart. Only test CA issuance and ephemeral gateway
 port bindings differ from the generated deployment. Evidence identifies those
 differences explicitly. Chromium verifies the exact generated seed's colored
-canvas pixels, known grass-column picking and explicit terrain/player opt-outs.
+canvas pixels, known grass-column picking and explicit terrain/player opt-outs
+for combined, terrain-only and players-only deployments. Each disabled service,
+binding, route and token must be absent. A stopped producer's sample must become
+stale and expire even while reads succeed; fresh samples restore its marker.
 Its temporary browser process pins the leaf certificate's public key after Node
 validates the certificate against the disposable CA; no OS trust root is installed.
 Synthetic authenticated producer messages exercise terrain pixels/picking and
 player projection/heading through the real services, including invalid writes and
 the absence of terrain redraws for player-only movement.
 
-Packet-level checks use separate allowed/denied Docker client namespaces on the
-disposable runner. They apply only the generated project-scoped `DOCKER-USER`
+Packet-level checks use separately routed allowed/denied client namespaces on the
+disposable runner, with operation-owned veth links in an unused private subnet.
+They avoid Docker bridge hairpins, which can bypass the forwarded-ingress path.
+They apply only the generated project-scoped `DOCKER-USER`
 rules, check actual connection outcomes and drop counters, test idempotent
 apply/remove, and remove those rules during cleanup. The ordinary packaging
 fixture and operator commands never apply firewall rules. These checks are not

@@ -5,11 +5,11 @@ import { request as httpsRequest } from "node:https";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { sha256 } from "../release/oci.mjs";
 import { stageLocalCandidate } from "./stage-oci.mjs";
 import { verifyGeneratedBrowser } from "./generated-browser.mjs";
 import { generatedProducer } from "./generated-producer.mjs";
 import { firewallVantages } from "./generated-firewall.mjs";
+import { fixtureTransport } from "./generated-transport.mjs";
 
 const [candidateArg, fixtureArg, evidenceArg] = process.argv.slice(2);
 if (!candidateArg || !fixtureArg || !evidenceArg)
@@ -244,30 +244,7 @@ try {
       await readFile(join(deployment, `secrets/${name}.token`), "utf8"),
     );
 
-  // The fixture changes only certificate issuance and host port assignment.
-  // Routing, mounts, identities, service launchers and private files are generated.
-  // D11 separately covers public issuance and actual network exposure.
-  const caddyPath = join(deployment, "prepared/gateway/Caddyfile");
-  const caddy = (await readFile(caddyPath, "utf8")).replace(
-    "https://map.example.test {",
-    "https://map.example.test {\n  tls internal",
-  );
-  await writeFile(caddyPath, caddy, { mode: 0o600 });
-  const marker = JSON.parse(initialMarker);
-  marker.immutable_files["gateway/Caddyfile"] = sha256(Buffer.from(caddy));
-  await writeFile(markerPath, JSON.stringify(marker), { mode: 0o600 });
-  const generated = JSON.parse(
-    await readFile(join(deployment, "compose.yaml"), "utf8"),
-  );
-  for (const [name, service] of Object.entries(generated.services)) {
-    for (const port of service.ports) {
-      if (name === "gateway") {
-        port.published = "0";
-        port.host_ip = "127.0.0.1";
-      }
-    }
-  }
-  await writeFile(composePath, JSON.stringify(generated), { mode: 0o600 });
+  const { marker } = await fixtureTransport(deployment);
   compose("config", "--quiet");
   stackStarted = true;
   compose("up", "-d");
@@ -372,6 +349,17 @@ try {
   await waitFor(async () =>
     assert.equal((await https(port, terrainStatus)).status, 200),
   );
+  compose("stop", "-t", "5", "players");
+  assert.equal((await https(port, "/")).status, 200);
+  assert.equal((await https(port, terrainStatus)).status, 200);
+  assert.equal((await https(port, playerPath)).status, 502);
+  compose("start", "players");
+  await waitFor(async () =>
+    assert.equal(
+      JSON.parse((await https(port, playerPath)).body).status,
+      "starting",
+    ),
+  );
   compose("stop", "-t", "5");
   for (const name of ["gateway", "terrain", "players"])
     assert.equal(inspect(name).State.ExitCode, 0);
@@ -425,6 +413,112 @@ try {
     password,
     producer,
   });
+  compose("stop", "-t", "5");
+  const combinations = [];
+  for (const enabled of ["terrain", "players"]) {
+    const disabled = enabled === "terrain" ? "players" : "terrain";
+    const root = join(temp, `only-${enabled}`);
+    const configuration = join(temp, `only-${enabled}.toml`);
+    await writeFile(
+      configuration,
+      (await readFile(config, "utf8"))
+        .replace(`project='${project}'`, `project='${project}-${enabled}'`)
+        .replace(`${disabled}=true`, `${disabled}=false`),
+      { mode: 0o600 },
+    );
+    assert.equal(
+      cli(
+        "deploy",
+        "init",
+        "--dir",
+        root,
+        "--config",
+        configuration,
+        "--viewer-password-file",
+        passwordFile,
+      ).ok,
+      true,
+    );
+    assert.equal(
+      cli(
+        "deploy",
+        "prepare",
+        "--dir",
+        root,
+        "--snapshot-state",
+        state,
+        ...(enabled === "terrain"
+          ? ["--assets", join(fixture, "assets.zip")]
+          : []),
+      ).ok,
+      true,
+    );
+    const transport = await fixtureTransport(root);
+    assert.deepEqual(
+      Object.keys(transport.generated.services).sort(),
+      ["gateway", enabled].sort(),
+    );
+    await assert.rejects(readFile(join(root, `secrets/${disabled}.token`)), {
+      code: "ENOENT",
+    });
+    const run = (...args) =>
+      docker(
+        "compose",
+        "--project-directory",
+        root,
+        "-f",
+        transport.path,
+        ...args,
+      );
+    try {
+      run("up", "-d");
+      const info = () =>
+        JSON.parse(docker("inspect", run("ps", "-aq", "gateway")))[0];
+      ca = await waitFor(() =>
+        readFile(join(root, "caddy-data/caddy/pki/authorities/local/root.crt")),
+      );
+      const httpsPort = info().NetworkSettings.Ports["443/tcp"][0].HostPort;
+      await waitFor(async () =>
+        assert.equal((await https(httpsPort, "/", false)).status, 401),
+      );
+      const binding = JSON.parse(
+        (await https(httpsPort, "/viewer-config.json")).body,
+      );
+      assert.ok(binding[enabled]);
+      assert.ok(!binding[disabled]);
+      await waitFor(async () =>
+        assert.equal(
+          (await https(httpsPort, binding[enabled].url)).status,
+          200,
+        ),
+      );
+      const absent =
+        disabled === "players" ? "players" : "terrain/manifest.json";
+      assert.equal(
+        (
+          await https(
+            httpsPort,
+            `/api/v1/worlds/${transport.marker.world_id}/${absent}`,
+          )
+        ).status,
+        404,
+      );
+      combinations.push({
+        enabled,
+        browser: await verifyGeneratedBrowser({
+          port: httpsPort,
+          ca,
+          password,
+          features: {
+            terrain: enabled === "terrain",
+            players: enabled === "players",
+          },
+        }),
+      });
+    } finally {
+      run("down", "--remove-orphans", "-t", "5");
+    }
+  }
   await writeFile(
     output,
     JSON.stringify(
@@ -456,6 +550,7 @@ try {
         browser_verified: true,
         browser_evidence: browserEvidence,
         firewall_evidence: firewallEvidence,
+        single_feed_evidence: combinations,
         actual_bds_verified: false,
       },
       null,
