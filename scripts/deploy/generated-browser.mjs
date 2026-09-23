@@ -67,7 +67,8 @@ export async function verifyGeneratedBrowser({
       page.on("request", (request) => requests.push(request.url()));
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
-        if (["error", "warning"].includes(message.type())) consoleMessages.push(message.text());
+        if (["error", "warning"].includes(message.type()))
+          consoleMessages.push(message.text());
       });
       try {
         await page.goto(`${origin}${suffix}`, {
@@ -287,8 +288,8 @@ export async function verifyGeneratedBrowser({
             JSON.stringify(
               {
                 path: suffix,
-              errors,
-              consoleMessages,
+                errors,
+                consoleMessages,
                 state: await page.evaluate(() => ({
                   map: window.__map?.state(),
                   message: document.querySelector("#message")?.textContent,
