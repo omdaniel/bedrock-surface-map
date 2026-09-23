@@ -598,6 +598,7 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         "E_CONFIG_INVALID",
         "E_STATE_UNSAFE",
         "E_STATE_BUSY",
+        "E_PREPARED_DURABILITY",
         "E_RESOURCE_MISMATCH",
         "E_NO_DATASET",
         "E_ASSET_MISSING",
@@ -621,6 +622,12 @@ fn error_code(error: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn published_durability_failure_has_a_distinct_error_code() {
+        let error = anyhow::anyhow!("E_PREPARED_DURABILITY: prepared/ was published");
+        assert_eq!(error_code(&error), "E_PREPARED_DURABILITY");
+    }
 
     #[test]
     fn committed_selection_survives_private_cleanup_failure() {

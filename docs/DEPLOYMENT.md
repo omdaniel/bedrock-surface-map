@@ -85,6 +85,11 @@ Select a radius appropriate to the existing BDS view distance. Increase the budg
 only after measuring game responsiveness and scan freshness on the test world;
 the pack's query cap remains unchanged. A fresh HTTP heartbeat does not guarantee
 timely terrain scans: `scan-delayed` remains degraded until coverage catches up.
+Loaded chunks become eligible for background rescanning 30 seconds after their
+last scan, leaving time for discovery and extraction before the 60-second coverage
+target. Unloaded chunks retain their last-known published terrain but are excluded
+from active scan coverage until loaded again. These intervals are not latency
+guarantees; the configured per-tick limits still take priority.
 Choose these settings before initialization; 2A does not update an active handoff.
 
 ```sh
@@ -105,6 +110,11 @@ not start services or modify BDS. Identical retries validate without reseeding;
 changed snapshots or active stores refuse. After an interrupted preparation,
 inspect `map-deploy/work/prepare-*` and confirm the process has stopped before
 removing only its abandoned scratch. Never delete `prepared/` to bypass a refusal.
+
+`E_PREPARED_DURABILITY` means the complete `prepared/` tree is published, but the
+parent-directory durability check failed. The command exits nonzero without
+removing that tree. Preserve it, investigate the filesystem, and run `deploy check`
+before starting services; do not delete or reseed it as failed temporary output.
 
 ## Start and Check
 

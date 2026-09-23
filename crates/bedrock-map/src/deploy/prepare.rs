@@ -158,9 +158,19 @@ pub fn prepare(
         &serde_json::to_vec_pretty(&result)?,
     )?;
     files::make_private(&output)?;
-    fs::rename(&output, root.join("prepared"))?;
-    fs::File::open(root)?.sync_all()?;
+    publish(&output, root, |root| fs::File::open(root)?.sync_all())?;
     Ok(result)
+}
+
+fn publish(
+    output: &Path,
+    root: &Path,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<()> {
+    fs::rename(output, root.join("prepared"))?;
+    sync_parent(root).context(
+        "E_PREPARED_DURABILITY: prepared/ was published, but parent-directory durability could not be confirmed; preserve prepared/, inspect the filesystem, and run deploy check before starting services; do not delete or reseed it",
+    )
 }
 
 fn inventories(root: &Path) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>)> {
@@ -221,4 +231,49 @@ pub fn load(root: &Path) -> Result<Preparation> {
         "E_RESOURCE_MISMATCH: prepared fingerprint differs"
     );
     Ok(record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn published_preparation_survives_durability_failure() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            let staging = tempfile::tempdir_in(root.path()).unwrap();
+            let output = staging.path().join("prepared");
+            fs::create_dir(&output).unwrap();
+            fs::write(output.join("preparation.json"), b"completed fixture").unwrap();
+            let error = publish(&output, root.path(), |parent| {
+                assert!(parent.join("prepared/preparation.json").is_file());
+                assert!(!output.exists());
+                Err(std::io::Error::new(
+                    kind,
+                    "injected post-publication failure",
+                ))
+            })
+            .unwrap_err();
+            assert!(error.to_string().starts_with("E_PREPARED_DURABILITY:"));
+            drop(staging);
+            assert_eq!(
+                fs::read(root.path().join("prepared/preparation.json")).unwrap(),
+                b"completed fixture"
+            );
+        }
+    }
+
+    #[test]
+    fn rename_failure_is_not_reported_as_published() {
+        let root = tempfile::tempdir().unwrap();
+        let error = publish(&root.path().join("missing"), root.path(), |_| {
+            panic!("durability check must not run before publication")
+        })
+        .unwrap_err();
+        assert!(!error.to_string().contains("E_PREPARED_DURABILITY"));
+        assert!(!root.path().join("prepared").exists());
+    }
 }
