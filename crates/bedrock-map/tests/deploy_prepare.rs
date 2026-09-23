@@ -166,7 +166,7 @@ impl Fixture {
         } else {
             ""
         };
-        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\n{viewer}")).unwrap();
+        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\n[terrain_pack]\nview_distance=4\nscan_budget_ms=4\n{viewer}")).unwrap();
         init::initialize(
             &root,
             &config,
@@ -561,6 +561,17 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
             entries.as_array().unwrap().len(),
             usize::from(terrain) + usize::from(players)
         );
+        if terrain {
+            let variables: Value = serde_json::from_slice(
+                &fs::read(
+                    handoff.join("config/4e163ad8-5c87-4738-9173-96e3d7cb5b2e/variables.json"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(variables["view_distance"], 4);
+            assert_eq!(variables["scan_budget_ms"], 4);
+        }
         if players {
             let module = handoff.join("config/9b918705-25a3-430e-9a4f-c4cd7abbfcda");
             let variables: Value =

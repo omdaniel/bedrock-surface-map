@@ -17,6 +17,24 @@ pub struct Config {
     pub viewer: Viewer,
     #[serde(default)]
     pub ports: Ports,
+    #[serde(default)]
+    pub terrain_pack: TerrainPack,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerrainPack {
+    pub view_distance: u8,
+    pub scan_budget_ms: u8,
+}
+
+impl Default for TerrainPack {
+    fn default() -> Self {
+        Self {
+            view_distance: 16,
+            scan_budget_ms: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -138,6 +156,11 @@ impl Config {
             "E_CONFIG_INVALID: invalid world_id"
         );
         ensure!(
+            (4..=16).contains(&self.terrain_pack.view_distance)
+                && (1..=4).contains(&self.terrain_pack.scan_budget_ms),
+            "E_CONFIG_INVALID: terrain_pack requires view_distance 4-16 and scan_budget_ms 1-4"
+        );
+        ensure!(
             identifier(&self.viewer.username, 64),
             "E_CONFIG_INVALID: invalid viewer username"
         );
@@ -165,8 +188,37 @@ mod tests {
         assert_eq!(c.viewer.access, Access::Password);
         assert!(!c.features.terrain);
         assert_eq!(c.ports.players, 18081);
+        assert_eq!(c.terrain_pack, TerrainPack::default());
         assert!(Config::parse(&input().replace("players=true", "players=false")).is_err());
         assert!(Config::parse(&(input() + "misspelling=true\n")).is_err());
+    }
+    #[test]
+    fn terrain_pack_settings_are_explicit_and_bounded() {
+        let c = Config::parse(&(input() + "[terrain_pack]\nview_distance=4\nscan_budget_ms=4\n"))
+            .unwrap();
+        assert_eq!(
+            c.terrain_pack,
+            TerrainPack {
+                view_distance: 4,
+                scan_budget_ms: 4
+            }
+        );
+        assert_eq!(Config::parse(&toml::to_string(&c).unwrap()).unwrap(), c);
+        for fields in [
+            "view_distance=3",
+            "view_distance=17",
+            "scan_budget_ms=0",
+            "scan_budget_ms=5",
+            "scan_budget_ms=-1",
+            "scan_budget_ms=1.5",
+            "scan_budget_ms='4'",
+            "misspelling=4",
+        ] {
+            assert!(
+                Config::parse(&(input() + "[terrain_pack]\n" + fields)).is_err(),
+                "{fields}"
+            );
+        }
     }
     #[test]
     fn authority_and_injection_inputs_refuse() {

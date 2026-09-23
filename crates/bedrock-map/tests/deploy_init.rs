@@ -86,6 +86,9 @@ fn repeat_init_preserves_every_byte_and_independent_secrets() {
     let mut other = c.clone();
     other.world_id = Some("other-world".into());
     assert!(init::initialize(&root, &other, &r, None).is_err());
+    let mut other = c.clone();
+    other.terrain_pack.scan_budget_ms = 4;
+    assert!(init::initialize(&root, &other, &r, None).is_err());
     assert!(init::initialize(&root, &c, &r, Some("different-password")).is_err());
     assert_eq!(before, tree(&root));
 }

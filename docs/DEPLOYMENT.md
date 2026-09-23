@@ -31,6 +31,11 @@ not additional production topologies in this reference. An ARM map host does
 not imply ARM BDS support. No compiler, Node or Minecraft installation is needed
 on the map host's runtime path.
 
+The hostname must also be reachable from the map host itself. If the router cannot
+loop a connection back to that same host through its public address, configure
+local/split DNS for the hostname. Keep the public hostname and certificate checks;
+do not disable TLS verification to work around local routing.
+
 ## Prepare
 
 Extract the verified `operator-linux-amd64` or `operator-linux-arm64` bundle into
@@ -72,6 +77,15 @@ Both feeds default to disabled; select at least one. Disabled services, secrets,
 routes and viewer bindings are omitted. Ingest ports default to 18082 (terrain)
 and 18081 (players); `[ports]` can explicitly change them. The public origin must
 be lowercase HTTPS with no path, port, trailing slash or credentials.
+
+Optional `[terrain_pack]` settings control the generated BDS module variables:
+`view_distance` is the chunk discovery radius (4-16, default 16), and
+`scan_budget_ms` is the cooperative per-tick time budget (1-4, default 1).
+Select a radius appropriate to the existing BDS view distance. Increase the budget
+only after measuring game responsiveness and scan freshness on the test world;
+the pack's query cap remains unchanged. A fresh HTTP heartbeat does not guarantee
+timely terrain scans: `scan-delayed` remains degraded until coverage catches up.
+Choose these settings before initialization; 2A does not update an active handoff.
 
 ```sh
 ./bedrock-map deploy init --dir ./map-deploy --config ./deployment.toml

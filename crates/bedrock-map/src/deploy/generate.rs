@@ -327,8 +327,8 @@ fn handoff(
         } else {
             variables["terrain_url"] = url.clone().into();
             variables["generation"] = json!(lock.generation);
-            variables["view_distance"] = json!(16);
-            variables["scan_budget_ms"] = json!(1);
+            variables["view_distance"] = json!(config.terrain_pack.view_distance);
+            variables["scan_budget_ms"] = json!(config.terrain_pack.scan_budget_ms);
         }
         let secret = String::from_utf8(files::read_private(
             &deployment.join(format!("secrets/{name}.token")),
