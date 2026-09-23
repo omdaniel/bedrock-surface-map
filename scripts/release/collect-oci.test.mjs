@@ -5,6 +5,20 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertNativeOciEvidence, collectOci } from "./collect-oci.mjs";
 import { inspectOci, sha256 } from "./oci.mjs";
+import { localRegistry, verifiedCandidate } from "../deploy/stage-oci.mjs";
+
+test("synthetic image staging cannot publish to an external registry", () => {
+  assert.equal(localRegistry("127.0.0.1:43210"), "127.0.0.1:43210");
+  for (const value of [
+    "ghcr.io",
+    "127.0.0.1:65536",
+    "127.0.0.1:0",
+    "localhost:5000",
+    "127.0.0.1:5000/elsewhere",
+    "127.0.0.1.evil.test:5000",
+  ])
+    assert.throws(() => localRegistry(value), /loopback/);
+});
 
 function fixture() {
   const identity = {
@@ -160,8 +174,28 @@ test("multi-architecture OCI index references exact natively checked manifests",
     const report = await collectOci(output, [arm, amd]);
     assert.equal(report.published, false);
     assert.equal(report.deployment_accepted, false);
+    assert.deepEqual(await verifiedCandidate(output), report);
     for (const name of ["runtime", "gateway"]) {
-      const bytes = await readFile(join(output, name, "index.json"));
+      const catalog = JSON.parse(
+        await readFile(join(output, name, "index.json")),
+      );
+      assert.equal(catalog.manifests.length, 1);
+      assert.equal(
+        catalog.manifests[0].digest,
+        report.images[name].index_digest,
+      );
+      assert.equal(
+        catalog.manifests[0].annotations["org.opencontainers.image.ref.name"],
+        "candidate",
+      );
+      const bytes = await readFile(
+        join(
+          output,
+          name,
+          "blobs/sha256",
+          catalog.manifests[0].digest.slice(7),
+        ),
+      );
       assert.equal(report.images[name].index_digest, `sha256:${sha256(bytes)}`);
       const index = JSON.parse(bytes);
       assert.deepEqual(

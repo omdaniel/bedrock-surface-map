@@ -123,3 +123,12 @@ over loopback HTTPS for terrain-only, players-only, combined and explicit-public
 configurations. It tests authentication, raw traversal, methods, header stripping
 and byte/cache integrity. Only the test client's process trusts its disposable CA;
 no system trust store, BDS, public DNS or public certificate service is involved.
+
+The generated-runtime jobs stage the combined indexes in an ephemeral loopback
+registry and verify the served index and native-manifest bytes. They run the
+operator executable from the exact runtime image, import the synthetic parser
+fixture, and exercise generated preparation, mounts, readiness, authentication,
+feed outage and same-version restart. Only test CA issuance and ephemeral host
+port bindings differ from the generated deployment. Evidence identifies those
+differences explicitly; this check is not public-certificate, firewall, browser or
+actual-BDS acceptance. The local staging helper refuses non-loopback registries.

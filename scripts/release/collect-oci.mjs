@@ -125,13 +125,30 @@ export async function collectOci(output, sources) {
         manifests,
       }),
     );
-    await writeFile(join(layout, "index.json"), index);
+    const indexDigest = `sha256:${sha256(index)}`;
+    await writeFile(join(layout, "blobs/sha256", indexDigest.slice(7)), index);
+    // index.json is the OCI layout catalog. Its single named entry points to
+    // the distributable multi-platform index, not two ambiguous layout images.
+    await writeFile(
+      join(layout, "index.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        manifests: [
+          {
+            mediaType: "application/vnd.oci.image.index.v1+json",
+            digest: indexDigest,
+            size: index.length,
+            annotations: { "org.opencontainers.image.ref.name": "candidate" },
+          },
+        ],
+      }),
+    );
     await writeFile(
       join(layout, "oci-layout"),
       JSON.stringify({ imageLayoutVersion: "1.0.0" }),
     );
     images[name] = {
-      index_digest: `sha256:${sha256(index)}`,
+      index_digest: indexDigest,
       platforms: Object.fromEntries(
         candidates.map((item) => [
           item.build.architecture,

@@ -98,8 +98,19 @@ jobs:
           curl -fL --retry 3 --max-time 180 "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_$ARCH.tar.gz" -o "$RUNNER_TEMP/caddy-validator/release.tar.gz"
           printf '%s  %s\n' "$CADDY_SHA256" "$RUNNER_TEMP/caddy-validator/release.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/caddy-validator/release.tar.gz" -C "$RUNNER_TEMP/caddy-validator" caddy
-          cargo test --locked -p bedrock-map --test deploy_prepare generated_ -- --ignored
+          cargo test --locked -p bedrock-map --test deploy_prepare generated_caddy_configuration_parses -- --ignored --exact
+          cargo test --locked -p bedrock-map --test deploy_prepare gateway::generated_gateway_enforces_auth_methods_and_fixed_read_routes -- --ignored --exact
+      - name: Preserve only the generated parser inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-fixture-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .local/deployment-generated/generated.mcworld
+            .local/deployment-generated/assets.zip
+          retention-days: 14
+          if-no-files-found: error
       - name: Create isolated OCI exporter
+        id: builder
         run: docker buildx create --name surface-oci --driver docker-container --use
       - name: Package and test the exact OCI images without publication
         env:
@@ -118,7 +129,7 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
       - name: Remove this job's builder
-        if: always()
+        if: always() && steps.builder.outcome == 'success'
         run: docker buildx rm surface-oci
   collect:
     needs: native-oci
@@ -144,5 +155,41 @@ jobs:
         with:
           name: deployment-oci-combined-${{ github.event.pull_request.head.sha || github.sha }}
           path: .local/oci/combined/
+          retention-days: 14
+          if-no-files-found: error
+  generated-runtime:
+    needs: collect
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - run: sudo apt-get update && sudo apt-get install -y skopeo
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-combined-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/combined/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-fixture-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/deployment-generated/
+      - name: Execute generated deployment using exact native images
+        run: node scripts/deploy/generated-smoke.mjs .local/oci/combined .local/deployment-generated .local/oci/generated-evidence.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-generated-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/generated-evidence.json
           retention-days: 14
           if-no-files-found: error
