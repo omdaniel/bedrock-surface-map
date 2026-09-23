@@ -31,10 +31,15 @@ not additional production topologies in this reference. An ARM map host does
 not imply ARM BDS support. No compiler, Node or Minecraft installation is needed
 on the map host's runtime path.
 
-The hostname must also be reachable from the map host itself. If the router cannot
-loop a connection back to that same host through its public address, configure
-local/split DNS for the hostname. Keep the public hostname and certificate checks;
-do not disable TLS verification to work around local routing.
+The hostname must be reliably reachable from both the map host and LAN browsers.
+A router with missing or unreliable NAT loopback can cause failed connections or
+intermittent live-feed stalls even when the initial page loads. Configure local/split
+DNS to resolve the hostname to the map host's private address for affected LAN
+clients; keep public DNS directed at the public address for outside clients.
+Compare the two network paths before attributing request timeouts to the collectors
+or renderer. Keep the public hostname and certificate checks on both paths; do not
+disable TLS verification to work around local routing. Verify authenticated access
+and live-feed delivery from inside and outside the LAN separately.
 
 ## Prepare
 
