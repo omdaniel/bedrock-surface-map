@@ -138,6 +138,9 @@ canvas pixels, known grass-column picking and explicit terrain/player opt-outs
 for combined, terrain-only and players-only deployments. Each disabled service,
 binding, route and token must be absent. A stopped producer's sample must become
 stale and expire even while reads succeed; fresh samples restore its marker.
+Linux browser checks use the repository's Vulkan/SwiftShader setup under Xvfb;
+reports record the browser host and reported adapter. Synthetic failure artifacts
+contain canvas screenshots and bounded diagnostic state, not private credentials.
 Its temporary browser process pins the leaf certificate's public key after Node
 validates the certificate against the disposable CA; no OS trust root is installed.
 Synthetic authenticated producer messages exercise terrain pixels/picking and

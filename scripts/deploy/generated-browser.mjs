@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { createHash, X509Certificate } from "node:crypto";
 import { connect as tlsConnect } from "node:tls";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
@@ -10,6 +12,7 @@ export async function verifyGeneratedBrowser({
   password,
   producer,
   features = { terrain: true, players: true },
+  evidenceDirectory,
 }) {
   // Validate the live certificate using the disposable CA first. Pin the leaf
   // presented to Chromium: the server does not send its root in the TLS chain.
@@ -33,10 +36,18 @@ export async function verifyGeneratedBrowser({
   const spki = createHash("sha256").update(leafKey).digest("base64");
   const origin = `https://map.example.test:${port}`;
   const browser = await chromium.launch({
-    headless: true,
+    headless: process.platform !== "linux",
     args: [
-      "--use-angle=swiftshader",
       "--enable-unsafe-webgpu",
+      ...(process.platform === "linux"
+        ? [
+            "--enable-features=Vulkan",
+            "--use-angle=vulkan",
+            "--use-vulkan=swiftshader",
+            "--use-webgpu-adapter=swiftshader",
+            "--disable-vulkan-surface",
+          ]
+        : ["--use-angle=swiftshader"]),
       "--no-proxy-server",
       "--host-resolver-rules=MAP map.example.test 127.0.0.1",
       `--ignore-certificate-errors-spki-list=${spki}`,
@@ -51,9 +62,13 @@ export async function verifyGeneratedBrowser({
     for (const suffix of ["/", "/?terrain=off", "/?players=off"]) {
       const page = await context.newPage();
       const requests = [],
-        errors = [];
+        errors = [],
+        consoleMessages = [];
       page.on("request", (request) => requests.push(request.url()));
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("console", (message) => {
+        if (["error", "warning"].includes(message.type())) consoleMessages.push(message.text());
+      });
       try {
         await page.goto(`${origin}${suffix}`, {
           waitUntil: "domcontentloaded",
@@ -104,7 +119,7 @@ export async function verifyGeneratedBrowser({
         assert.ok(
           pixels.data[center + 1] > pixels.data[center] &&
             pixels.data[center + 1] > pixels.data[center + 2],
-          "the known center grass column must render green, not only a background pattern",
+          `the known center grass column must render green, not only a background pattern: ${[...pixels.data.subarray(center, center + 4)]}`,
         );
         const colors = new Set();
         for (let i = 0; i < pixels.data.length; i += 4 * 101)
@@ -248,7 +263,43 @@ export async function verifyGeneratedBrowser({
           terrain_live_binding: Boolean(state.terrain),
           terrain_draws: state.draws,
           protocol,
+          adapter: await page.evaluate(async () => {
+            const adapter = await navigator.gpu.requestAdapter();
+            const info = adapter?.info;
+            return info
+              ? {
+                  vendor: info.vendor,
+                  architecture: info.architecture,
+                  device: info.device,
+                  description: info.description,
+                }
+              : null;
+          }),
         });
+      } catch (error) {
+        if (evidenceDirectory) {
+          await mkdir(evidenceDirectory, { recursive: true });
+          await page.screenshot({
+            path: join(evidenceDirectory, `case-${cases.length}.png`),
+          });
+          await writeFile(
+            join(evidenceDirectory, `case-${cases.length}.json`),
+            JSON.stringify(
+              {
+                path: suffix,
+              errors,
+              consoleMessages,
+                state: await page.evaluate(() => ({
+                  map: window.__map?.state(),
+                  message: document.querySelector("#message")?.textContent,
+                })),
+              },
+              null,
+              2,
+            ),
+          );
+        }
+        throw error;
       } finally {
         await page.close();
       }
@@ -258,7 +309,7 @@ export async function verifyGeneratedBrowser({
       browser: "chromium",
       version: browser.version(),
       browser_host: `${process.platform}-${process.arch}`,
-      renderer: "WebGPU/SwiftShader test adapter",
+      renderer: "WebGPU; adapter information recorded per case",
       verified_test_leaf_spki: spki,
       cases,
     };

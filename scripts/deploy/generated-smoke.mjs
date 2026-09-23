@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { request as httpsRequest } from "node:https";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { stageLocalCandidate } from "./stage-oci.mjs";
 import { verifyGeneratedBrowser } from "./generated-browser.mjs";
 import { generatedProducer } from "./generated-producer.mjs";
@@ -412,6 +412,7 @@ try {
     ca,
     password,
     producer,
+    evidenceDirectory: join(dirname(output), "browser-both"),
   });
   compose("stop", "-t", "5");
   const combinations = [];
@@ -513,6 +514,7 @@ try {
             terrain: enabled === "terrain",
             players: enabled === "players",
           },
+          evidenceDirectory: join(dirname(output), `browser-${enabled}`),
         }),
       });
     } finally {
