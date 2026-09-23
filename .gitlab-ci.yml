@@ -70,7 +70,12 @@ release-dry-run:
       artifacts: true
   script:
     - node ci/collect-release.mjs .local/release/candidate .local/release/x86_64-unknown-linux-musl/dist .local/release/aarch64-unknown-linux-musl/dist
-    - node scripts/release/publish.mjs --dist .local/release/candidate
+    - |
+      if [ -n "${BEDROCK_MAP_DEPLOYMENT_CANDIDATE:-}" ]; then
+        node scripts/release/publish.mjs --dist .local/release/candidate --deployment "$BEDROCK_MAP_DEPLOYMENT_CANDIDATE"
+      else
+        node scripts/release/publish.mjs --dist .local/release/candidate
+      fi
   rules:
     - if: "$BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
       when: manual
@@ -88,7 +93,12 @@ publish-github-release:
   script:
     - node scripts/release/validate-tag.mjs --required
     - node ci/collect-release.mjs .local/release/candidate .local/release/x86_64-unknown-linux-musl/dist .local/release/aarch64-unknown-linux-musl/dist
-    - node scripts/release/publish.mjs --publish --dist .local/release/candidate
+    - |
+      if [ -n "${BEDROCK_MAP_DEPLOYMENT_CANDIDATE:-}" ]; then
+        node scripts/release/publish.mjs --publish --dist .local/release/candidate --deployment "$BEDROCK_MAP_DEPLOYMENT_CANDIDATE"
+      else
+        node scripts/release/publish.mjs --publish --dist .local/release/candidate
+      fi
   rules:
     - if: "$CI_COMMIT_TAG && $BEDROCK_MAP_RELEASE_IMAGE && $BEDROCK_MAP_AMD64_RUNNER_TAG && $BEDROCK_MAP_ARM64_RUNNER_TAG"
       when: manual

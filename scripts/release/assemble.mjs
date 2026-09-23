@@ -106,8 +106,10 @@ await cp(
 for (const file of ["LICENSE", "THIRD_PARTY.md"])
   await cp(file, resolve(root, file));
 await mkdir(resolve(root, "docs"), { recursive: true });
-for (const file of ["INSTALL.md", "CI.md"])
+for (const file of ["INSTALL.md", "CI.md", "DEPLOYMENT.md"])
   await cp(resolve("docs", file), resolve(root, "docs", file));
+await mkdir(resolve(root, "deploy"));
+await cp("deploy/FIREWALL.md", resolve(root, "deploy/FIREWALL.md"));
 await cp("CONTRIBUTING.md", resolve(root, "docs/CONTRIBUTING.md"));
 await cp("sources/build-tools.json", resolve(root, "docs/build-tools.json"));
 await writeFile(

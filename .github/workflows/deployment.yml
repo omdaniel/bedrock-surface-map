@@ -68,7 +68,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
-      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev python3-venv skopeo
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev python3-venv skopeo mesa-vulkan-drivers libvulkan1 xvfb xauth
       - run: cargo install cargo-zigbuild --version 0.20.1 --locked
       - name: Install pinned Zig
         run: |
@@ -80,7 +80,14 @@ jobs:
           name: deployment-common-${{ github.event.pull_request.head.sha || github.sha }}
           path: .local/release/common/
       - run: npm ci
-      - run: node scripts/release/build-package.mjs ${{ matrix.target }} --common .local/release/common
+      - run: npx playwright install --with-deps chromium
+      - run: xvfb-run -a node ci/release.mjs ${{ matrix.target }} .local/release/common
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-native-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/${{ matrix.target }}/dist/
+          retention-days: 14
+          if-no-files-found: error
       - name: Verify transactional preparation with a parsed synthetic world
         env:
           BEDROCK_MAP_FIXTURE_DIR: ${{ github.workspace }}/.local/deployment-generated
@@ -185,11 +192,15 @@ jobs:
         with:
           name: deployment-fixture-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: .local/deployment-generated/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-native-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/deployment-native/
       - name: Execute generated deployment using exact native images
         run: |
           npm ci
           npx playwright install --with-deps chromium
-          xvfb-run -a -s '-screen 0 1280x900x24' node scripts/deploy/generated-smoke.mjs .local/oci/combined .local/deployment-generated .local/oci/generated-evidence.json
+          xvfb-run -a -s '-screen 0 1280x900x24' node scripts/deploy/generated-smoke.mjs .local/oci/combined .local/deployment-generated .local/oci/generated-evidence.json .local/deployment-native
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: deployment-generated-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
@@ -199,3 +210,34 @@ jobs:
           retention-days: 14
           if-no-files-found: error
         if: always()
+  release-candidate:
+    needs: generated-runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: deployment-*-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/deployment-inputs/
+      - name: Validate exact deployment release without uploading images
+        env:
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          INPUT=.local/deployment-inputs
+          OCI="$INPUT/deployment-oci-combined-$COMMIT"
+          cp "$INPUT/deployment-generated-amd64-$COMMIT/generated-evidence.json" "$OCI/generated-amd64.json"
+          cp "$INPUT/deployment-generated-arm64-$COMMIT/generated-evidence.json" "$OCI/generated-arm64.json"
+          node ci/collect-release.mjs .local/release/candidate "$INPUT/deployment-native-amd64-$COMMIT" "$INPUT/deployment-native-arm64-$COMMIT"
+          node scripts/release/publish.mjs --dist .local/release/candidate --deployment "$OCI"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-release-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/candidate/
+          retention-days: 14
+          if-no-files-found: error

@@ -33,8 +33,10 @@ on the map host's runtime path.
 
 ## Prepare
 
-Extract the verified operator bundle into its own directory and run its
-`bedrock-map` binary from there. Preserve its adjacent resources and release lock.
+Extract the verified `operator-linux-amd64` or `operator-linux-arm64` bundle into
+its own directory. Follow `INSTALL.txt` to unpack the included, unchanged native
+runtime archive beside `deployment-release.json`, then run `bedrock-map` there.
+Preserve its adjacent resources and release lock.
 Use an ordinary private operator directory, not a directory shared with BDS.
 
 ```sh

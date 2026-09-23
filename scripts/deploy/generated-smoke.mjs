@@ -10,11 +10,14 @@ import { verifyGeneratedBrowser } from "./generated-browser.mjs";
 import { generatedProducer } from "./generated-producer.mjs";
 import { firewallVantages } from "./generated-firewall.mjs";
 import { fixtureTransport } from "./generated-transport.mjs";
+import { operatorBundle } from "../release/operator-bundle.mjs";
+import { sha256 } from "../release/oci.mjs";
 
-const [candidateArg, fixtureArg, evidenceArg] = process.argv.slice(2);
+const [candidateArg, fixtureArg, evidenceArg, nativeArg] =
+  process.argv.slice(2);
 if (!candidateArg || !fixtureArg || !evidenceArg)
   throw Error(
-    "usage: generated-smoke.mjs <combined-oci> <generated-parser-fixture> <new-evidence-file>",
+    "usage: generated-smoke.mjs <combined-oci> <generated-parser-fixture> <new-evidence-file> [native-dist]",
   );
 const arch = { x64: "amd64", arm64: "arm64" }[process.arch];
 if (
@@ -151,19 +154,64 @@ try {
     assert.equal(info.Id, candidate.images[name].platforms[arch].config_digest);
     assert.equal(info.Architecture, arch);
   }
-  // Run the operator binary extracted from the exact runtime image, not cargo
-  // or source-side code. Its release inventory verifies the copied resources.
+  // Exercise the downloadable wrapper when supplied; the native archive must
+  // be the exact bytes used in the runtime image, never a source-side rebuild.
   const installed = join(temp, "package");
   await mkdir(installed);
-  copyContainer = docker("create", images.runtime);
-  docker("cp", `${copyContainer}:/opt/bedrock-map/.`, installed);
-  docker("rm", copyContainer);
-  copyContainer = null;
-  await writeFile(
-    join(installed, "deployment-release.json"),
-    JSON.stringify(release),
-    { mode: 0o600 },
-  );
+  if (nativeArg) {
+    const archive = join(
+      resolve(nativeArg),
+      `bedrock-surface-map-v${version}-linux-${arch}.tar.gz`,
+    );
+    assert.equal(
+      sha256(await readFile(archive)),
+      candidate.images.runtime.platforms[arch].release_sha256,
+    );
+    const epoch = Number(
+      execute("git", ["show", "-s", "--format=%ct", candidate.commit]),
+    );
+    const first = await operatorBundle(
+      archive,
+      release,
+      join(temp, "bundles-first"),
+      epoch,
+    );
+    const second = await operatorBundle(
+      archive,
+      release,
+      join(temp, "bundles-second"),
+      epoch,
+    );
+    assert.equal(first.sha256, second.sha256);
+    execute("tar", [
+      "-xzf",
+      join(temp, "bundles-first", first.archive),
+      "--strip-components=1",
+      "-C",
+      installed,
+    ]);
+    execute("tar", [
+      "-xzf",
+      join(installed, `bedrock-surface-map-v${version}-linux-${arch}.tar.gz`),
+      "--strip-components=1",
+      "-C",
+      installed,
+    ]);
+    assert.deepEqual(
+      JSON.parse(await readFile(join(installed, "deployment-release.json"))),
+      release,
+    );
+  } else {
+    copyContainer = docker("create", images.runtime);
+    docker("cp", `${copyContainer}:/opt/bedrock-map/.`, installed);
+    docker("rm", copyContainer);
+    copyContainer = null;
+    await writeFile(
+      join(installed, "deployment-release.json"),
+      JSON.stringify(release),
+      { mode: 0o600 },
+    );
+  }
   const binary = join(installed, "bedrock-map");
   const resources = join(installed, "share/bedrock-surface-map");
   const state = join(temp, "snapshot");
@@ -553,6 +601,7 @@ try {
         public_publication: false,
         public_certificate: false,
         browser_verified: true,
+        operator_bundle_verified: Boolean(nativeArg),
         browser_evidence: browserEvidence,
         firewall_evidence: firewallEvidence,
         single_feed_evidence: combinations,
