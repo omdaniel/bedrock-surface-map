@@ -37,6 +37,7 @@ export async function verifyGeneratedBrowser({
   const origin = `https://map.example.test:${port}`;
   const browser = await chromium.launch({
     headless: process.platform !== "linux",
+    dumpio: process.env.GITHUB_ACTIONS === "true",
     args: [
       "--enable-unsafe-webgpu",
       ...(process.platform === "linux"
@@ -49,6 +50,7 @@ export async function verifyGeneratedBrowser({
           ]
         : ["--use-angle=swiftshader"]),
       "--no-proxy-server",
+      "--enable-logging=stderr",
       "--host-resolver-rules=MAP map.example.test 127.0.0.1",
       `--ignore-certificate-errors-spki-list=${spki}`,
     ],
@@ -93,7 +95,8 @@ export async function verifyGeneratedBrowser({
         await page.waitForFunction(
           () =>
             window.__map.state().pending === 0 &&
-            !window.__map.state().terrain?.busy,
+            !window.__map.state().terrain?.busy &&
+            window.__map.state().firstVisible !== null,
           undefined,
           { timeout: 20_000 },
         );
