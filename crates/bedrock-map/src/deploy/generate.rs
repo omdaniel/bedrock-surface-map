@@ -111,6 +111,9 @@ pub fn gateway(
         out.push_str("    import /etc/bedrock-map/viewer-auth.caddy\n    header Cache-Control \"private, no-store\" {\n      defer\n    }\n");
     }
     out.push_str("    header X-Content-Type-Options nosniff\n    @write not method GET HEAD\n    respond @write 405\n");
+    // Inventory URLs use plain ASCII paths. Refuse aliases before Caddy's
+    // path matchers normalize dot segments, escaped separators or double slashes.
+    out.push_str("    @noncanonical expression `!{http.request.orig_uri}.matches('^/[A-Za-z0-9/_.-]*([?].*)?$') || {http.request.orig_uri}.matches('^[^?]*(//|/[.][.]?(/|[?]|$))')`\n    respond @noncanonical 404\n");
     // Exact inventory, not a wildcard web root or a general SPA fallback.
     for (label, root, inventory) in [
         ("web", "/opt/bedrock-map/web", web),

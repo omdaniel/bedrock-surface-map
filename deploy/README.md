@@ -58,6 +58,22 @@ it never imports or seeds. Public files, gateway files, credentials, mutable sto
 and BDS handoff remain separate. The handoff requires a reviewed module-level
 merge into an independently backed-up test world, not a whole-directory overwrite.
 
+## Generated gateway boundary
+
+All files and read APIs require the shared viewer credential in password mode;
+responses override upstream caching with `private, no-store`. Explicit public mode
+omits authentication and preserves read-service cache headers. Neither mode grants
+write access. Only GET/HEAD requests for the packaged frontend inventory, prepared
+public inventory and enabled same-world read APIs are routed. Noncanonical paths,
+including dot segments, escaped path aliases and doubled separators, are refused
+before Caddy's path normalization. Query parameters do not choose upstreams.
+
+Feed proxies have fixed destinations, strip incoming headers other than the
+conditional ETag request, and preserve response payload bytes, MIME and ETags.
+The gateway has no ingestion route or token, general SPA fallback, public health
+details or enabled access log. Test CA certificates belong only to disposable
+tests; the production template uses Caddy's automatic public HTTPS.
+
 ## Build and packaging checks
 
 From a clean checkout with an existing verified native archive and common artifact:
@@ -102,3 +118,8 @@ not proof of the complete HTTPS/browser or live-BDS acceptance matrix.
 Both jobs also generate a synthetic MCWorld and import it through the real parser
 before exercising preparation. Unit fixtures with fabricated image identities
 test validation only; they are not evidence that those images exist or run.
+The SHA-pinned Caddy validator additionally executes the generated routing policy
+over loopback HTTPS for terrain-only, players-only, combined and explicit-public
+configurations. It tests authentication, raw traversal, methods, header stripping
+and byte/cache integrity. Only the test client's process trusts its disposable CA;
+no system trust store, BDS, public DNS or public certificate service is involved.

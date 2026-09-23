@@ -1,4 +1,6 @@
 #![cfg(unix)]
+#[path = "support/deploy_gateway.rs"]
+mod gateway;
 use bedrock_map::{
     deploy::{
         config::Config,
@@ -47,6 +49,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new(terrain: bool, players: bool) -> Self {
+        Self::with_access(terrain, players, false)
+    }
+    fn with_access(terrain: bool, players: bool, public_access: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("deploy");
         let source = State::new(temp.path().join("snapshot")).unwrap();
@@ -146,8 +151,19 @@ impl Fixture {
             serde_json::to_vec(&release).unwrap(),
         )
         .unwrap();
-        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\n")).unwrap();
-        init::initialize(&root, &config, &release, Some("synthetic-only-password")).unwrap();
+        let viewer = if public_access {
+            "[viewer]\naccess='public'\nacknowledge_public_locations=true\n"
+        } else {
+            ""
+        };
+        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\n{viewer}")).unwrap();
+        init::initialize(
+            &root,
+            &config,
+            &release,
+            (!public_access).then_some("synthetic-only-password"),
+        )
+        .unwrap();
         let assets = temp.path().join("assets.zip");
         asset_fixture(&assets);
         Self {

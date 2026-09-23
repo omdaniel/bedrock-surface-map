@@ -49,9 +49,11 @@ jobs:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-musl
             arch: amd64
+            caddy_sha256: 527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             arch: arm64
+            caddy_sha256: 52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     steps:
@@ -86,6 +88,17 @@ jobs:
           cargo test --locked -p surface-cli ci_generate_world_fixture -- --ignored
           cargo test --locked -p bedrock-map
           cargo test --locked -p bedrock-map --test deploy_prepare prepare_imported_generated_world -- --ignored
+      - name: Validate generated gateway routes over private fixture HTTPS
+        env:
+          CADDY_VALIDATOR: ${{ runner.temp }}/caddy-validator/caddy
+          CADDY_SHA256: ${{ matrix.caddy_sha256 }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir "$RUNNER_TEMP/caddy-validator"
+          curl -fL --retry 3 --max-time 180 "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_$ARCH.tar.gz" -o "$RUNNER_TEMP/caddy-validator/release.tar.gz"
+          printf '%s  %s\n' "$CADDY_SHA256" "$RUNNER_TEMP/caddy-validator/release.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/caddy-validator/release.tar.gz" -C "$RUNNER_TEMP/caddy-validator" caddy
+          cargo test --locked -p bedrock-map --test deploy_prepare generated_ -- --ignored
       - name: Create isolated OCI exporter
         run: docker buildx create --name surface-oci --driver docker-container --use
       - name: Package and test the exact OCI images without publication
