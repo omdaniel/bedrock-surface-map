@@ -126,14 +126,25 @@ configurations. It tests authentication, raw traversal, methods, header strippin
 and byte/cache integrity. Only the test client's process trusts its disposable CA;
 no system trust store, BDS, public DNS or public certificate service is involved.
 
-The generated-runtime jobs stage the combined indexes in an ephemeral loopback
+The generated-runtime jobs require disposable GitHub-hosted runners and stage
+the combined indexes in an ephemeral loopback
 registry and verify the served index and native-manifest bytes. They run the
 operator executable from the exact runtime image, import the synthetic parser
 fixture, and exercise generated preparation, mounts, readiness, authentication,
-feed outage and same-version restart. Only test CA issuance and ephemeral host
+feed outage and same-version restart. Only test CA issuance and ephemeral gateway
 port bindings differ from the generated deployment. Evidence identifies those
 differences explicitly. Chromium verifies the exact generated seed's colored
 canvas pixels, known grass-column picking and explicit terrain/player opt-outs.
-Its temporary browser process pins the test root's public key; no OS trust root
-is installed. This is not public-certificate, firewall, live-edit/player-motion or
-actual-BDS acceptance. The local staging helper refuses non-loopback registries.
+Its temporary browser process pins the leaf certificate's public key after Node
+validates the certificate against the disposable CA; no OS trust root is installed.
+Synthetic authenticated producer messages exercise terrain pixels/picking and
+player projection/heading through the real services, including invalid writes and
+the absence of terrain redraws for player-only movement.
+
+Packet-level checks use separate allowed/denied Docker client namespaces on the
+disposable runner. They apply only the generated project-scoped `DOCKER-USER`
+rules, check actual connection outcomes and drop counters, test idempotent
+apply/remove, and remove those rules during cleanup. The ordinary packaging
+fixture and operator commands never apply firewall rules. These checks are not
+public-certificate, public-internet-vantage or actual-BDS acceptance.
+The local staging helper refuses non-loopback registries.

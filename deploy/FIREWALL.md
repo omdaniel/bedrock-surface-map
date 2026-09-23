@@ -59,3 +59,9 @@ sudo sh ./map-deploy/firewall-review.sh remove
 Removal deletes only the exact generated rules. It is not a general firewall
 rollback. Live remote-vantage validation is a deployment acceptance requirement,
 not something a localhost health check can certify.
+
+The generated-runtime CI gate tests this recipe on disposable Docker hosts using
+separate allowed and denied client network namespaces. It establishes both routes
+before filtering, verifies return traffic and actual drop counters, and checks
+repeated apply/remove operations. These synthetic vantages do not replace the
+installation's LAN/VPN and public-network checks.

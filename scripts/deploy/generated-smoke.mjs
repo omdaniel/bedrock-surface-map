@@ -8,6 +8,8 @@ import { join, resolve } from "node:path";
 import { sha256 } from "../release/oci.mjs";
 import { stageLocalCandidate } from "./stage-oci.mjs";
 import { verifyGeneratedBrowser } from "./generated-browser.mjs";
+import { generatedProducer } from "./generated-producer.mjs";
+import { firewallVantages } from "./generated-firewall.mjs";
 
 const [candidateArg, fixtureArg, evidenceArg] = process.argv.slice(2);
 if (!candidateArg || !fixtureArg || !evidenceArg)
@@ -52,7 +54,8 @@ const compose = (...args) =>
   );
 let registryStarted = false,
   stackStarted = false,
-  copyContainer;
+  copyContainer,
+  vantages;
 let ca,
   tokens = [],
   password;
@@ -197,10 +200,11 @@ try {
     throw Error(
       "native test runner has no RFC1918 interface for generated private-ingest binding",
     );
+  vantages = firewallVantages({ docker, image: images.gateway, project });
   const config = join(temp, "deployment.toml");
   await writeFile(
     config,
-    `schema_version=1\nproject='${project}'\npublic_origin='https://map.example.test'\ningest_bind='${hostAddress}'\nbds_source_ipv4='${hostAddress}'\n[features]\nterrain=true\nplayers=true\n`,
+    `schema_version=1\nproject='${project}'\npublic_origin='https://map.example.test'\ningest_bind='${hostAddress}'\nbds_source_ipv4='${vantages.source}'\n[features]\nterrain=true\nplayers=true\n`,
     { mode: 0o600 },
   );
   password = randomBytes(24).toString("hex");
@@ -257,8 +261,10 @@ try {
   );
   for (const [name, service] of Object.entries(generated.services)) {
     for (const port of service.ports) {
-      port.published = "0";
-      if (name === "gateway") port.host_ip = "127.0.0.1";
+      if (name === "gateway") {
+        port.published = "0";
+        port.host_ip = "127.0.0.1";
+      }
     }
   }
   await writeFile(composePath, JSON.stringify(generated), { mode: 0o600 });
@@ -322,6 +328,11 @@ try {
     await waitFor(async () =>
       assert.equal(inspect(name).State.Health.Status, "healthy"),
     );
+  const firewallEvidence = vantages.verify(
+    deployment,
+    hostAddress,
+    [18081, 18082],
+  );
   const now = Date.now();
   const snapshot = {
     schema_version: 1,
@@ -393,7 +404,27 @@ try {
   );
   const logs = compose("logs", "--no-color");
   assert.ok([...tokens, password].every((secret) => !logs.includes(secret)));
-  const browserEvidence = await verifyGeneratedBrowser({ port, ca, password });
+  const producer = generatedProducer({
+    host: hostAddress,
+    ports: Object.fromEntries(
+      [
+        ["terrain", 8082],
+        ["players", 8081],
+      ].map(([name, target]) => [
+        name,
+        inspect(name).NetworkSettings.Ports[`${target}/tcp`][0].HostPort,
+      ]),
+    ),
+    tokens: { terrain: tokens[0], players: tokens[1] },
+    world: marker.world_id,
+    generation: marker.generation,
+  });
+  const browserEvidence = await verifyGeneratedBrowser({
+    port,
+    ca,
+    password,
+    producer,
+  });
   await writeFile(
     output,
     JSON.stringify(
@@ -424,6 +455,7 @@ try {
         public_certificate: false,
         browser_verified: true,
         browser_evidence: browserEvidence,
+        firewall_evidence: firewallEvidence,
         actual_bds_verified: false,
       },
       null,
@@ -440,6 +472,7 @@ try {
   }
   throw error;
 } finally {
+  if (vantages) vantages.cleanup();
   if (stackStarted) compose("down", "--remove-orphans", "-t", "5");
   if (copyContainer) docker("rm", copyContainer);
   if (registryStarted) docker("rm", "-f", registry);

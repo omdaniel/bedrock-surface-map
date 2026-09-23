@@ -1,14 +1,30 @@
 import assert from "node:assert/strict";
 import { createHash, X509Certificate } from "node:crypto";
+import { connect as tlsConnect } from "node:tls";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
-export async function verifyGeneratedBrowser({ port, ca, password }) {
-  const rootKey = new X509Certificate(ca).publicKey.export({
+export async function verifyGeneratedBrowser({ port, ca, password, producer }) {
+  // Validate the live certificate using the disposable CA first. Pin the leaf
+  // presented to Chromium: the server does not send its root in the TLS chain.
+  const certificate = await new Promise((resolve, reject) => {
+    const socket = tlsConnect(
+      { host: "127.0.0.1", port, servername: "map.example.test", ca },
+      () => {
+        resolve(socket.getPeerCertificate().raw);
+        socket.end();
+      },
+    );
+    socket.once("error", reject);
+    socket.setTimeout(5000, () =>
+      socket.destroy(Error("test certificate validation timeout")),
+    );
+  });
+  const leafKey = new X509Certificate(certificate).publicKey.export({
     type: "spki",
     format: "der",
   });
-  const spki = createHash("sha256").update(rootKey).digest("base64");
+  const spki = createHash("sha256").update(leafKey).digest("base64");
   const origin = `https://map.example.test:${port}`;
   const browser = await chromium.launch({
     headless: true,
@@ -113,6 +129,95 @@ export async function verifyGeneratedBrowser({ port, ca, password }) {
           "viewer may request only its own origin",
         );
         assert.deepEqual(errors, []);
+        let protocol = null;
+        if (suffix === "/") {
+          await producer.negativeChecks();
+          const change = async (height, material, expectedName) => {
+            const before = await page.evaluate(
+              () => window.__map.state().terrain.revision,
+            );
+            await producer.terrain(material, height);
+            await page.waitForFunction(
+              (revision) =>
+                !window.__map.state().terrain?.busy &&
+                window.__map.state().terrain?.revision > revision,
+              before,
+              { timeout: 20_000 },
+            );
+            await page.mouse.move(
+              bounds.x + bounds.width / 2 + 1,
+              bounds.y + bounds.height / 2,
+            );
+            await page.waitForFunction(
+              ({ height, material }) =>
+                document.querySelector("#block-pos")?.textContent ===
+                  `-9 / ${height} / -9` &&
+                document
+                  .querySelector("#block-name")
+                  ?.textContent?.toLowerCase()
+                  .includes(material),
+              { height, material: expectedName },
+              { timeout: 20_000 },
+            );
+          };
+          await change(68, "sand", "sand");
+          const changed = PNG.sync.read(await canvas.screenshot());
+          assert.ok(
+            !changed.data.equals(pixels.data),
+            "a real terrain message must change rendered pixels",
+          );
+          const changedDraws = await page.evaluate(
+            () => window.__map.state().draws,
+          );
+          await producer.players(-8.5, 90);
+          const marker = page.locator(
+            '[data-player-id="fictional-player"].player-marker',
+          );
+          await marker.waitFor({ state: "visible", timeout: 10_000 });
+          await page.waitForFunction(() => {
+            const m = document.querySelector(
+              '[data-player-id="fictional-player"].player-marker',
+            );
+            return m?.querySelector("svg")?.style.transform === "rotate(45deg)";
+          });
+          const markerBefore = await marker.boundingBox();
+          assert.ok(markerBefore);
+          await producer.players(-6.5, 180);
+          await page.waitForFunction(() => {
+            const m = document.querySelector(
+              '[data-player-id="fictional-player"].player-marker',
+            );
+            return (
+              m?.querySelector("svg")?.style.transform === "rotate(135deg)"
+            );
+          });
+          const markerAfter = await marker.boundingBox();
+          assert.ok(markerAfter);
+          assert.ok(
+            Math.abs(markerAfter.x - markerBefore.x - 40) < 1,
+            "two blocks at 20 pixels/block must move the marker 40 pixels east",
+          );
+          assert.equal(
+            await page.evaluate(() => window.__map.state().draws),
+            changedDraws,
+            "player-only updates must not redraw stationary terrain",
+          );
+          await producer.players(null);
+          await marker.waitFor({ state: "detached", timeout: 10_000 });
+          await change(65, "grass", "grass");
+          assert.ok(!page.isClosed());
+          protocol = {
+            live_edit: true,
+            picking: true,
+            changed_pixels: true,
+            marker_heading: true,
+            marker_projection: true,
+            empty_roster: true,
+            player_only_redraws: 0,
+            rejected_writes: true,
+          };
+        }
+        assert.deepEqual(errors, []);
         cases.push({
           path: suffix,
           picking: "-9 / 65 / -9",
@@ -120,6 +225,7 @@ export async function verifyGeneratedBrowser({ port, ca, password }) {
           distinct_pixel_colors: colors.size,
           terrain_live_binding: Boolean(state.terrain),
           terrain_draws: state.draws,
+          protocol,
         });
       } finally {
         await page.close();
@@ -131,7 +237,7 @@ export async function verifyGeneratedBrowser({ port, ca, password }) {
       version: browser.version(),
       browser_host: `${process.platform}-${process.arch}`,
       renderer: "WebGPU/SwiftShader test adapter",
-      test_root_spki: spki,
+      verified_test_leaf_spki: spki,
       cases,
     };
   } finally {
