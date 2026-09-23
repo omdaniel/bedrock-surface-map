@@ -84,6 +84,11 @@ impl Fixture {
             "<title>Fixture</title>",
         )
         .unwrap();
+        fs::write(
+            resource_root.join("web/viewer-config.json"),
+            b"{\"map\":\"packaged-default-only\"}",
+        )
+        .unwrap();
         for (name, header, module) in [
             (
                 "tracking",
@@ -381,6 +386,46 @@ fn active_live_store_and_changed_assets_refuse_another_prepare() {
     fs::write(&f.assets, "changed").unwrap();
     assert!(f.prepare().is_err());
     assert_eq!(after_probe, inventory(&f.root.join("prepared/terrain")));
+}
+
+#[test]
+fn firewall_recipe_is_scoped_syntactically_valid_and_never_automatically_applied() {
+    for (terrain, players) in [(true, false), (false, true), (true, true)] {
+        let f = Fixture::new(terrain, players);
+        let path = f.root.join("firewall-review.sh");
+        let script = fs::read_to_string(&path).unwrap();
+        assert!(
+            std::process::Command::new("sh")
+                .arg("-n")
+                .arg(&path)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let usage = std::process::Command::new("sh")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert_eq!(usage.status.code(), Some(2));
+        assert!(String::from_utf8(usage.stderr).unwrap().contains("Usage:"));
+        assert!(script.contains("--ctdir ORIGINAL --ctorigdst 10.20.0.10 --ctorigdstport"));
+        assert!(script.contains("! -s 10.20.0.20"));
+        assert_eq!(script.contains("18082"), terrain);
+        assert_eq!(script.contains("18081"), players);
+        for forbidden in [
+            "--flush",
+            " -F ",
+            " -P ",
+            "iptables-restore",
+            "ufw ",
+            "0.0.0.0/0",
+        ] {
+            assert!(!script.contains(forbidden));
+        }
+        assert!(script.contains("--comment 'bedrock-map:fixture-map'"));
+        fs::write(&path, format!("{script}\n# changed\n")).unwrap();
+        assert!(init::load(&f.root).is_err());
+    }
 }
 
 #[test]

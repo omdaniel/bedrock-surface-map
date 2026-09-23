@@ -57,6 +57,8 @@ preparation identity and existing seeded database, then execs the native service
 it never imports or seeds. Public files, gateway files, credentials, mutable store
 and BDS handoff remain separate. The handoff requires a reviewed module-level
 merge into an independently backed-up test world, not a whole-directory overwrite.
+The generated [firewall review](FIREWALL.md) is a separately approved network
+prerequisite; initialization and preparation never apply host firewall rules.
 
 ## Generated gateway boundary
 

@@ -311,6 +311,15 @@ async fn generated_gateway_enforces_auth_methods_and_fixed_read_routes() {
             .unwrap();
         assert_eq!(head.status(), 200);
         assert!(head.bytes().await.unwrap().is_empty());
+        let binding = authorize(client.get(format!("{origin}/viewer-config.json")))
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(!binding.contains("packaged-default-only"));
+        assert!(binding.contains(&prepared.dataset_id));
         let log = fs::read_to_string(logfile).unwrap();
         assert!(!log.contains("synthetic-only-password") && !log.contains("viewer-private=canary"));
         for service in ["terrain", "players"] {

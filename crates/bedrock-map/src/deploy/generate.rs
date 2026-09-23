@@ -11,6 +11,38 @@ use std::{collections::BTreeMap, fs, path::Path};
 fn bind(source: &str, target: &str, writable: bool) -> Value {
     json!({"type":"bind","source":source,"target":target,"read_only":!writable,"bind":{"create_host_path":false}})
 }
+
+pub fn firewall_review(config: &Config) -> String {
+    let ports: Vec<_> = [
+        (config.features.terrain, config.ports.terrain),
+        (config.features.players, config.ports.players),
+    ]
+    .into_iter()
+    .filter_map(|(enabled, port)| enabled.then_some(port.to_string()))
+    .collect();
+    format!(
+        r#"#!/bin/sh
+# Operator-reviewed Docker iptables-backend policy. Never run by deploy commands.
+set -eu
+case "${{1:-}}" in check|apply|remove) action=$1 ;; *) printf '%s\n' 'Usage: sudo sh firewall-review.sh check|apply|remove' >&2; exit 2 ;; esac
+test "$(id -u)" = 0 || {{ printf '%s\n' 'Requires root after reviewing the scoped rules.' >&2; exit 2; }}
+iptables -w 5 -S DOCKER-USER >/dev/null
+for port in {ports}; do
+  set -- -p tcp -m conntrack --ctdir ORIGINAL --ctorigdst {bind} --ctorigdstport "$port" ! -s {source} -m comment --comment 'bedrock-map:{project}' -j DROP
+  case "$action" in
+    check) iptables -w 5 -C DOCKER-USER "$@" ;;
+    apply) if ! iptables -w 5 -C DOCKER-USER "$@" 2>/dev/null; then iptables -w 5 -I DOCKER-USER 1 "$@"; fi ;;
+    remove) if iptables -w 5 -C DOCKER-USER "$@" 2>/dev/null; then iptables -w 5 -D DOCKER-USER "$@"; fi ;;
+  esac
+done
+"#,
+        ports = ports.join(" "),
+        bind = config.ingest_bind,
+        source = config.bds_source_ipv4,
+        project = config.project
+    )
+}
+
 pub fn compose(config: &Config, lock: &Lock) -> Result<Vec<u8>> {
     let mut services = serde_json::Map::new();
     for (name, enabled) in [
@@ -164,11 +196,14 @@ pub fn write_projection(
         &serde_json::to_vec_pretty(&viewer(config, lock, dataset))?,
     )?;
     files::mkdir(&root.join("gateway"))?;
-    let web = files::inventory(&resources.web())?;
+    let mut web = files::inventory(&resources.web())?;
+    // The packaged snapshot default stays immutable in the image. Deployment
+    // serves only its generated binding at this exact route.
+    web.remove("viewer-config.json");
     let public = files::inventory(&root.join("public"))?;
     ensure!(
-        web.contains_key("index.html") && !web.contains_key("viewer-config.json"),
-        "E_RESOURCE_MISMATCH: frontend inventory conflicts with deployment config"
+        web.contains_key("index.html"),
+        "E_RESOURCE_MISMATCH: frontend index is missing"
     );
     files::write_new(
         &root.join("gateway/Caddyfile"),

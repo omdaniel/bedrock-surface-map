@@ -149,6 +149,10 @@ pub fn initialize(
             &root.join("compose.yaml"),
             &super::generate::compose(config, &lock)?,
         )?;
+        files::write_new(
+            &root.join("firewall-review.sh"),
+            super::generate::firewall_review(config).as_bytes(),
+        )?;
         for (name, value) in &secrets {
             files::write_new(&root.join("secrets").join(name), value.as_bytes())?;
         }
@@ -186,6 +190,11 @@ pub fn load(root: &Path) -> Result<(Config, Lock)> {
         files::read_private(&root.join("compose.yaml"), 64 * 1024)?
             == super::generate::compose(&config, &lock)?,
         "E_RESOURCE_MISMATCH: generated Compose configuration differs"
+    );
+    ensure!(
+        files::read_private(&root.join("firewall-review.sh"), 16 * 1024)?
+            == super::generate::firewall_review(&config).as_bytes(),
+        "E_RESOURCE_MISMATCH: generated firewall review differs"
     );
     let ids = files::owner()?;
     ensure!(
