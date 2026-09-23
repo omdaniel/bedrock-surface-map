@@ -291,6 +291,29 @@ fn handoff(
             version.len() == 3 && version.iter().all(|v| v.as_u64().is_some()),
             "E_RESOURCE_MISMATCH: invalid pack version"
         );
+        let dependencies = manifest["dependencies"]
+            .as_array()
+            .context("E_RESOURCE_MISMATCH: pack runtime dependencies missing")?;
+        let mut allowed = std::collections::BTreeSet::new();
+        for dependency in dependencies {
+            let name = dependency["module_name"]
+                .as_str()
+                .context("E_RESOURCE_MISMATCH: unsupported pack dependency")?;
+            ensure!(
+                matches!(
+                    name,
+                    "@minecraft/server" | "@minecraft/server-net" | "@minecraft/server-admin"
+                ) && dependency["version"]
+                    .as_str()
+                    .is_some_and(|v| !v.is_empty())
+                    && allowed.insert(name),
+                "E_RESOURCE_MISMATCH: unaudited or duplicate runtime module"
+            );
+        }
+        ensure!(
+            allowed.len() == 3,
+            "E_RESOURCE_MISMATCH: required runtime module missing"
+        );
         let target = handoff.join("packs").join(header);
         files::mkdir(&target)?;
         files::copy_inventory(&source, &target, &inventory)?;
@@ -317,13 +340,21 @@ fn handoff(
             (
                 "permissions.json",
                 json!({
-                    "allowed_modules":["@minecraft/server","@minecraft/server-net","@minecraft/server-admin"],
+                    "allowed_modules":allowed,
                     "module_permissions":{"@minecraft/server-net":{"allowed_uris":[url],"max_body_bytes":max,"max_concurrent_requests":1}}
                 }),
             ),
         ] {
             files::write_new(&module_dir.join(file), &serde_json::to_vec_pretty(&data)?)?;
         }
+        files::write_new(
+            &module_dir.join("runtime-requirements.json"),
+            &serde_json::to_vec_pretty(&json!({
+                "pack_id":header,"pack_version":version,"script_module_id":module,
+                "dependencies":dependencies,"min_engine_version":manifest["header"]["min_engine_version"],
+                "note":"Manifest runtime dependency versions, not npm declaration package versions. Test the actual BDS binary before installation."
+            }))?,
+        )?;
         entries.push(json!({"pack_id":header,"version":version}));
     }
     files::write_new(

@@ -4,7 +4,7 @@ Installation addresses, world identity and account policy belong in deployment
 configuration, not application source. Examples use fixtures or loopback; no tool
 automatically connects to a homelab.
 
-The separate [deployment initializer](../deploy/README.md#initialization-boundary)
+The separate [live deployment](DEPLOYMENT.md)
 uses `deployment.toml` for a dedicated HTTPS hostname, private ingest addresses,
 feed selection and viewer access. It does not reuse the snapshot server's
 `config.toml`; initialization alone does not prepare or start services.
@@ -85,7 +85,10 @@ certificate; enabling HTTPS on the preview does not add TLS to its upstreams.
 `TERRAIN_INGEST_BIND`; `serve` requires `--token-file`/`TERRAIN_TOKEN_FILE`.
 The player collector uses `TRACKER_WORLD_ID`,
 `TRACKER_READ_BIND`, `TRACKER_INGEST_BIND` and `TRACKER_TOKEN_FILE`.
-Defaults bind only loopback; publish only read listeners through deployment rules.
+Defaults bind only loopback. The reference Compose stack keeps read listeners
+inside its application bridge and proxies them through authenticated HTTPS;
+private ingest publishing is restricted to the declared BDS source. Do not expose
+either collector directly to the Internet.
 
 BDS module variables supply `world_id`, `collector_url` for player tracking, and
 `world_id`, `generation`, `terrain_url` for terrain. Endpoint ports are configurable;

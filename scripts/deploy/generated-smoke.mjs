@@ -235,6 +235,9 @@ try {
       join(fixture, "assets.zip"),
     );
   assert.equal(prepare().ok, true);
+  const preflight = cli("deploy", "check", "--dir", deployment);
+  assert.equal(preflight.ok, true);
+  assert.equal(preflight.status, "prepared");
   const markerPath = join(deployment, "prepared/preparation.json");
   const initialMarker = await readFile(markerPath);
   assert.equal(prepare().ok, true);

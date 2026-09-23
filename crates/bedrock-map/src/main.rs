@@ -72,6 +72,17 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DeployCommand {
+    /// Read-only local preflight, optionally checking this running project.
+    Check {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        running: bool,
+        #[arg(long, requires = "running")]
+        expect_live: bool,
+        #[arg(long, requires = "running")]
+        viewer_password_file: Option<PathBuf>,
+    },
     /// Prepare one immutable snapshot and a new live store, without starting BDS.
     Prepare {
         #[arg(long)]
@@ -215,6 +226,9 @@ fn command_name(command: &Command) -> &'static str {
         Command::Deploy {
             command: DeployCommand::Init { .. },
         } => "deploy.init",
+        Command::Deploy {
+            command: DeployCommand::Check { .. },
+        } => "deploy.check",
         Command::InternalHealth { .. } => "internal-health",
         Command::Init => "init",
         Command::Demo { .. } => "demo",
@@ -234,6 +248,40 @@ fn command_name(command: &Command) -> &'static str {
 async fn run(args: Args) -> Result<u8> {
     if let Command::Deploy { command } = &args.command {
         match command {
+            DeployCommand::Check {
+                dir,
+                running,
+                expect_live,
+                viewer_password_file,
+            } => {
+                use bedrock_map::deploy::{check, config::Access, init};
+                let (config, _) = init::load(dir)?;
+                let password = if *running && config.viewer.access == Access::Password {
+                    Some(init::read_password(viewer_password_file.as_deref(), false)?)
+                } else {
+                    ensure!(
+                        viewer_password_file.is_none(),
+                        "E_CONFIG_INVALID: this check does not use a viewer password"
+                    );
+                    None
+                };
+                let report = check::check(
+                    dir,
+                    &resource(&args)?,
+                    *running,
+                    *expect_live,
+                    password.as_deref(),
+                )
+                .await?;
+                let ok = report.ok();
+                print(
+                    serde_json::to_string(
+                        &json!({"schema_version":1,"ok":ok,"command":"deploy.check","status":report.status,"checks":report.checks}),
+                    )?,
+                    args.json,
+                );
+                return Ok(if ok { 0 } else { 3 });
+            }
             DeployCommand::Prepare {
                 dir,
                 snapshot_state,

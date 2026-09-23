@@ -8,8 +8,9 @@ UID/GID to read owner-only bind-mounted files. Neither image contains credential
 
 These components are not yet a supported operator installation workflow. The
 generator supplies transactional preparation, an authenticated gateway and a
-private BDS handoff. Generated-container, browser, network and actual-BDS acceptance
-remain required. Runtime diagnostics and registry publication tooling are incomplete.
+private BDS handoff and read-only diagnostics. The [operator runbook](../docs/DEPLOYMENT.md)
+describes the initial installation boundary. Actual-BDS/public-HTTPS acceptance
+and registry publication are separate from synthetic generated-container checks.
 
 ## Initialization boundary
 
@@ -59,6 +60,13 @@ and BDS handoff remain separate. The handoff requires a reviewed module-level
 merge into an independently backed-up test world, not a whole-directory overwrite.
 The generated [firewall review](FIREWALL.md) is a separately approved network
 prerequisite; initialization and preparation never apply host firewall rules.
+
+`deploy check --dir ./map-deploy` validates the private preparation and local
+Docker/Compose configuration without starting anything. Add `--running` to inspect
+this project's actual containers and trusted HTTPS endpoints, and `--expect-live`
+to require fresh heartbeats from every enabled pack. Viewer passwords enter through
+a hidden prompt or mode-0600 password file. Reports never include player rosters,
+tokens or subprocess stderr; subprocesses and HTTP responses are bounded.
 
 ## Generated gateway boundary
 
@@ -115,8 +123,8 @@ publication and complete deployment acceptance have not occurred.
 
 `.github/workflows/deployment.yml` builds the common artifact once, then runs
 these packaging checks on native Ubuntu AMD64 and ARM64 runners. Its evidence
-records Engine/Compose versions and image identities. This is packaging evidence,
-not proof of the complete HTTPS/browser or live-BDS acceptance matrix.
+records Engine/Compose versions and image identities. Generated-runtime jobs add
+HTTPS/browser acceptance below; neither job is actual-BDS acceptance.
 Both jobs also generate a synthetic MCWorld and import it through the real parser
 before exercising preparation. Unit fixtures with fabricated image identities
 test validation only; they are not evidence that those images exist or run.

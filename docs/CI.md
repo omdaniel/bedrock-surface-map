@@ -21,7 +21,11 @@ ARM archive is supported.
 The separate `Deployment Packaging` workflow builds one common artifact and
 packages it into native AMD64 and ARM64 OCI candidates. Its native Docker fixture
 checks numeric users, owner-only secret mounts, listener isolation and signal
-handling. It retains OCI layouts and `oci-native-evidence.json` for fourteen days;
+handling. Generated-runtime jobs exercise the packaged init/prepare/check commands,
+real HTTPS/browser terrain and player updates, feed combinations and scoped firewall
+packet tests on disposable runners. They install Mesa/Vulkan, Xvfb and xauth for
+software WebGPU presentation; browser evidence records its actual adapter.
+The workflow retains OCI layouts and native/generated evidence for fourteen days;
 it publishes neither registry images nor a supported live installer. See
 [`deploy/README.md`](../deploy/README.md) for its scope and local commands.
 

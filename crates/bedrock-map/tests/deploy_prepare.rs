@@ -106,7 +106,12 @@ impl Fixture {
             fs::write(
                 pack.join("manifest.json"),
                 serde_json::to_vec(&json!({"header":{"uuid":header,"version":[1,0,4]},
-                "modules":[{"type":"script","uuid":module}]}))
+                "modules":[{"type":"script","uuid":module}],
+                "dependencies":[
+                    {"module_name":"@minecraft/server","version":"2.9.0"},
+                    {"module_name":"@minecraft/server-net","version":"1.0.0-beta"},
+                    {"module_name":"@minecraft/server-admin","version":"1.0.0-beta"}
+                ]}))
                 .unwrap(),
             )
             .unwrap();
@@ -566,6 +571,23 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
             );
             let secrets: Value =
                 serde_json::from_slice(&fs::read(module.join("secrets.json")).unwrap()).unwrap();
+            let permissions: Value =
+                serde_json::from_slice(&fs::read(module.join("permissions.json")).unwrap())
+                    .unwrap();
+            let requirements: Value = serde_json::from_slice(
+                &fs::read(module.join("runtime-requirements.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                requirements["script_module_id"],
+                "9b918705-25a3-430e-9a4f-c4cd7abbfcda"
+            );
+            assert_eq!(requirements["dependencies"].as_array().unwrap().len(), 3);
+            assert_eq!(permissions["allowed_modules"].as_array().unwrap().len(), 3);
+            assert_eq!(
+                permissions["module_permissions"]["@minecraft/server-net"]["allowed_uris"],
+                json!([variables["collector_url"]])
+            );
             assert_eq!(
                 secrets["tracker_token"],
                 fs::read_to_string(f.root.join("secrets/players.token")).unwrap()
@@ -577,6 +599,43 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
             );
         }
     }
+}
+
+#[test]
+fn local_check_is_read_only_and_does_not_contact_bds_or_start_services() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = Fixture::new(true, true);
+    f.prepare().unwrap();
+    let bin = f._temp.path().join("fake-bin");
+    fs::create_dir(&bin).unwrap();
+    let docker = bin.join("docker");
+    fs::write(&docker,b"#!/bin/sh\ncase \"$1 $2\" in\n'info --format') printf '%s\\n' '{\"OSType\":\"linux\",\"ServerVersion\":\"28.0.4\",\"SecurityOptions\":[]}' ;;\n'compose version') printf '%s\\n' '2.38.2' ;;\n'compose --project-directory') test \"$6 $7\" = 'config --quiet' ;;\n*) exit 88 ;;\nesac\n").unwrap();
+    fs::set_permissions(&docker, fs::Permissions::from_mode(0o700)).unwrap();
+    let before = inventory(&f.root);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_bedrock-map"))
+        .args(["--json", "--resources"])
+        .arg(&f.resources.root)
+        .args(["deploy", "check", "--dir"])
+        .arg(&f.root)
+        .env("PATH", &bin)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "prepared");
+    assert_eq!(report["checks"][2]["status"], "unknown");
+    assert_eq!(inventory(&f.root), before);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_bedrock-map"))
+        .args(["--json", "deploy", "check", "--expect-live", "--dir"])
+        .arg(&f.root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(inventory(&f.root), before);
 }
 
 #[test]
