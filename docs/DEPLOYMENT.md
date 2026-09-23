@@ -136,8 +136,9 @@ Its pack files and runtime requirements belong to the same operator release.
    snapshot belongs to that world; a friendly name cannot prove this association.
 2. Make and verify a consistent backup through BDS's own guarded maintenance.
    Install on a restored/disposable copy first, with independent telemetry secrets
-   and no public game tunnel. Check the actual binary against the packs' manifest
-   dependencies and [compatibility requirements](TRACKING-REFERENCE.md).
+   and no public game tunnel. Check the actual binary against each module's
+   generated `runtime-requirements.json` and supplied pack manifest. These declare
+   runtime dependency versions, not npm declaration-package versions.
 3. Obtain explicit approval for Beta APIs on the intended world. Removing packs
    does not undo experimental-world metadata. Retain the pre-experiment recovery
    copy independently; never restore it automatically over subsequent progress.
