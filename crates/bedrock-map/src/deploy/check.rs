@@ -86,9 +86,11 @@ async fn command_output(program: &str, args: &[&str], deadline: Duration) -> Res
 }
 
 fn minimum(version: &str, required: [u64; 3]) -> bool {
-    let parts: Option<Vec<u64>> = version
-        .trim()
-        .trim_start_matches('v')
+    let version = version.trim().trim_start_matches('v');
+    // Distribution build metadata does not change the upstream version floor.
+    // Prereleases remain rejected because their patch component is not numeric.
+    let core = version.split_once('+').map_or(version, |(core, _)| core);
+    let parts: Option<Vec<u64>> = core
         .split('.')
         .take(3)
         .map(str::parse::<u64>)
@@ -464,6 +466,7 @@ pub(super) mod tests {
     fn version_floor_is_not_lexical() {
         assert!(minimum("28.0.4", [28, 0, 4]));
         assert!(minimum("v2.40.0\n", [2, 38, 2]));
+        assert!(minimum("2.40.3+ds1-0ubuntu1~24.04.1", [2, 38, 2]));
         for v in ["2.9.0", "2.38.1", "2.38", "2.38.2-rc1", "junk"] {
             assert!(!minimum(v, [2, 38, 2]));
         }
