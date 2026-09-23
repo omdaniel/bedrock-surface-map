@@ -145,6 +145,10 @@ pub fn initialize(
             files::mkdir(&root.join(dir))?;
         }
         files::write_new(&root.join("deployment.toml"), encoded.as_bytes())?;
+        files::write_new(
+            &root.join("compose.yaml"),
+            &super::generate::compose(config, &lock)?,
+        )?;
         for (name, value) in &secrets {
             files::write_new(&root.join("secrets").join(name), value.as_bytes())?;
         }
@@ -178,6 +182,11 @@ pub fn load(root: &Path) -> Result<(Config, Lock)> {
         64 * 1024,
     )?)?;
     lock.release.validate()?;
+    ensure!(
+        files::read_private(&root.join("compose.yaml"), 64 * 1024)?
+            == super::generate::compose(&config, &lock)?,
+        "E_RESOURCE_MISMATCH: generated Compose configuration differs"
+    );
     let ids = files::owner()?;
     ensure!(
         lock.schema_version == 1

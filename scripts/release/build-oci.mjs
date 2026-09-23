@@ -76,6 +76,7 @@ try {
   await mkdir(context);
   await cp(source, join(context, "runtime"), { recursive: true });
   await mkdir(join(context, "gateway"));
+  await cp(join(source, "bedrock-map"), join(context, "gateway/bedrock-map"));
   await cp(join(common, "web"), join(context, "gateway/web"), {
     recursive: true,
   });

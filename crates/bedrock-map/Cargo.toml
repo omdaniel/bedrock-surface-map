@@ -12,6 +12,7 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 surface-cli = { path = "../surface-cli" }
+surface-sync = { path = "../surface-sync" }
 surface-core.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 axum = "=0.8.8"
@@ -27,6 +28,8 @@ bcrypt = "=0.17.1"
 getrandom = "=0.4.3"
 libc = "=0.2.189"
 rpassword = "=7.4.0"
+rusqlite = { version = "=0.38.0", features = ["bundled"] }
 
 [dev-dependencies]
+zip = { version = "=2.4.2", default-features = false, features = ["deflate"] }
 tower = { version = "=0.5.3", features = ["util"] }

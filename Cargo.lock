@@ -227,15 +227,18 @@ dependencies = [
  "libc",
  "reqwest",
  "rpassword",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "surface-cli",
  "surface-core",
+ "surface-sync",
  "tempfile",
  "tokio",
  "toml",
  "tower",
+ "zip",
 ]
 
 [[package]]

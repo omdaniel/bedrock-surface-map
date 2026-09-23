@@ -79,6 +79,13 @@ jobs:
           path: .local/release/common/
       - run: npm ci
       - run: node scripts/release/build-package.mjs ${{ matrix.target }} --common .local/release/common
+      - name: Verify transactional preparation with a parsed synthetic world
+        env:
+          BEDROCK_MAP_FIXTURE_DIR: ${{ github.workspace }}/.local/deployment-generated
+        run: |
+          cargo test --locked -p surface-cli ci_generate_world_fixture -- --ignored
+          cargo test --locked -p bedrock-map
+          cargo test --locked -p bedrock-map --test deploy_prepare prepare_imported_generated_world -- --ignored
       - name: Create isolated OCI exporter
         run: docker buildx create --name surface-oci --driver docker-container --use
       - name: Package and test the exact OCI images without publication

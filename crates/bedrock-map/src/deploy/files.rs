@@ -102,3 +102,87 @@ pub fn read_private(path: &Path, limit: usize) -> Result<Vec<u8>> {
     );
     Ok(bytes)
 }
+
+pub fn inventory(root: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    fn walk(
+        root: &Path,
+        dir: &Path,
+        result: &mut std::collections::BTreeMap<String, String>,
+    ) -> Result<()> {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if kind.is_dir() {
+                walk(root, &path, result)?;
+            } else {
+                ensure!(
+                    kind.is_file(),
+                    "E_STATE_UNSAFE: symlink or special file in deployment inputs"
+                );
+                let relative = path
+                    .strip_prefix(root)?
+                    .to_str()
+                    .context("E_STATE_UNSAFE: non-UTF8 deployment path")?
+                    .to_owned();
+                result.insert(relative, crate::assets::checksum(&path)?);
+            }
+        }
+        Ok(())
+    }
+    let mut result = std::collections::BTreeMap::new();
+    walk(root, root, &mut result)?;
+    Ok(result)
+}
+
+pub fn copy_inventory(
+    source: &Path,
+    target: &Path,
+    inventory: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    for (relative, expected) in inventory {
+        let relative = crate::resources::safe_relative(relative)?;
+        let from = source.join(relative);
+        let to = target.join(relative);
+        let mut component = source.to_path_buf();
+        for item in relative.components() {
+            component.push(item);
+            ensure!(
+                !fs::symlink_metadata(&component)?.file_type().is_symlink(),
+                "E_STATE_UNSAFE: symlink in source inventory"
+            );
+        }
+        let bytes = fs::read(&from)?;
+        ensure!(
+            digest(&bytes) == *expected,
+            "E_INPUT_CHANGED: source inventory changed during preparation"
+        );
+        let parent = to.parent().unwrap();
+        fs::create_dir_all(parent)?;
+        write_new(&to, &bytes)?;
+    }
+    Ok(())
+}
+
+pub fn make_private(root: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for entry in fs::read_dir(root)? {
+            let entry = entry?;
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            ensure!(
+                kind.is_dir() || kind.is_file(),
+                "E_STATE_UNSAFE: unexpected generated entry"
+            );
+            if kind.is_dir() {
+                make_private(&path)?;
+            } else {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+            }
+        }
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}

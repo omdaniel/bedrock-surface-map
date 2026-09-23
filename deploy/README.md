@@ -6,9 +6,10 @@ digest-pinned Caddy image with the same prebuilt frontend. Both images default t
 numeric user `65532:65532`; Compose tests override that with the non-root operator's
 UID/GID to read owner-only bind-mounted files. Neither image contains credentials.
 
-These components are not yet an operator installation workflow. Transactional
-preparation, the authenticated gateway, BDS handoff and full acceptance gates remain
-required before this topology is supported.
+These components are not yet a supported operator installation workflow. The
+generator supplies transactional preparation, an authenticated gateway and a
+private BDS handoff. Generated-container, browser, network and actual-BDS acceptance
+remain required. Runtime diagnostics and registry publication tooling are incomplete.
 
 ## Initialization boundary
 
@@ -27,6 +28,35 @@ its exact commit and common resources. The packaging candidate alone is not that
 publication record. There is no end-user source-build fallback or image tag.
 Deployment preparation and runtime acceptance are separate from initialization;
 an initialized directory is not a prepared or running deployment.
+
+## Preparation boundary
+
+With a verified imported snapshot selected in the existing snapshot state:
+
+```sh
+bedrock-map deploy prepare --dir ./map-deploy --snapshot-state ./map-data --assets ./bedrock-assets.zip
+```
+
+Terrain preparation requires the compatible asset archive, either explicitly with
+`--assets` or in the snapshot state's managed cache. Players-only preparation does
+not use that argument. The command copies the validated public snapshot, seeds a
+new store using the full asset library, and generates the viewer, Caddy and private
+BDS handoff together. A same-filesystem rename selects the completed `prepared/`
+tree. Neither the source snapshot nor BDS is modified. The ordinary rendered demo
+is not a valid substitute for a parsed Bedrock seed.
+
+Repeated preparation verifies identical inputs without reseeding. Changed inputs,
+modified immutable outputs and a changed live store are refused. A killed process
+may leave private `work/prepare-*` scratch; a retry reports that scratch rather
+than selecting it or deleting it automatically. Inspect and remove only the
+abandoned preparation directory. Never remove `prepared/` to bypass a refusal.
+
+`compose.yaml` uses exact image digests, non-root UID/GID, narrow required mounts
+with missing-source refusal, and independent feed services. Startup validates the
+preparation identity and existing seeded database, then execs the native service;
+it never imports or seeds. Public files, gateway files, credentials, mutable store
+and BDS handoff remain separate. The handoff requires a reviewed module-level
+merge into an independently backed-up test world, not a whole-directory overwrite.
 
 ## Build and packaging checks
 
@@ -69,3 +99,6 @@ publication and complete deployment acceptance have not occurred.
 these packaging checks on native Ubuntu AMD64 and ARM64 runners. Its evidence
 records Engine/Compose versions and image identities. This is packaging evidence,
 not proof of the complete HTTPS/browser or live-BDS acceptance matrix.
+Both jobs also generate a synthetic MCWorld and import it through the real parser
+before exercising preparation. Unit fixtures with fabricated image identities
+test validation only; they are not evidence that those images exist or run.

@@ -259,7 +259,7 @@ fn cli_init_is_independent_of_home_snapshot_state_and_plaintext_arguments() {
     let initial: Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(initial["command"], "deploy.init");
     assert_eq!(initial["changed"], true);
-    assert_eq!(initial["running"], false);
+    assert_eq!(initial["runtime_checked"], false);
     let before = tree(&root);
     let second = command().output().unwrap();
     assert!(second.status.success());

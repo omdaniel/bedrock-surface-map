@@ -25,6 +25,11 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(name = "internal-run", hide = true)]
+    InternalRun {
+        #[arg(value_enum)]
+        service: bedrock_map::deploy::launch::Service,
+    },
     /// Prepare an independently managed live-map deployment.
     Deploy {
         #[command(subcommand)]
@@ -67,6 +72,15 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DeployCommand {
+    /// Prepare one immutable snapshot and a new live store, without starting BDS.
+    Prepare {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        snapshot_state: PathBuf,
+        #[arg(long)]
+        assets: Option<PathBuf>,
+    },
     /// Initialize private deployment identity and secrets; does not start services.
     Init {
         #[arg(long)]
@@ -194,6 +208,10 @@ async fn main() -> std::process::ExitCode {
 
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::InternalRun { .. } => "internal-run",
+        Command::Deploy {
+            command: DeployCommand::Prepare { .. },
+        } => "deploy.prepare",
         Command::Deploy {
             command: DeployCommand::Init { .. },
         } => "deploy.init",
@@ -216,6 +234,27 @@ fn command_name(command: &Command) -> &'static str {
 async fn run(args: Args) -> Result<u8> {
     if let Command::Deploy { command } = &args.command {
         match command {
+            DeployCommand::Prepare {
+                dir,
+                snapshot_state,
+                assets,
+            } => {
+                let source = State::new(snapshot_state.clone())?;
+                let record = bedrock_map::deploy::prepare::prepare(
+                    dir,
+                    &source,
+                    &resource(&args)?,
+                    assets.as_deref(),
+                )?;
+                print(
+                    result(
+                        "deploy.prepare",
+                        json!({"directory":dir,"status":"prepared","world_id":record.world_id,
+                    "generation":record.generation,"dataset_id":record.dataset_id,"runtime_checked":false}),
+                    )?,
+                    args.json,
+                );
+            }
             DeployCommand::Init {
                 dir,
                 config,
@@ -253,7 +292,7 @@ async fn run(args: Args) -> Result<u8> {
                     result(
                         "deploy.init",
                         json!({"directory":dir,"world_id":lock.world_id,"generation":lock.generation,
-                    "changed":!existing,"status":"initialized","prepared":false,"running":false}),
+                    "changed":!existing,"status":"initialized","runtime_checked":false}),
                     )?,
                     args.json,
                 );
@@ -265,11 +304,16 @@ async fn run(args: Args) -> Result<u8> {
         bedrock_map::health::check(*service).await?;
         return Ok(0);
     }
+    if let Command::InternalRun { service } = &args.command {
+        bedrock_map::deploy::launch::run(*service)?;
+        unreachable!("successful launcher replaces the process");
+    }
     let state = State::new(match args.state.clone() {
         Some(path) => path,
         None => default_state()?,
     })?;
     match &args.command {
+        Command::InternalRun { .. } => unreachable!("handled before snapshot state resolution"),
         Command::Deploy { .. } => unreachable!("handled before snapshot state resolution"),
         Command::InternalHealth { .. } => unreachable!("handled before snapshot state resolution"),
         Command::Init => {
