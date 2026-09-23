@@ -7,6 +7,7 @@ import { networkInterfaces, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { sha256 } from "../release/oci.mjs";
 import { stageLocalCandidate } from "./stage-oci.mjs";
+import { verifyGeneratedBrowser } from "./generated-browser.mjs";
 
 const [candidateArg, fixtureArg, evidenceArg] = process.argv.slice(2);
 if (!candidateArg || !fixtureArg || !evidenceArg)
@@ -291,7 +292,7 @@ try {
       join(deployment, "caddy-data/caddy/pki/authorities/local/root.crt"),
     ),
   );
-  const port = containers.gateway.NetworkSettings.Ports["443/tcp"][0].HostPort;
+  let port = containers.gateway.NetworkSettings.Ports["443/tcp"][0].HostPort;
   await waitFor(async () =>
     assert.equal((await https(port, "/", false)).status, 401),
   );
@@ -368,6 +369,9 @@ try {
       join(deployment, "caddy-data/caddy/pki/authorities/local/root.crt"),
     );
   compose("start");
+  // Docker can assign a different ephemeral host port when restarting a stopped
+  // container. The supported deployment uses fixed ports; this fixture does not.
+  port = inspect("gateway").NetworkSettings.Ports["443/tcp"][0].HostPort;
   await waitFor(async () =>
     assert.equal((await https(port, viewer.terrain.url)).status, 200),
   );
@@ -389,6 +393,7 @@ try {
   );
   const logs = compose("logs", "--no-color");
   assert.ok([...tokens, password].every((secret) => !logs.includes(secret)));
+  const browserEvidence = await verifyGeneratedBrowser({ port, ca, password });
   await writeFile(
     output,
     JSON.stringify(
@@ -417,7 +422,8 @@ try {
         ],
         public_publication: false,
         public_certificate: false,
-        browser_verified: false,
+        browser_verified: true,
+        browser_evidence: browserEvidence,
         actual_bds_verified: false,
       },
       null,

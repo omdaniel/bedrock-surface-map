@@ -186,7 +186,10 @@ jobs:
           name: deployment-fixture-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: .local/deployment-generated/
       - name: Execute generated deployment using exact native images
-        run: node scripts/deploy/generated-smoke.mjs .local/oci/combined .local/deployment-generated .local/oci/generated-evidence.json
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          node scripts/deploy/generated-smoke.mjs .local/oci/combined .local/deployment-generated .local/oci/generated-evidence.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: deployment-generated-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}

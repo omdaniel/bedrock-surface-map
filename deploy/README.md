@@ -132,5 +132,8 @@ operator executable from the exact runtime image, import the synthetic parser
 fixture, and exercise generated preparation, mounts, readiness, authentication,
 feed outage and same-version restart. Only test CA issuance and ephemeral host
 port bindings differ from the generated deployment. Evidence identifies those
-differences explicitly; this check is not public-certificate, firewall, browser or
+differences explicitly. Chromium verifies the exact generated seed's colored
+canvas pixels, known grass-column picking and explicit terrain/player opt-outs.
+Its temporary browser process pins the test root's public key; no OS trust root
+is installed. This is not public-certificate, firewall, live-edit/player-motion or
 actual-BDS acceptance. The local staging helper refuses non-loopback registries.
