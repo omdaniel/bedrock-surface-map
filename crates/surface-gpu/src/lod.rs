@@ -65,6 +65,137 @@ impl Key {
     pub fn span(self) -> f64 {
         (128u32 << self.level) as f64
     }
+    fn parent(self) -> Self {
+        Self {
+            level: self.level + 1,
+            x: self.x.div_euclid(2),
+            z: self.z.div_euclid(2),
+        }
+    }
+}
+
+// West, east, north, south, then NW, NE, SW, SE corners. Integer page arithmetic works at negative and
+// distant origins; no world-coordinate f32 comparison participates in adjacency.
+fn adjacent_edge(finer: Key, coarser: Key) -> Option<usize> {
+    if coarser.level != finer.level + 1 {
+        return None;
+    }
+    let x = finer.x as i64;
+    let z = finer.z as i64;
+    let cx = coarser.x as i64 * 2;
+    let cz = coarser.z as i64 * 2;
+    if z >= cz && z < cz + 2 {
+        if x == cx + 2 {
+            return Some(0);
+        }
+        if x + 1 == cx {
+            return Some(1);
+        }
+    }
+    if x >= cx && x < cx + 2 {
+        if z == cz + 2 {
+            return Some(2);
+        }
+        if z + 1 == cz {
+            return Some(3);
+        }
+    }
+    if x == cx + 2 && z == cz + 2 {
+        return Some(4);
+    }
+    if x + 1 == cx && z == cz + 2 {
+        return Some(5);
+    }
+    if x == cx + 2 && z + 1 == cz {
+        return Some(6);
+    }
+    if x + 1 == cx && z + 1 == cz {
+        return Some(7);
+    }
+    None
+}
+
+fn band_rect(band: usize) -> [f64; 4] {
+    match band {
+        0 => [0., 0., 2., 128.],
+        1 => [126., 0., 128., 128.],
+        2 => [0., 0., 128., 2.],
+        3 => [0., 126., 128., 128.],
+        4 => [0., 0., 2., 2.],
+        5 => [126., 0., 128., 2.],
+        6 => [0., 126., 2., 128.],
+        _ => [126., 126., 128., 128.],
+    }
+}
+
+struct Boundary {
+    parent: Key,
+    weights: [f32; 8],
+    neighbors: [Option<Key>; 8],
+}
+impl Boundary {
+    fn sources(&self, key: Key, view: View) -> Vec<Key> {
+        let mut sources = Vec::new();
+        for (band, _) in self.weights.iter().enumerate().filter(|(_, w)| **w > 0.) {
+            let rect = band_rect(band);
+            // A half-parent-sample filter footprint extends one finer sample
+            // across a parent border. Only those visible gutter sources relight.
+            for dx in [0, if key.x.rem_euclid(2) == 0 { -1 } else { 1 }] {
+                for dz in [0, if key.z.rem_euclid(2) == 0 { -1 } else { 1 }] {
+                    let strip = |d| match d {
+                        -1 => [0., 1.],
+                        1 => [127., 128.],
+                        _ => [0., 128.],
+                    };
+                    let sx = strip(dx);
+                    let sz = strip(dz);
+                    let clipped = [
+                        rect[0].max(sx[0]),
+                        rect[1].max(sz[0]),
+                        rect[2].min(sx[1]),
+                        rect[3].min(sz[1]),
+                    ];
+                    if clipped[0] < clipped[2]
+                        && clipped[1] < clipped[3]
+                        && view.local_visible(key, clipped)
+                    {
+                        let source = Key {
+                            level: self.parent.level,
+                            x: self.parent.x + dx,
+                            z: self.parent.z + dz,
+                        };
+                        if !sources.contains(&source) {
+                            sources.push(source);
+                        }
+                    }
+                }
+            }
+        }
+        sources
+    }
+}
+fn cut_boundaries(cut: &[CutEntry]) -> BTreeMap<Key, Boundary> {
+    let mut boundaries = BTreeMap::new();
+    for finer in cut
+        .iter()
+        .filter(|e| e.opacity > 0. && e.key.level < MAX_LEVEL)
+    {
+        let mut boundary = Boundary {
+            parent: finer.key.parent(),
+            weights: [0.; 8],
+            neighbors: [None; 8],
+        };
+        for coarser in cut.iter().filter(|e| e.opacity > 0.) {
+            if let Some(edge) = adjacent_edge(finer.key, coarser.key) {
+                boundary.weights[edge] = coarser.opacity;
+                boundary.neighbors[edge] = Some(coarser.key);
+            }
+        }
+        if boundary.neighbors.iter().any(Option::is_some) {
+            boundaries.insert(finer.key, boundary);
+        }
+    }
+    boundaries
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -79,7 +210,10 @@ struct DrawUniform {
     origin: [f32; 4],
     key: [i32; 4],
     world: [f32; 4],
+    edges: [f32; 4],
+    corners: [f32; 4],
 }
+const DRAW_BYTES: u64 = std::mem::size_of::<DrawUniform>() as u64;
 
 #[derive(Clone, Copy, PartialEq)]
 struct View {
@@ -96,10 +230,17 @@ impl View {
         ]
     }
     fn visible(self, key: Key) -> bool {
+        self.local_visible(key, [0., 0., 128., 128.])
+    }
+    fn local_visible(self, key: Key, rect: [f64; 4]) -> bool {
         let [x, z] = self.origin(key);
+        let sample = (1u32 << key.level) as f64;
         let half_x = self.width as f64 / self.scale * 0.5;
         let half_z = self.height as f64 / self.scale * 0.5;
-        x < half_x && x + key.span() > -half_x && z < half_z && z + key.span() > -half_z
+        x + rect[0] * sample < half_x
+            && x + rect[2] * sample > -half_x
+            && z + rect[1] * sample < half_z
+            && z + rect[3] * sample > -half_z
     }
 }
 
@@ -177,6 +318,7 @@ struct Tile {
     color: Option<wgpu::Texture>,
     lit: Option<wgpu::Texture>,
     group: wgpu::BindGroup,
+    edge_source: Option<wgpu::BindGroup>,
     shade_group: Option<wgpu::BindGroup>,
     cached_status: Option<wgpu::Buffer>,
     dirty: bool,
@@ -325,6 +467,7 @@ pub struct GpuLod {
     dummy: wgpu::Texture,
     dummy_view: wgpu::TextureView,
     empty_status: wgpu::Buffer,
+    dummy_edge_source: wgpu::BindGroup,
     gutter_scratch: wgpu::Buffer,
     page_table: wgpu::Buffer,
     nodes: wgpu::Buffer,
@@ -334,6 +477,7 @@ pub struct GpuLod {
     heights: BTreeMap<Key, usize>,
     pending: VecDeque<Pending>,
     cut: Vec<CutEntry>,
+    boundaries: BTreeMap<Key, Boundary>,
     target: Option<Target>,
     retirement: Mutex<Retirement>,
     completed: Arc<AtomicU64>,
@@ -487,6 +631,8 @@ impl GpuLod {
             &[0u8; CACHE_STATUS_BYTES as usize],
             wgpu::BufferUsages::STORAGE,
         );
+        let dummy_edge_source =
+            Self::bind_edge_source(&device, &terrain, &dummy_view, &empty_status);
         let gutter_scratch = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bounded LOD gutter copy scratch"),
             size: 65536,
@@ -561,6 +707,7 @@ impl GpuLod {
             dummy,
             dummy_view,
             empty_status,
+            dummy_edge_source,
             gutter_scratch,
             page_table,
             nodes,
@@ -570,6 +717,7 @@ impl GpuLod {
             heights: BTreeMap::new(),
             pending: VecDeque::new(),
             cut: Vec::new(),
+            boundaries: BTreeMap::new(),
             target: None,
             retirement: Mutex::default(),
             completed: Arc::default(),
@@ -593,6 +741,18 @@ impl GpuLod {
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        })
+    }
+    fn bind_edge_source(
+        device: &wgpu::Device,
+        pipeline: &wgpu::RenderPipeline,
+        view: &wgpu::TextureView,
+        status: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("LOD parent edge source"),
+            layout: &pipeline.get_bind_group_layout(2),
+            entries: &[tex_entry(0, view), entry(1, status)],
         })
     }
     #[allow(clippy::too_many_arguments)]
@@ -794,6 +954,7 @@ impl GpuLod {
             + self.cut.capacity() * std::mem::size_of::<CutEntry>()
             + self.tiles.len() * (std::mem::size_of::<(Key, Tile)>() + 128)
             + self.heights.len() * (std::mem::size_of::<(Key, usize)>() + 128)
+            + self.boundaries.len() * (std::mem::size_of::<(Key, Boundary)>() + 128)
             + self.free_slots.capacity() * std::mem::size_of::<usize>()
             + std::mem::size_of::<Self>()
             + retired_metadata
@@ -826,20 +987,34 @@ impl GpuLod {
         self.pending.len()
     }
     pub fn pending_preparations(&self) -> usize {
-        self.pending.len()
-            + self
-                .cut
-                .iter()
-                .filter(|e| self.schedulable_shade(e))
-                .count()
+        self.pending.len() + self.preparation_keys().len()
     }
-    fn schedulable_shade(&self, entry: &CutEntry) -> bool {
-        entry.opacity > 0.
-            && self.view.is_some_and(|view| view.visible(entry.key))
-            && self
+    fn preparation_keys(&self) -> Vec<Key> {
+        let mut keys = Vec::new();
+        let Some(view) = self.view else {
+            return keys;
+        };
+        let mut add = |key| {
+            if self
                 .tiles
-                .get(&entry.key)
+                .get(&key)
                 .is_some_and(|t| t.needs_shade(self.lighting_epoch))
+                && !keys.contains(&key)
+            {
+                keys.push(key);
+            }
+        };
+        for (key, boundary) in &self.boundaries {
+            for source in boundary.sources(*key, view) {
+                add(source);
+            }
+        }
+        for entry in &self.cut {
+            if entry.opacity > 0. && view.visible(entry.key) {
+                add(entry.key);
+            }
+        }
+        keys
     }
     pub fn pending_uploads(&self) -> usize {
         self.pending.len()
@@ -927,9 +1102,9 @@ impl GpuLod {
     }
     pub fn tile_bytes(&self, level: u32) -> u64 {
         if level == 0 {
-            SAMPLES as u64 * 32 + 48
+            SAMPLES as u64 * 32 + DRAW_BYTES
         } else {
-            SAMPLES as u64 * 24 + 48 + COARSE_BYTES + SHADED_BYTES + CACHE_STATUS_BYTES
+            SAMPLES as u64 * 24 + DRAW_BYTES + COARSE_BYTES + SHADED_BYTES + CACHE_STATUS_BYTES
         }
     }
     /// Incremental GPU reservation for temporary upload/build buffers. Page slots
@@ -1047,8 +1222,16 @@ impl GpuLod {
                 .zip(&cut)
                 .any(|(a, b)| a.key != b.key || a.opacity != b.opacity)
         {
+            let boundaries = cut_boundaries(&cut);
+            for boundary in boundaries.values() {
+                ensure!(
+                    self.has_tile(boundary.parent),
+                    "mixed LOD edge requires a prepared resident parent"
+                );
+            }
             self.feedback_revision += 1;
             self.cut = cut;
+            self.boundaries = boundaries;
         }
         Ok(())
     }
@@ -1120,6 +1303,7 @@ impl GpuLod {
         if let Some(tile) = self.tiles.remove(&key) {
             self.feedback_revision += 1;
             self.cut.retain(|e| e.key != key);
+            self.boundaries = cut_boundaries(&self.cut);
             self.retire(tile.resources(), vec![]);
             let mut encoder = self.device.create_command_encoder(&Default::default());
             self.reset_neighbor_gutters(key, &mut encoder);
@@ -1216,7 +1400,7 @@ impl GpuLod {
         let origin = buffer(
             &self.device,
             "LOD camera-relative tile",
-            &[0u8; 48],
+            &[0u8; DRAW_BYTES as usize],
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
         let color = if key.level == 0 {
@@ -1299,12 +1483,21 @@ impl GpuLod {
                 entry(3, cached_status.as_ref().unwrap_or(&self.empty_status)),
             ],
         });
+        let edge_source = view.as_ref().map(|view| {
+            Self::bind_edge_source(
+                &self.device,
+                &self.terrain,
+                view,
+                cached_status.as_ref().unwrap(),
+            )
+        });
         let tile = Tile {
             data,
             origin,
             color,
             lit,
             group,
+            edge_source,
             shade_group,
             cached_status,
             dirty: key.level != 0,
@@ -1778,7 +1971,13 @@ impl GpuLod {
         if self.pending_submissions() >= 3 {
             return Ok(false);
         }
-        let upload_bytes = 80 + (self.tiles.len() as u64 + 1) * 48;
+        for (key, boundary) in &self.boundaries {
+            ensure!(
+                !view.visible(*key) || self.has_tile(boundary.parent),
+                "mixed LOD edge parent was removed while its child remains in the cut"
+            );
+        }
+        let upload_bytes = 80 + (self.tiles.len() as u64 + 1) * DRAW_BYTES;
         let prepare_bytes = self.pending.front().map_or(0, |next| {
             if next.kind == Kind::Height {
                 self.height_bytes(next.key.level)
@@ -1797,11 +1996,7 @@ impl GpuLod {
         let shade_key = match prepared {
             Some((Kind::Tile, key)) if key.level > 0 => Some(key),
             Some(_) => None,
-            None => self
-                .cut
-                .iter()
-                .find(|e| self.schedulable_shade(e))
-                .map(|e| e.key),
+            None => self.preparation_keys().first().copied(),
         };
         if prepared.is_some() || shade_key.is_some() {
             self.feedback_revision += 1;
@@ -1830,10 +2025,22 @@ impl GpuLod {
             0.,
             0.,
         ];
-        let mut uniforms = Vec::<u8>::with_capacity(80 + self.tiles.len() * 48);
+        let mut uniforms = Vec::<u8>::with_capacity(80 + self.tiles.len() * DRAW_BYTES as usize);
         uniforms.extend_from_slice(bytemuck::cast_slice(&params));
         for (key, tile) in &self.tiles {
             let [x, z] = view.origin(*key);
+            let boundary = self.boundaries.get(key);
+            let weights = boundary.map_or([0.; 8], |b| b.weights);
+            let parent_stale = boundary.is_some_and(|b| {
+                let stale = |k| {
+                    shade_key != Some(k)
+                        && self
+                            .tiles
+                            .get(&k)
+                            .is_none_or(|t| t.needs_shade(self.lighting_epoch))
+                };
+                b.sources(*key, view).into_iter().any(stale)
+            });
             let opacity = self
                 .cut
                 .iter()
@@ -1845,13 +2052,15 @@ impl GpuLod {
                     key.level as i32,
                     key.x,
                     key.z,
-                    if tile.needs_shade(self.lighting_epoch) && shade_key != Some(*key) {
+                    (if tile.needs_shade(self.lighting_epoch) && shade_key != Some(*key) {
                         8
                     } else {
                         0
-                    },
+                    }) | if parent_stale { 16 } else { 0 },
                 ],
                 world: relative_bounds(*key, bounds),
+                edges: weights[..4].try_into().unwrap(),
+                corners: weights[4..].try_into().unwrap(),
             };
             uniforms.extend_from_slice(bytemuck::bytes_of(&uniform));
         }
@@ -1863,7 +2072,13 @@ impl GpuLod {
         );
         encoder.copy_buffer_to_buffer(&staging, 0, &self.params, 0, 80);
         for (i, tile) in self.tiles.values().enumerate() {
-            encoder.copy_buffer_to_buffer(&staging, 80 + i as u64 * 48, &tile.origin, 0, 48);
+            encoder.copy_buffer_to_buffer(
+                &staging,
+                80 + i as u64 * DRAW_BYTES,
+                &tile.origin,
+                0,
+                DRAW_BYTES,
+            );
         }
         self.upload_peak = self.upload_peak.max(self.cpu_bytes() + uniforms.capacity());
         self.retire(vec![Resource::Buffer(staging)], vec![]);
@@ -1893,6 +2108,13 @@ impl GpuLod {
                 }
                 if let Some(tile) = self.tiles.get(&e.key).filter(|t| t.ready) {
                     pass.set_bind_group(1, &tile.group, &[]);
+                    let source = self
+                        .boundaries
+                        .get(&e.key)
+                        .and_then(|b| self.tiles.get(&b.parent))
+                        .and_then(|t| t.edge_source.as_ref())
+                        .unwrap_or(&self.dummy_edge_source);
+                    pass.set_bind_group(2, source, &[]);
                     pass.draw(0..6, 0..1);
                 }
             }
@@ -1941,6 +2163,7 @@ impl GpuLod {
         }
         self.pending = VecDeque::new();
         self.cut = Vec::new();
+        self.boundaries.clear();
         self.heights.clear();
         self.free_slots = Vec::new();
         for tile in std::mem::take(&mut self.tiles).into_values() {

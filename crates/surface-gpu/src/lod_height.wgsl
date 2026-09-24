@@ -1,6 +1,6 @@
 // Page table: 17 independent 256-entry hash tables; 128 slots in the GPU arena.
 // Positions are relative to this draw tile, avoiding world-coordinate f32 loss.
-struct Draw { origin:vec4f, key:vec4i, world:vec4f }
+struct Draw { origin:vec4f, key:vec4i, world:vec4f, edges:vec4f, corners:vec4f }
 @group(0) @binding(4) var<storage,read> pages:array<vec4i>;
 @group(0) @binding(5) var<storage,read> height_nodes:array<vec2u>;
 struct Feedback { flags:atomic<u32>, missing:atomic<u32>, unknown:atomic<u32>, exhausted:atomic<u32> }

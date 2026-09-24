@@ -34,6 +34,20 @@ supplies physical pixels per block; there is no implicit DPR multiplication.
 Per-tile origins and bounds are computed relative to the camera/tile in f64 before
 GPU conversion. Cut entries are unique keys with finite opacity in [0,1], and
 must name prepared tiles. Float32 cut keys must be exactly representable integers.
+Spatially adjacent cut members differing by one level use a two-finer-sample
+edge band (one parent sample). `set_cut` discovers these 2:1 edges using integer
+keys and requires the finer tile's immediate parent to be prepared/resident.
+The parent is not another cut contribution: its shaded cache is sampled only
+inside the band, using child parity and tile-local coordinates. Coarser-neighbor
+opacity weights the band during cut transitions. Fine interiors remain exact;
+unknown/empty/outside child cells and partially covered coarse samples do not
+blend to parent ground. Retain required parents until the mixed edge leaves the
+cut; removing one while its child remains visible produces an explicit render
+error instead of sampling a blank placeholder.
+Diagonal 2:1 neighbors use a two-by-two finer-sample corner patch with the product
+of the two edge weights, meeting adjacent edge bands continuously. Keep the level
+spread at a shared corner to at most one; recursive three-level corners are not
+supported by this immediate-parent scheme.
 
 Tile side is 128 samples; `(level,x,z)` has origin
 `(x,z) * (128 << level)`, with levels 0 through 16. Level zero detail has eight
@@ -51,6 +65,11 @@ changes retain old shaded caches until each replacement is ready. No lighting
 change rebuilds every tile synchronously. Lighting epochs coalesce obsolete work:
 only visible, positive-opacity cut members are relit, using the latest settings.
 Off-cut and offscreen ancestors retain their old cache without sustaining RAF.
+Visible mixed edge bands additionally schedule their immediate parent and the
+coarser neighbor that supplies its gutter, even when that neighbor is just outside
+the viewport. This includes other resident parent-level siblings when a visible
+band samples their side/corner gutters. These dependencies are deduplicated and share the same one-cache
+preparation limit. An interior-only view does not schedule offscreen edge bands.
 `lighting_epoch()` and `tile_lighting_epoch(level,x,z)` expose these revisions;
 height-dependency invalidation is tracked separately. Initial queued tile uploads
 still prepare their cache before `has_tile` becomes true. Already submitted GPU
@@ -67,8 +86,9 @@ gutters are stitched after preparation and restored on removal. Fine fragments
 sample the actual material atlas and compute shadows, edges and block grid.
 Gutters propagate the sibling's own height-status flags without recursive
 contamination. Only equally current lighting caches are stitched. Mixed-level
-draws are supported as cut members, but common-ancestor edge blending for a
-balanced mixed-level cut is not implemented or claimed seam-free.
+2:1 edges blend toward these common parent/sibling samples. Parent-cache status
+and stale edge dependencies propagate into height feedback. Level jumps larger
+than one and multi-level corner transitions are not given recursive blending.
 The caller supplies atlas padding; two mip levels are generated on the GPU.
 ImageBitmap upload uses `copy_external_image_to_texture`, without a WASM RGBA copy.
 
@@ -122,12 +142,12 @@ These are nominal resource bytes, not an estimate of driver heap overhead.
 | One height slot within that arena | 174,760 |
 | All height page tables | 69,632 |
 | Shared gutter-copy scratch buffer | 65,536 |
-| Fine tile, including draw uniform | 524,336 |
-| Coarse tile, including all caches and status | 798,900 |
+| Fine tile, including draw uniform | 524,368 |
+| Coarse tile, including all caches and status | 798,932 |
 | Temporary level-zero height upload/build/table | 135,296 |
 | Temporary coarse height upload/build/table | 200,832 |
 | Accumulation target | width * height * 8 |
-| Frame uniform upload | 80 + residentTiles * 48 |
+| Frame uniform upload | 80 + residentTiles * 80 |
 
 The arena is allocated with `create_buffer`, not a CPU zero vector. One slot is
 reserved for atomic replacement: at most 127 height pages are resident and
@@ -157,7 +177,7 @@ released after preparation. The queue holds at most 2 MiB; draw cuts and residen
 draw tiles are capped at 128. `pending_tiles()`/`pending_uploads()` count queued
 uploads. `pending_preparations()` also counts stale/dirty coarse lighting caches
 in the visible positive-opacity cut of the latest requested view, not off-cut
-or offscreen caches.
+or offscreen caches except the visible mixed-edge dependencies described above.
 `pending_submissions()` counts submissions awaiting completion. Keep upload
 reservations until preparation is acknowledged; a single outstanding controller
 upload can use an empty upload queue plus `has_tile`/`has_height` as its acknowledgement.
