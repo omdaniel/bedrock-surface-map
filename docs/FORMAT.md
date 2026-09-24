@@ -125,7 +125,8 @@ The logical map budget is 256 MiB, including resident detail, picking records,
 CPU/GPU height trees and compact live height pages. Eviction prefers nonvisible
 detail. Camera and lighting changes reserve space for both visible detail and
 required shadow coverage before loading. A view that cannot fit is refused with
-a zoom-in notice; the last supported camera remains usable. Enlarging the browser
+a zoom-in notice; the last supported camera and sun elevation remain usable, and
+the elevation control reflects the retained value. Enlarging the browser
 window tightens the zoom when necessary. Shadows are not silently clipped. This budget is
 not total browser/driver RSS or a bound on transient allocations. Region loading
 uses two requests at a time; an unchanged view has no continuous terrain loop.

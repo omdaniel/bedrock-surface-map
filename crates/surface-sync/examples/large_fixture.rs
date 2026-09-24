@@ -26,7 +26,17 @@ fn main() -> Result<()> {
         heights.extend_from_slice(&1024i16.to_le_bytes());
     }
     let height_ref = object(output, &zstd::encode_all(heights.as_slice(), 3)?, "zst")?;
-    for (factor, half) in [(4, 8), (16, 16)] {
+    let mut relief_heights = Vec::with_capacity(CELLS * 2);
+    for i in 0..CELLS {
+        let height = if i % 256 < 128 { -1024i16 } else { 5104i16 };
+        relief_heights.extend_from_slice(&height.to_le_bytes());
+    }
+    let relief_ref = object(
+        output,
+        &zstd::encode_all(relief_heights.as_slice(), 3)?,
+        "zst",
+    )?;
+    for (name, half, relief) in [("4", 8, false), ("16", 16, false), ("relief", 16, true)] {
         let mut root = template.clone();
         let mut regions = Vec::new();
         for rz in -half..half {
@@ -37,6 +47,13 @@ fn main() -> Result<()> {
                 region.materials.fill(1);
                 region.supports.fill(1);
                 region.support_heights.fill(1024);
+                if relief {
+                    for i in 0..CELLS {
+                        let height = if i % 256 < 128 { -1024 } else { 5104 };
+                        region.heights[i] = height;
+                        region.support_heights[i] = height;
+                    }
+                }
                 let surface = object(
                     output,
                     &zstd::encode_all(encode_live_region(&region)?.as_slice(), 3)?,
@@ -48,20 +65,24 @@ fn main() -> Result<()> {
                     "json",
                 )?;
                 regions.push(json!({"rx":rx,"rz":rz,"columns":CELLS,
-                    "surface":surface,"heights":height_ref,"index":index}));
+                    "surface":surface,"heights":if relief {&relief_ref} else {&height_ref},"index":index}));
             }
         }
         root["bounds"] = json!([-half * 256, -half * 256, half * 256, half * 256]);
         root["spawn"] = json!([0, 64, 0]);
-        root["height_range"] = json!([1024, 1024]);
+        root["height_range"] = if relief {
+            json!([-1024, 5104])
+        } else {
+            json!([1024, 1024])
+        };
         root["regions"] = json!(regions);
         fs::write(
-            output.join(format!("root-{factor}.json")),
+            output.join(format!("root-{name}.json")),
             serde_json::to_vec(&root)?,
         )?;
     }
     println!(
-        "Dense synthetic 4x/16x fixtures written to {}",
+        "Dense synthetic 4x/16x and high-relief fixtures written to {}",
         output.display()
     );
     Ok(())

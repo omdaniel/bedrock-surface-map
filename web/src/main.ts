@@ -738,7 +738,7 @@ bindSunDial(
 $("elevation").oninput = () => {
   elevation = Number($<HTMLInputElement>("elevation").value);
   $("elevation-value").textContent = `${elevation}\u00b0`;
-  requestDraw();
+  changed();
 };
 $("shadow-strength").oninput = () => {
   shadowStrength = Number($<HTMLInputElement>("shadow-strength").value) / 100;

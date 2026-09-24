@@ -4,6 +4,124 @@ import { resolve } from "node:path";
 
 const directory = resolve(".local/terrain-large");
 
+test("sun elevation refuses an oversized shadow window and navigation recovers", async ({
+  page,
+}) => {
+  const root = JSON.parse(
+    readFileSync(resolve(directory, "root-relief.json"), "utf8"),
+  );
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/viewer-config.json", (route) =>
+    route.fulfill({
+      json: {
+        terrain: {
+          world_id: root.world_id,
+          generation: root.generation,
+          url: `/api/v1/worlds/${root.world_id}/terrain/manifest.json`,
+        },
+      },
+    }),
+  );
+  await page.route("**/api/v1/worlds/*/terrain/**", (route) => {
+    const name = new URL(route.request().url()).pathname.split("/").at(-1)!;
+    if (name === "manifest.json") return route.fulfill({ json: root });
+    if (name === "status")
+      return route.fulfill({
+        json: {
+          world_id: root.world_id,
+          generation: root.generation,
+          status: "live",
+          diagnostics: {},
+        },
+      });
+    return route.fulfill({
+      body: readFileSync(resolve(directory, "objects", name)),
+      contentType: name.endsWith(".png")
+        ? "image/png"
+        : name.endsWith(".json")
+          ? "application/json"
+          : "application/octet-stream",
+    });
+  });
+  await page.goto("/");
+  await expect.poll(() => page.evaluate(() => window.__map?.ready)).toBe(true);
+  await page.evaluate(() => window.__map.zoom(1 / window.__map.state().scale));
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const state = window.__map.state();
+        return (
+          state.cached > 0 &&
+          state.pending === 0 &&
+          !state.terrain?.busy &&
+          state.firstVisible !== null
+        );
+      }),
+    )
+    .toBe(true);
+  const before = await page.evaluate(() => window.__map.state());
+  expect(before.scale).toBe(1);
+  expect(before.elevation).toBe(45);
+  await page
+    .getByRole("button", { name: "Lighting and color", exact: true })
+    .click();
+  const slider = page.getByRole("slider", {
+    name: "Sun elevation",
+    exact: true,
+  });
+  // Inspect the input handler synchronously: a later poll/resize must not be
+  // allowed to repair the unsupported state before this assertion observes it.
+  const handled = await slider.evaluate((element: HTMLInputElement) => {
+    element.value = "15";
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return { value: element.value, state: window.__map.state() };
+  });
+  expect(handled.value).toBe("45");
+  expect(handled.state.elevation).toBe(before.elevation);
+  await expect(slider).toHaveValue("45");
+  await expect(page.locator("#elevation-value")).toHaveText("45\u00b0");
+  await expect(page.locator("#message-text")).toContainText("256 MiB");
+  const rejected = await page.evaluate(() => window.__map.state());
+  expect([
+    rejected.cx,
+    rejected.cz,
+    rejected.scale,
+    rejected.elevation,
+  ]).toEqual([before.cx, before.cz, before.scale, before.elevation]);
+  expect(rejected.memory).toBeLessThanOrEqual(256 * 1024 * 1024);
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect(page.locator("#message")).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().draws))
+    .toBeGreaterThan(before.draws);
+  const zoomed = await page.evaluate(() => window.__map.state());
+  expect(zoomed.scale).toBeGreaterThan(before.scale);
+  await page.locator("#map").focus();
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().cx))
+    .toBeGreaterThan(zoomed.cx);
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().draws))
+    .toBeGreaterThan(zoomed.draws);
+  // A supported elevation still applies and produces a frame through the same handler.
+  const beforeLighting = await page.evaluate(() => window.__map.state().draws);
+  await slider.focus();
+  await slider.press("End");
+  await expect(slider).toHaveValue("75");
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().elevation))
+    .toBe(75);
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().draws))
+    .toBeGreaterThan(beforeLighting);
+  expect(
+    await page.evaluate(() => window.__map.state().memory),
+  ).toBeLessThanOrEqual(256 * 1024 * 1024);
+  expect(errors).toEqual([]);
+});
+
 for (const factor of [4, 16]) {
   test(`${factor}x terrain rejects oversized views without stranding navigation`, async ({
     page,
