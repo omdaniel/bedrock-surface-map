@@ -1,0 +1,243 @@
+name: Deployment Packaging
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: deployment-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  common:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+          cache: npm
+      - run: rustup toolchain install 1.92.0 --profile minimal --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev
+      - name: Install SHA-verified wasm-bindgen
+        run: |
+          curl -fL --retry 3 --max-time 180 https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/wasm-bindgen.tgz"
+          printf '%s  %s\n' 61d4a7dc85acfa0d2354ccc0b8361928c7e52a746d17f28ebaa795ed3dc1614a "$RUNNER_TEMP/wasm-bindgen.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/wasm-bindgen.tgz" -C "$RUNNER_TEMP"
+          install -m 0755 "$RUNNER_TEMP/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"
+      - run: npm ci
+      - run: npm run release:test
+      - run: node scripts/release/build-common-artifact.mjs .local/release/common
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-common-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/common/
+          retention-days: 14
+          if-no-files-found: error
+  native-oci:
+    needs: common
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            arch: amd64
+            caddy_sha256: 527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            arch: arm64
+            caddy_sha256: 52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+          cache: npm
+      - run: rustup toolchain install 1.92.0 --profile minimal --target ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          cache-on-failure: true
+      - run: sudo apt-get update && sudo apt-get install -y build-essential clang cmake pkg-config libssl-dev libclang-dev python3-venv skopeo mesa-vulkan-drivers libvulkan1 xvfb xauth
+      - run: cargo install cargo-zigbuild --version 0.20.1 --locked
+      - name: Install pinned Zig
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ziglang"
+          "$RUNNER_TEMP/ziglang/bin/pip" install --no-cache-dir ziglang==0.15.2
+          echo "$RUNNER_TEMP/ziglang/bin" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-common-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/common/
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: xvfb-run -a node ci/release.mjs ${{ matrix.target }} .local/release/common
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-native-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/${{ matrix.target }}/dist/
+          retention-days: 14
+          if-no-files-found: error
+      - name: Verify transactional preparation with a parsed synthetic world
+        env:
+          BEDROCK_MAP_FIXTURE_DIR: ${{ github.workspace }}/.local/deployment-generated
+        run: |
+          cargo test --locked -p surface-cli ci_generate_world_fixture -- --ignored
+          cargo test --locked -p bedrock-map
+          cargo test --locked -p bedrock-map --test deploy_prepare prepare_imported_generated_world -- --ignored
+      - name: Validate generated gateway routes over private fixture HTTPS
+        env:
+          CADDY_VALIDATOR: ${{ runner.temp }}/caddy-validator/caddy
+          CADDY_SHA256: ${{ matrix.caddy_sha256 }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir "$RUNNER_TEMP/caddy-validator"
+          curl -fL --retry 3 --max-time 180 "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_$ARCH.tar.gz" -o "$RUNNER_TEMP/caddy-validator/release.tar.gz"
+          printf '%s  %s\n' "$CADDY_SHA256" "$RUNNER_TEMP/caddy-validator/release.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/caddy-validator/release.tar.gz" -C "$RUNNER_TEMP/caddy-validator" caddy
+          cargo test --locked -p bedrock-map --test deploy_prepare generated_caddy_configuration_parses -- --ignored --exact
+          cargo test --locked -p bedrock-map --test deploy_prepare gateway::generated_gateway_enforces_auth_methods_and_fixed_read_routes -- --ignored --exact
+      - name: Preserve only the generated parser inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-fixture-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .local/deployment-generated/generated.mcworld
+            .local/deployment-generated/assets.zip
+          retention-days: 14
+          if-no-files-found: error
+      - name: Create isolated OCI exporter
+        id: builder
+        run: docker buildx create --name surface-oci --driver docker-container --use
+      - name: Package and test the exact OCI images without publication
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          VERSION=$(node -p 'JSON.parse(require("node:fs").readFileSync("package.json")).version')
+          node scripts/release/build-oci.mjs ".local/release/$TARGET/dist/bedrock-surface-map-v$VERSION-linux-$ARCH.tar.gz" .local/release/common ".local/oci/$ARCH"
+          node scripts/deploy/oci-smoke.mjs ".local/oci/$ARCH"
+      - name: Preserve OCI artifacts and native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-oci-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/${{ matrix.arch }}/
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: Remove this job's builder
+        if: always() && steps.builder.outcome == 'success'
+        run: docker buildx rm surface-oci
+  collect:
+    needs: native-oci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-amd64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/amd64/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-arm64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/arm64/
+      - run: node scripts/release/collect-oci.mjs .local/oci/combined .local/oci/amd64 .local/oci/arm64
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-oci-combined-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/combined/
+          retention-days: 14
+          if-no-files-found: error
+  generated-runtime:
+    needs: collect
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - run: sudo apt-get update && sudo apt-get install -y skopeo mesa-vulkan-drivers libvulkan1 xvfb xauth
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-combined-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/oci/combined/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-fixture-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/deployment-generated/
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-native-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/deployment-native/
+      - name: Execute generated deployment using exact native images
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+          xvfb-run -a -s '-screen 0 1280x900x24' node scripts/deploy/generated-smoke.mjs .local/oci/combined .local/deployment-generated .local/oci/generated-evidence.json .local/deployment-native
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-generated-${{ matrix.arch }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .local/oci/generated-evidence.json
+            .local/oci/browser-*/
+          retention-days: 14
+          if-no-files-found: error
+        if: always()
+  release-candidate:
+    needs: generated-runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: deployment-*-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/deployment-inputs/
+      - name: Validate exact deployment release without uploading images
+        env:
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          INPUT=.local/deployment-inputs
+          OCI="$INPUT/deployment-oci-combined-$COMMIT"
+          cp "$INPUT/deployment-generated-amd64-$COMMIT/generated-evidence.json" "$OCI/generated-amd64.json"
+          cp "$INPUT/deployment-generated-arm64-$COMMIT/generated-evidence.json" "$OCI/generated-arm64.json"
+          node ci/collect-release.mjs .local/release/candidate "$INPUT/deployment-native-amd64-$COMMIT" "$INPUT/deployment-native-arm64-$COMMIT"
+          node scripts/release/publish.mjs --dist .local/release/candidate --deployment "$OCI"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: deployment-release-candidate-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .local/release/candidate/
+          retention-days: 14
+          if-no-files-found: error

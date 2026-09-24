@@ -668,7 +668,7 @@ mod tests {
             .start_file(format!("{prefix}resource_pack/blocks.json"), options)
             .unwrap();
         archive
-            .write_all(br#"{"grass":{"textures":"grass"}}"#)
+            .write_all(br#"{"grass":{"textures":"grass"},"sand":{"textures":"sand"}}"#)
             .unwrap();
         archive
             .start_file(
@@ -677,7 +677,7 @@ mod tests {
             )
             .unwrap();
         archive
-            .write_all(br#"{"texture_data":{"grass":{"textures":"textures/blocks/grass"}}}"#)
+            .write_all(br#"{"texture_data":{"grass":{"textures":"textures/blocks/grass"},"sand":{"textures":"textures/blocks/sand"}}}"#)
             .unwrap();
         let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([70, 170, 80, 255]));
         let mut png = std::io::Cursor::new(Vec::new());
@@ -685,6 +685,16 @@ mod tests {
         archive
             .start_file(
                 format!("{prefix}resource_pack/textures/blocks/grass.png"),
+                options,
+            )
+            .unwrap();
+        archive.write_all(&png.into_inner()).unwrap();
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([210, 192, 140, 255]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        archive
+            .start_file(
+                format!("{prefix}resource_pack/textures/blocks/sand.png"),
                 options,
             )
             .unwrap();

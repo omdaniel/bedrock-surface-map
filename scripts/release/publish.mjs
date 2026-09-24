@@ -4,10 +4,20 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { checkCurrentTag, currentCommit } from "./validate-tag.mjs";
 import { assertBrowserEvidence } from "./evidence.mjs";
+import {
+  deploymentCandidate,
+  publishDeployment,
+} from "./publish-deployment.mjs";
+import { authorizePublication } from "./deployment-evidence.mjs";
 
 const args = process.argv.slice(2);
 const publish = args.includes("--publish");
 const distIndex = args.indexOf("--dist");
+const deploymentIndex = args.indexOf("--deployment");
+if (deploymentIndex >= 0 && !args[deploymentIndex + 1])
+  throw Error("--deployment requires a collected OCI/evidence directory");
+const deployment =
+  deploymentIndex < 0 ? null : resolve(args[deploymentIndex + 1]);
 const dist = resolve(
   distIndex >= 0 ? args[distIndex + 1] : ".local/release/dist",
 );
@@ -116,28 +126,38 @@ const checkoutArchive = execFileSync(
 if (!sourceBytes.equals(checkoutArchive))
   throw Error("source archive bytes do not match the candidate commit");
 
-const result = { dry_run: !publish, dist, tag: expectedTag, archives };
+const images = deployment
+  ? await deploymentCandidate(
+      deployment,
+      dist,
+      packageJson.version,
+      currentCommit(),
+    )
+  : null;
+const result = {
+  dry_run: !publish,
+  dist,
+  tag: expectedTag,
+  archives,
+  deployment_images: images?.images ?? null,
+};
 if (!publish) {
   console.log(JSON.stringify(result));
   process.exit(0);
 }
 
-if (process.env.CI_COMMIT_TAG !== expectedTag) {
-  throw Error(`publication requires protected tag ${expectedTag}`);
-}
-if (process.env.CI_COMMIT_REF_PROTECTED !== "true")
-  throw Error("publication requires a protected tag pipeline");
-if (process.env.CI_PIPELINE_SOURCE === "merge_request_event") {
-  throw Error("publication is forbidden from merge-request pipelines");
-}
-if (process.env.BEDROCK_MAP_PUBLISH_APPROVED !== "true") {
-  throw Error(
-    "set BEDROCK_MAP_PUBLISH_APPROVED=true only in the protected release job",
-  );
-}
+authorizePublication(expectedTag);
 if (!process.env.GH_TOKEN && !process.env.GITHUB_TOKEN) {
   throw Error("publication requires a protected GitHub release token");
 }
+const deploymentFiles = deployment
+  ? await publishDeployment(
+      deployment,
+      dist,
+      packageJson.version,
+      currentCommit(),
+    )
+  : [];
 
 execFileSync(
   "gh",
@@ -150,6 +170,7 @@ execFileSync(
     ...expected.map((name) => resolve(dist, name)),
     resolve(dist, "SHA256SUMS"),
     resolve(dist, "release-evidence.json"),
+    ...deploymentFiles.map((name) => resolve(dist, name)),
     "--title",
     `Bedrock Surface Map ${expectedTag}`,
     "--generate-notes",

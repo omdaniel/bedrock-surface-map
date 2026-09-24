@@ -1,12 +1,14 @@
-//! Native, snapshot-only operator runtime for Bedrock Surface Map.
+//! Native operator runtime for Bedrock Surface Map.
 //!
-//! This crate intentionally has no live-BDS, tracking, or terrain-ingest
-//! dependency. It serves verified immutable snapshot data from operator state.
+//! Snapshot serving remains loopback-only. Deployment orchestration has a
+//! separate configuration and never manages a running Bedrock world.
 
 pub mod assets;
 pub mod config;
 pub mod dataset;
+pub mod deploy;
 pub mod doctor;
+pub mod health;
 pub mod resources;
 pub mod server;
 pub mod state;

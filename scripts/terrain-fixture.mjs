@@ -93,3 +93,16 @@ for (const [sequence, cx, cz, height] of [
   await writeFile(resolve(output, `root-${sequence}.json`), run("manifest"));
 }
 console.log(`Synthetic live terrain fixtures: ${output}`);
+execFileSync(
+  "cargo",
+  [
+    "run",
+    "--quiet",
+    "--locked",
+    "-p",
+    "surface-sync",
+    "--example",
+    "large_fixture",
+  ],
+  { stdio: "inherit" },
+);

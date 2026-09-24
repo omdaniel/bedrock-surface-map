@@ -25,6 +25,21 @@ struct Args {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(name = "internal-run", hide = true)]
+    InternalRun {
+        #[arg(value_enum)]
+        service: bedrock_map::deploy::launch::Service,
+    },
+    /// Prepare an independently managed live-map deployment.
+    Deploy {
+        #[command(subcommand)]
+        command: DeployCommand,
+    },
+    #[command(name = "internal-health", hide = true)]
+    InternalHealth {
+        #[arg(value_enum)]
+        service: bedrock_map::health::Service,
+    },
     Init,
     Demo {
         #[arg(long)]
@@ -52,6 +67,39 @@ enum Command {
     Assets {
         #[command(subcommand)]
         command: AssetsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DeployCommand {
+    /// Read-only local preflight, optionally checking this running project.
+    Check {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        running: bool,
+        #[arg(long, requires = "running")]
+        expect_live: bool,
+        #[arg(long, requires = "running")]
+        viewer_password_file: Option<PathBuf>,
+    },
+    /// Prepare one immutable snapshot and a new live store, without starting BDS.
+    Prepare {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        snapshot_state: PathBuf,
+        #[arg(long)]
+        assets: Option<PathBuf>,
+    },
+    /// Initialize private deployment identity and secrets; does not start services.
+    Init {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        viewer_password_file: Option<PathBuf>,
     },
 }
 
@@ -171,6 +219,17 @@ async fn main() -> std::process::ExitCode {
 
 fn command_name(command: &Command) -> &'static str {
     match command {
+        Command::InternalRun { .. } => "internal-run",
+        Command::Deploy {
+            command: DeployCommand::Prepare { .. },
+        } => "deploy.prepare",
+        Command::Deploy {
+            command: DeployCommand::Init { .. },
+        } => "deploy.init",
+        Command::Deploy {
+            command: DeployCommand::Check { .. },
+        } => "deploy.check",
+        Command::InternalHealth { .. } => "internal-health",
         Command::Init => "init",
         Command::Demo { .. } => "demo",
         Command::Import { .. } => "import",
@@ -187,11 +246,124 @@ fn command_name(command: &Command) -> &'static str {
 }
 
 async fn run(args: Args) -> Result<u8> {
+    if let Command::Deploy { command } = &args.command {
+        match command {
+            DeployCommand::Check {
+                dir,
+                running,
+                expect_live,
+                viewer_password_file,
+            } => {
+                use bedrock_map::deploy::{check, config::Access, init};
+                let (config, _) = init::load(dir)?;
+                let password = if *running && config.viewer.access == Access::Password {
+                    Some(init::read_password(viewer_password_file.as_deref(), false)?)
+                } else {
+                    ensure!(
+                        viewer_password_file.is_none(),
+                        "E_CONFIG_INVALID: this check does not use a viewer password"
+                    );
+                    None
+                };
+                let report = check::check(
+                    dir,
+                    &resource(&args)?,
+                    *running,
+                    *expect_live,
+                    password.as_deref(),
+                )
+                .await?;
+                let ok = report.ok();
+                print(
+                    serde_json::to_string(
+                        &json!({"schema_version":1,"ok":ok,"command":"deploy.check","status":report.status,"checks":report.checks}),
+                    )?,
+                    args.json,
+                );
+                return Ok(if ok { 0 } else { 3 });
+            }
+            DeployCommand::Prepare {
+                dir,
+                snapshot_state,
+                assets,
+            } => {
+                let source = State::new(snapshot_state.clone())?;
+                let record = bedrock_map::deploy::prepare::prepare(
+                    dir,
+                    &source,
+                    &resource(&args)?,
+                    assets.as_deref(),
+                )?;
+                print(
+                    result(
+                        "deploy.prepare",
+                        json!({"directory":dir,"status":"prepared","world_id":record.world_id,
+                    "generation":record.generation,"dataset_id":record.dataset_id,"runtime_checked":false}),
+                    )?,
+                    args.json,
+                );
+            }
+            DeployCommand::Init {
+                dir,
+                config,
+                viewer_password_file,
+            } => {
+                use bedrock_map::deploy::{
+                    config::{Access, Config},
+                    init,
+                    release::Release,
+                };
+                ensure!(
+                    fs::metadata(config)?.len() <= 16 * 1024,
+                    "E_CONFIG_INVALID: deployment configuration too large"
+                );
+                let config = Config::parse(&fs::read_to_string(config)?)?;
+                let resources = resource(&args)?;
+                let release = Release::load(&resources)?;
+                let existing = dir.try_exists()?;
+                let password = if config.viewer.access == Access::Password
+                    && (!existing || viewer_password_file.is_some())
+                {
+                    Some(init::read_password(
+                        viewer_password_file.as_deref(),
+                        !existing,
+                    )?)
+                } else {
+                    ensure!(
+                        viewer_password_file.is_none(),
+                        "E_CONFIG_INVALID: public access does not use a password"
+                    );
+                    None
+                };
+                let lock = init::initialize(dir, &config, &release, password.as_deref())?;
+                print(
+                    result(
+                        "deploy.init",
+                        json!({"directory":dir,"world_id":lock.world_id,"generation":lock.generation,
+                    "changed":!existing,"status":"initialized","runtime_checked":false}),
+                    )?,
+                    args.json,
+                );
+            }
+        }
+        return Ok(0);
+    }
+    if let Command::InternalHealth { service } = &args.command {
+        bedrock_map::health::check(*service).await?;
+        return Ok(0);
+    }
+    if let Command::InternalRun { service } = &args.command {
+        bedrock_map::deploy::launch::run(*service)?;
+        unreachable!("successful launcher replaces the process");
+    }
     let state = State::new(match args.state.clone() {
         Some(path) => path,
         None => default_state()?,
     })?;
     match &args.command {
+        Command::InternalRun { .. } => unreachable!("handled before snapshot state resolution"),
+        Command::Deploy { .. } => unreachable!("handled before snapshot state resolution"),
+        Command::InternalHealth { .. } => unreachable!("handled before snapshot state resolution"),
         Command::Init => {
             let config = state.init()?;
             print(
@@ -426,6 +598,8 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         "E_CONFIG_INVALID",
         "E_STATE_UNSAFE",
         "E_STATE_BUSY",
+        "E_PREPARE_SYNC",
+        "E_PREPARED_DURABILITY",
         "E_RESOURCE_MISMATCH",
         "E_NO_DATASET",
         "E_ASSET_MISSING",
@@ -449,6 +623,14 @@ fn error_code(error: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn published_durability_failure_has_a_distinct_error_code() {
+        let error = anyhow::anyhow!("E_PREPARED_DURABILITY: prepared/ was published");
+        assert_eq!(error_code(&error), "E_PREPARED_DURABILITY");
+        let error = anyhow::anyhow!("E_PREPARE_SYNC: prepared/ was not published");
+        assert_eq!(error_code(&error), "E_PREPARE_SYNC");
+    }
 
     #[test]
     fn committed_selection_survives_private_cleanup_failure() {

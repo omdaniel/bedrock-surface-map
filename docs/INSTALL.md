@@ -30,9 +30,10 @@ is an operator deployment concern, not an implicit release behavior.
 `bedrock-map serve` selects an immutable offline snapshot. It does not configure
 live player or terrain feeds, install packs, or manage background services.
 Although the archive includes collector binaries and packs, live deployment
-requires the separate [player](TRACKING-REFERENCE.md) and
-[terrain](TERRAIN-SYNC.md) integration plus an operator-configured web server
-and read-only proxies. The snapshot command is not a replacement for that setup.
+uses the separate [initial live deployment](DEPLOYMENT.md), paired image/operator
+release and explicit BDS handoff. The [player](TRACKING-REFERENCE.md) and
+[terrain](TERRAIN-SYNC.md) guides describe the service interfaces for other operator
+integrations. The snapshot command is not a replacement for that setup.
 
 To import a consistent offline `.mcworld` or ZIP snapshot, first acquire the
 supported Mojang sample archive explicitly, review the linked terms, then import:

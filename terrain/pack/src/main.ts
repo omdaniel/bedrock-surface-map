@@ -152,10 +152,12 @@ system.runInterval(() => {
         } else if (discoveryIndex < discovery.length) {
           const [cx, cz] = discovery[discoveryIndex++],
             key = `${cx},${cz}`;
-          if (
-            (due.get(key) ?? 0) <= Date.now() &&
-            reader.access.loaded(cx * 16, cz * 16)
-          )
+          if (!reader.access.loaded(cx * 16, cz * 16)) {
+            // Last-known terrain stays published, but unloaded chunks are not
+            // active coverage. Reloading must make them immediately eligible.
+            coverage.delete(key);
+            due.delete(key);
+          } else if ((due.get(key) ?? 0) <= Date.now())
             queue.mark(cx, cz, Date.now());
           continue;
         } else break;
@@ -167,7 +169,8 @@ system.runInterval(() => {
         lastScan = result.value.end;
         maxScan = Math.max(maxScan, result.value.end - result.value.start);
         coverage.set(`${current.cx},${current.cz}`, lastScan);
-        due.set(`${current.cx},${current.cz}`, Date.now() + 60000);
+        // Leave time to discover and finish the scan before the 60s target.
+        due.set(`${current.cx},${current.cz}`, Date.now() + 30000);
         current = undefined;
         while (due.size > 8192) due.delete(due.keys().next().value!);
       }
