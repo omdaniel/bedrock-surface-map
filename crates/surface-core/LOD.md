@@ -117,6 +117,10 @@ concurrent publisher or a production deployment command.
 ```sh
 cargo run --locked -p surface-cli -- prepare-lod --map /path/manifest.json --output /tmp/lod
 cargo run --locked -p surface-cli -- lod-fixture --output /tmp/lod-fixture
+cargo run --locked --release -p surface-cli -- lod-fixture --size 16384 --output /tmp/lod-dense16384
+cargo run --locked --release -p surface-cli -- lod-fixture --sparse-extreme --output /tmp/lod-sparse4096
+cargo run --locked -p surface-cli -- prepare-lod --map /path/manifest.json --output /tmp/lod --estimate
+cargo run --locked -p surface-cli -- prepare-lod --map /path/manifest.json --output /tmp/lod --max-output-bytes 1073741824
 cargo test --locked -p surface-core -p surface-cli lod
 ```
 
@@ -134,12 +138,64 @@ revision fields are retained. V1 generation defaults to `offline-{manifest_sha25
 A legacy non-hash source label defaults to the manifest SHA-256 as the new
 descriptor fingerprint; its original label remains in the retained source file.
 
+Conversion stdout diagnostics include `source_publication` with the exact input
+`manifest_sha256`, resolved `source_sha256`, `world_id`, `generation`, and
+`revision`. The descriptor schema is unchanged. Immediately before publishing,
+the converter rereads the source manifest and rejects any byte change, including
+changes without a revision bump. Source objects are hash-verified when consumed.
+This check detects changed input; it is not a concurrent-publisher lock or CAS.
+The converter rejects an output path that would replace its input descriptor.
+
+`--estimate` reads source metadata/catalog/atlas and counts the exact emitted
+topology, including terminal unknown nodes, without decoding terrain or writing
+output. Its `output_bytes_upper_bound` is a conservative format ceiling using
+maximum encoded tile/index/catalog sizes and optional chunk-reference limits,
+not a prediction of the compression ratio. It can be much larger than actual
+output. Conversion reports include this estimate, `charged_output_bytes`, object
+count, descriptor SHA-256 and elapsed milliseconds. Library entry points are
+`estimate_lod` and `prepare_lod_with_options` in `surface_cli::lod`.
+
+`--max-output-bytes` is an inclusive publication budget, checked before each
+immutable write and before replacing `lod.json`. Charges include reused objects,
+atlas, catalog pages, copied chunks and the final descriptor. Repeated object
+writes are conservatively charged each time, even if their hashes coincide;
+copied chunks outside cropped bounds may also be charged. Existing unrelated or
+unreachable files, retained source data, filesystem allocation overhead, and
+temporary atomic-write overhead are excluded. This is not a directory disk quota.
+A failed attempt may leave objects up to its budget, but keeps the previous
+descriptor and its reachable objects intact. Repeated failed attempts can
+accumulate unreachable objects; garbage collection is a separate operation.
+
 `lod-fixture` generates a centered 1024-square coastline with high relief,
 negative coordinates/heights, water/support, biome tint, overlays, foliage,
 unknown and verified-empty patches. Its tree contains 64 exact L0 leaves, 16 L1
 nodes and four L2 roots. A region-only source manifest remains under
 `source/manifest.json`. Terrain and custom textures are synthetic; no worlds,
 private data, downloaded Minecraft assets or global height arrays are used.
+
+`--size` also accepts 2048, 4096, 8192, and 16384. Larger dense fixtures repeat the
+same 1024-square pattern (including coast, relief, coverage and overlays) with
+distinct world-coordinate headers. Generation writes and verifies one region at
+a time. A centered 16384-square fixture has 4096 source regions, 16384 exact
+leaves, 21844 nodes, and four L6 roots. `--sparse-extreme` instead places exactly
+4096 populated regions on a deterministic 64 by 64 grid from region -32768
+through 32767 on both axes, reaching bounds +/-8388608 and four L16 roots. Gaps
+are unknown, not empty. Missing subtrees terminate without allocating their
+implied world area. Neither mode has a whole-world height buffer. Coordinate
+lists and source references are metadata; terrain buffers remain region/page
+bounded. Non-default `--size` and `--sparse-extreme` cannot be combined.
+
+After generating all source regions, the fixture durably writes
+`source/pending-manifest.json` and `progress.json` (`phase: "converting"`). They
+survive interruption or conversion failure without replacing the prior source
+descriptor. Resume with `prepare-lod --map DIR/source/pending-manifest.json
+--output DIR`; existing immutable objects are reused after full regeneration and
+verification. This recovery starts conversion again, not at a saved tree cursor.
+The fixture publishes `lod.json` then `source/manifest.json` and records
+`phase: "complete"`; these are offline atomic file replacements, not a multi-file
+transaction. A resumed `prepare-lod` publishes only `lod.json`; it does not change
+fixture progress or source files. Diagnostics include layout, dense size (null
+for sparse), and the conversion report. Timings never affect immutable hashes.
 
 The `lod-fixture` stdout JSON includes `diagnostics` (schema version 1): conversion
 and total elapsed milliseconds, source region/material counts, root/node/detail/
@@ -164,6 +220,7 @@ source manifest. It uses the same generated columns, bounds, spawn, material
 catalog and atlas as the LOD tree. Unknown and verified-empty samples both use
 the legacy missing-height sentinel `-32768`. The extra raw height buffer is
 fixed at 2 MiB and exists only inside this synthetic fixture generator.
+The flag is rejected for larger dense and sparse-extreme fixtures.
 `prepare-lod` has no such option and still never reads or allocates a global
 height field. Without the flag, source height references remain empty.
 
@@ -172,4 +229,4 @@ dimensions, compressed/decoded height bytes and SHA-256. This auxiliary source
 file is excluded from the LOD `referenced_bytes` total. Adding height references
 changes the source manifest hash and derived offline generation, but not the
 terrain, atlas, or LOD node/data objects. The library entry point is
-`create_lod_fixture_with_options(output, LodFixtureOptions { legacy_reference: true })`.
+`create_lod_fixture_with_options(output, LodFixtureOptions { legacy_reference: true, ..Default::default() })`.

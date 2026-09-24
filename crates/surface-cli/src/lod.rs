@@ -21,9 +21,68 @@ const MAX_SOURCE_JSON: usize = 64 * 1024 * 1024;
 const FIXTURE_SIDE: usize = 1024;
 const FIXTURE_HEIGHT_BYTES: usize = FIXTURE_SIDE * FIXTURE_SIDE * 2;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct LodFixtureOptions {
     pub legacy_reference: bool,
+    /// Dense square side, in blocks. Ignored by the sparse-extreme layout.
+    pub size: u32,
+    /// Generate 4096 populated regions spread across all four L16 roots.
+    pub sparse_extreme: bool,
+}
+
+impl Default for LodFixtureOptions {
+    fn default() -> Self {
+        Self {
+            legacy_reference: false,
+            size: 1024,
+            sparse_extreme: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PrepareLodOptions {
+    /// Budget for this publication, including reused objects and lod.json.
+    pub max_output_bytes: Option<u64>,
+}
+
+struct OutputStore<'a> {
+    root: &'a Path,
+    limit: Option<u64>,
+    bytes: u64,
+    objects: u64,
+}
+
+impl<'a> OutputStore<'a> {
+    fn new(root: &'a Path, options: PrepareLodOptions) -> Self {
+        Self {
+            root,
+            limit: options.max_output_bytes,
+            bytes: 0,
+            objects: 0,
+        }
+    }
+
+    fn charge(&mut self, size: usize) -> Result<()> {
+        let next = self
+            .bytes
+            .checked_add(size as u64)
+            .context("output byte count overflow")?;
+        ensure!(
+            self.limit.is_none_or(|limit| next <= limit),
+            "LOD output quota exceeded: {next} bytes required, limit {}",
+            self.limit.unwrap_or(0)
+        );
+        self.bytes = next;
+        Ok(())
+    }
+
+    fn object(&mut self, suffix: &str, bytes: &[u8]) -> Result<ObjectRef> {
+        self.charge(bytes.len())?;
+        let reference = object(self.root, suffix, bytes)?;
+        self.objects += 1;
+        Ok(reference)
+    }
 }
 
 fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
@@ -79,7 +138,7 @@ fn object(output: &Path, suffix: &str, bytes: &[u8]) -> Result<ObjectRef> {
     })
 }
 
-fn packed(output: &Path, raw: &[u8]) -> Result<ObjectRef> {
+fn packed(output: &mut OutputStore<'_>, raw: &[u8]) -> Result<ObjectRef> {
     ensure!(
         raw.len() <= MAX_TILE_BYTES,
         "decoded LOD object exceeds 2 MiB"
@@ -92,7 +151,7 @@ fn packed(output: &Path, raw: &[u8]) -> Result<ObjectRef> {
         bytes.len() <= MAX_TILE_BYTES && decompress_lod(&bytes)? == raw,
         "LOD compression verification failed"
     );
-    object(output, "zst", &bytes)
+    output.object("zst", &bytes)
 }
 
 #[derive(Clone)]
@@ -108,10 +167,10 @@ struct CachedRegion {
 
 struct Builder<'a> {
     source: &'a Path,
-    output: &'a Path,
+    output: OutputStore<'a>,
     bounds: [i32; 4],
     materials: &'a [Material],
-    regions: BTreeMap<(i32, i32), SourceRegion>, // z, x: permits bounded row lookups
+    regions: &'a BTreeMap<(i32, i32), SourceRegion>, // z, x: bounded row lookups
     cached: Option<CachedRegion>,
     range: [i16; 2],
 }
@@ -120,17 +179,27 @@ fn intersects(a: [i32; 4], b: [i32; 4]) -> bool {
     a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]
 }
 
+fn has_source(
+    regions: &BTreeMap<(i32, i32), SourceRegion>,
+    bounds: [i32; 4],
+    key: TileKey,
+) -> Result<bool> {
+    let b = key.bounds()?;
+    if !intersects(b, bounds) {
+        return Ok(false);
+    }
+    let min_z = b[1].max(bounds[1]).div_euclid(256);
+    let max_z = (b[3].min(bounds[3]) - 1).div_euclid(256);
+    let min_x = b[0].max(bounds[0]).div_euclid(256);
+    let max_x = (b[2].min(bounds[2]) - 1).div_euclid(256);
+    Ok(regions
+        .range((min_z, i32::MIN)..=(max_z, i32::MAX))
+        .any(|((_, x), _)| (min_x..=max_x).contains(x)))
+}
+
 impl Builder<'_> {
     fn has_source(&self, key: TileKey) -> Result<bool> {
-        let b = key.bounds()?;
-        let min_z = b[1].max(self.bounds[1]).div_euclid(256);
-        let max_z = (b[3].min(self.bounds[3]) - 1).div_euclid(256);
-        let min_x = b[0].max(self.bounds[0]).div_euclid(256);
-        let max_x = (b[2].min(self.bounds[2]) - 1).div_euclid(256);
-        Ok(self
-            .regions
-            .range((min_z, i32::MIN)..=(max_z, i32::MAX))
-            .any(|((_, x), _)| (min_x..=max_x).contains(x)))
+        has_source(self.regions, self.bounds, key)
     }
 
     fn load_region(&mut self, rx: i32, rz: i32) -> Result<()> {
@@ -183,7 +252,7 @@ impl Builder<'_> {
                     chunks.push(ChunkRef {
                         cx,
                         cz,
-                        object: object(self.output, "zst", &bytes)?,
+                        object: self.output.object("zst", &bytes)?,
                     });
                 }
             }
@@ -238,7 +307,7 @@ impl Builder<'_> {
                 DetailTile::decode(&raw)? == tile,
                 "detail codec verification"
             );
-            let data = packed(self.output, &raw)?;
+            let data = packed(&mut self.output, &raw)?;
             (summary, data, HeightTile::from_detail(&tile)?, chunks)
         } else {
             let summary = if self.has_source(key)? {
@@ -262,7 +331,7 @@ impl Builder<'_> {
                 SummaryTile::decode(&raw)? == summary,
                 "summary codec verification"
             );
-            let data = packed(self.output, &raw)?;
+            let data = packed(&mut self.output, &raw)?;
             let height = HeightTile::from_summary(&summary)?;
             (summary, data, height, Vec::new())
         };
@@ -271,7 +340,7 @@ impl Builder<'_> {
             HeightTile::decode(&raw)? == height,
             "height codec verification"
         );
-        let height = packed(self.output, &raw)?;
+        let height = packed(&mut self.output, &raw)?;
         let node = LodNode {
             key,
             data,
@@ -279,7 +348,7 @@ impl Builder<'_> {
             children,
             chunks,
         };
-        let index = object(self.output, "json", &node.encode()?)?;
+        let index = self.output.object("json", &node.encode()?)?;
         Ok((summary, Some(NodeRef { key, index })))
     }
 }
@@ -287,6 +356,22 @@ impl Builder<'_> {
 /// Convert a local v1 offline or v2 surface manifest without loading its global
 /// height field. Source files remain untouched; the descriptor is published last.
 pub fn prepare_lod(map: &Path, output: &Path) -> Result<LodManifest> {
+    Ok(prepare_lod_with_options(map, output, PrepareLodOptions::default())?.0)
+}
+
+struct SourceSnapshot {
+    map: PathBuf,
+    source: PathBuf,
+    source_bytes: Vec<u8>,
+    manifest: Value,
+    bounds: [i32; 4],
+    roots: Vec<TileKey>,
+    materials: Vec<Material>,
+    atlas_bytes: Vec<u8>,
+    regions: BTreeMap<(i32, i32), SourceRegion>,
+}
+
+fn read_source(map: &Path) -> Result<SourceSnapshot> {
     let map = map.canonicalize()?;
     let source = map.parent().context("manifest parent")?;
     let source_bytes = read_bounded(&map, MAX_SOURCE_JSON)?;
@@ -367,21 +452,133 @@ pub fn prepare_lod(map: &Path, output: &Path) -> Result<LodManifest> {
             "duplicate source region"
         );
     }
+    Ok(SourceSnapshot {
+        source: source.to_owned(),
+        map,
+        source_bytes,
+        manifest,
+        bounds,
+        roots,
+        materials,
+        atlas_bytes,
+        regions,
+    })
+}
+
+/// Count topology without decoding terrain or creating output files. Byte limits
+/// are conservative format ceilings, not predictions of Zstd compression ratios.
+pub fn estimate_lod(map: &Path) -> Result<Value> {
+    read_source(map)?.estimate()
+}
+
+impl SourceSnapshot {
+    fn identity(&self) -> Value {
+        let manifest_hash = hash(&self.source_bytes);
+        let source_hash = self.manifest["source_sha256"]
+            .as_str()
+            .filter(|s| s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()))
+            .map(str::to_ascii_lowercase)
+            .unwrap_or_else(|| manifest_hash.clone());
+        let generation = self.manifest["generation"]
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("offline-{manifest_hash}"));
+        json!({"manifest_sha256":manifest_hash, "source_sha256":source_hash,
+            "world_id":self.manifest["world_id"],"generation":generation,
+            "revision":self.manifest["revision"].as_u64().unwrap_or(1)})
+    }
+
+    fn verify_unchanged(&self) -> Result<()> {
+        ensure!(
+            read_bounded(&self.map, MAX_SOURCE_JSON)? == self.source_bytes,
+            "source publication changed during conversion; lod.json was not replaced"
+        );
+        Ok(())
+    }
+
+    fn publish(&self, store: &mut OutputStore<'_>, manifest: &LodManifest) -> Result<Vec<u8>> {
+        let descriptor = manifest.encode()?;
+        store.charge(descriptor.len())?;
+        self.verify_unchanged()?;
+        atomic_write(&store.root.join("lod.json"), &descriptor)?;
+        Ok(descriptor)
+    }
+
+    fn estimate(&self) -> Result<Value> {
+        fn visit(source: &SourceSnapshot, key: TileKey, counts: &mut [u64; 17]) -> Result<()> {
+            if !intersects(key.bounds()?, source.bounds) {
+                return Ok(());
+            }
+            counts[key.level as usize] += 1;
+            if key.level > 0 && has_source(&source.regions, source.bounds, key)? {
+                for child in key.children()? {
+                    visit(source, child, counts)?;
+                }
+            }
+            Ok(())
+        }
+        let mut counts = [0u64; 17];
+        for root in &self.roots {
+            visit(self, *root, &mut counts)?;
+        }
+        let nodes: u64 = counts.iter().sum();
+        let indexed_regions = self.regions.values().filter(|r| r.index.is_some()).count() as u64;
+        let ceiling = nodes * (2 * MAX_TILE_BYTES + MAX_NODE_BYTES) as u64
+            + indexed_regions * 256 * MAX_TILE_BYTES as u64
+            + (MAX_DESCRIPTOR_BYTES + 256 * MAX_CATALOG_PAGE_BYTES) as u64
+            + self.atlas_bytes.len() as u64;
+        Ok(
+            json!({"schema_version":1,"source_publication":self.identity(),
+            "source_regions":self.regions.len(),"bounds":self.bounds,"root_count":self.roots.len(),
+            "node_count":nodes,"detail_tiles":counts[0],"summary_tiles":nodes-counts[0],
+            "height_pages":nodes,"nodes_by_level":counts,"output_bytes_upper_bound":ceiling,
+            "byte_estimate_kind":"format-ceiling-not-compression-prediction",
+            "terrain_regions_cached":1,"summary_pages_per_level":4}),
+        )
+    }
+}
+
+/// Enforce the publication budget before each write and publish the descriptor
+/// only after validating the original source manifest still identifies the input.
+pub fn prepare_lod_with_options(
+    map: &Path,
+    output: &Path,
+    options: PrepareLodOptions,
+) -> Result<(LodManifest, Value)> {
+    let started = Instant::now();
+    let snapshot = read_source(map)?;
+    let estimate = snapshot.estimate()?;
+    let SourceSnapshot {
+        source,
+        source_bytes,
+        manifest,
+        bounds,
+        roots,
+        materials,
+        atlas_bytes,
+        regions,
+        ..
+    } = &snapshot;
     fs::create_dir_all(output)?;
-    let atlas = object(output, "png", &atlas_bytes)?;
-    let catalog = publish_catalog(output, &materials)?;
+    ensure!(
+        output.join("lod.json").canonicalize().ok().as_ref() != Some(&snapshot.map),
+        "output lod.json would replace the source manifest"
+    );
+    let mut store = OutputStore::new(output, options);
+    let atlas = store.object("png", atlas_bytes)?;
+    let catalog = publish_catalog(&mut store, materials)?;
     let mut builder = Builder {
         source,
-        output,
-        bounds,
-        materials: &materials,
+        output: store,
+        bounds: *bounds,
+        materials,
         regions,
         cached: None,
         range: [i16::MAX, i16::MIN],
     };
     let mut references = Vec::new();
     for root in roots {
-        references.push(builder.build(root)?.1.context("missing root")?);
+        references.push(builder.build(*root)?.1.context("missing root")?);
     }
     let range = if builder.range[0] <= builder.range[1] {
         builder.range
@@ -392,18 +589,18 @@ pub fn prepare_lod(map: &Path, output: &Path) -> Result<LodManifest> {
         format_version: 1,
         kind: "surface-lod".into(),
         name: manifest["name"].as_str().context("source map name")?.into(),
-        bounds,
+        bounds: *bounds,
         spawn: serde_json::from_value(manifest["spawn"].clone())?,
         source_sha256: match manifest["source_sha256"].as_str() {
             Some(s) if s.len() == 64 && s.bytes().all(|c| c.is_ascii_hexdigit()) => {
                 s.to_ascii_lowercase()
             }
-            _ => hash(&source_bytes),
+            _ => hash(source_bytes),
         },
         generation: manifest["generation"]
             .as_str()
             .map(str::to_owned)
-            .unwrap_or_else(|| format!("offline-{}", hash(&source_bytes))),
+            .unwrap_or_else(|| format!("offline-{}", hash(source_bytes))),
         world_id: manifest["world_id"].as_str().map(str::to_owned),
         revision: manifest["revision"].as_u64().unwrap_or(1),
         appearance_version: APPEARANCE_VERSION.into(),
@@ -413,11 +610,18 @@ pub fn prepare_lod(map: &Path, output: &Path) -> Result<LodManifest> {
         material_count: materials.len(),
         roots: references,
     };
-    atomic_write(&output.join("lod.json"), &result.encode()?)?;
-    Ok(result)
+    let descriptor = snapshot.publish(&mut builder.output, &result)?;
+    let report = json!({"schema_version":1,"source_publication":snapshot.identity(),
+        "estimate":estimate,"charged_output_bytes":builder.output.bytes,
+        "objects":builder.output.objects,"max_output_bytes":options.max_output_bytes,
+        "descriptor_sha256":hash(&descriptor),"elapsed_ms":started.elapsed().as_secs_f64()*1000.});
+    Ok((result, report))
 }
 
-fn publish_catalog(output: &Path, materials: &[Material]) -> Result<Vec<CatalogPageRef>> {
+fn publish_catalog(
+    output: &mut OutputStore<'_>,
+    materials: &[Material],
+) -> Result<Vec<CatalogPageRef>> {
     let mut pages = Vec::new();
     let mut start = 0;
     while start < materials.len() {
@@ -448,7 +652,7 @@ fn publish_catalog(output: &Path, materials: &[Material]) -> Result<Vec<CatalogP
         pages.push(CatalogPageRef {
             start,
             count,
-            object: object(output, "json", &raw)?,
+            object: output.object("json", &raw)?,
         });
         start += count;
     }
@@ -480,10 +684,22 @@ fn fixture_materials() -> Vec<Material> {
 }
 
 fn fixture_region(rx: i32, rz: i32) -> SurfaceRegion {
+    fixture_region_pattern(rx, rz, false)
+}
+
+fn fixture_region_pattern(rx: i32, rz: i32, repeat: bool) -> SurfaceRegion {
     let mut r = SurfaceRegion::empty(rx, rz);
     for z in 0..256 {
         for x in 0..256 {
             let (wx, wz) = (rx * 256 + x, rz * 256 + z);
+            let (wx, wz) = if repeat {
+                (
+                    (wx + 512).rem_euclid(1024) - 512,
+                    (wz + 512).rem_euclid(1024) - 512,
+                )
+            } else {
+                (wx, wz)
+            };
             let i = (z * 256 + x) as usize;
             if (-448..-400).contains(&wx) && (256..320).contains(&wz) {
                 continue;
@@ -551,7 +767,7 @@ fn fixture_region(rx: i32, rz: i32) -> SurfaceRegion {
     r
 }
 
-/// Deterministic, entirely synthetic 1024-square coastline, relief and coverage
+/// Deterministic, entirely synthetic coastline, relief and coverage
 /// fixture. Keeps a region-only source manifest alongside the prepared LOD tree.
 pub fn create_lod_fixture(output: &Path) -> Result<LodManifest> {
     Ok(create_lod_fixture_with_diagnostics(output)?.0)
@@ -562,13 +778,14 @@ pub fn create_lod_fixture_with_diagnostics(output: &Path) -> Result<(LodManifest
     create_lod_fixture_with_options(output, LodFixtureOptions::default())
 }
 
-/// The optional legacy height field is restricted to this fixed synthetic fixture.
+/// The optional legacy height field is restricted to the fixed 1024 fixture.
 /// General surface-manifest conversion continues to use bounded height pages.
 pub fn create_lod_fixture_with_options(
     output: &Path,
     options: LodFixtureOptions,
 ) -> Result<(LodManifest, Value)> {
     let started = Instant::now();
+    let (bounds, coordinates) = fixture_layout(options)?;
     let source = output.join("source");
     let mut materials = fixture_materials();
     let atlas = crate::app::assets::synthetic(&source, &mut materials)?;
@@ -577,46 +794,48 @@ pub fn create_lod_fixture_with_options(
     let mut legacy_heights = options
         .legacy_reference
         .then(|| vec![0u8; FIXTURE_HEIGHT_BYTES]);
-    for rz in -2..2 {
-        for rx in -2..2 {
-            let r = fixture_region(rx, rz);
-            let raw = encode_live_region(&r)?;
-            let bytes = zstd::encode_all(raw.as_slice(), 3)?;
-            ensure!(
-                decode_region(&decompress(&bytes, MAX_DECOMPRESSED)?)? == r,
-                "fixture region verification"
-            );
-            let reference = object(&source, "zst", &bytes)?;
-            let mut columns = 0;
-            for (i, (h, c)) in r.heights.iter().zip(&r.coverage).enumerate() {
-                if *c == 1 {
-                    range[0] = range[0].min(*h);
-                    range[1] = range[1].max(*h);
-                }
-                if *c != 0 {
-                    columns += 1;
-                }
-                if let Some(heights) = &mut legacy_heights {
-                    let x = (rx + 2) as usize * 256 + i % 256;
-                    let z = (rz + 2) as usize * 256 + i / 256;
-                    let offset = (z * FIXTURE_SIDE + x) * 2;
-                    let height = if *c == 1 {
-                        *h
-                    } else {
-                        surface_core::MISSING_HEIGHT
-                    };
-                    heights[offset..offset + 2].copy_from_slice(&height.to_le_bytes());
-                }
+    for (rx, rz) in coordinates {
+        let r = if options.size == 1024 && !options.sparse_extreme {
+            fixture_region(rx, rz)
+        } else {
+            fixture_region_pattern(rx, rz, true)
+        };
+        let raw = encode_live_region(&r)?;
+        let bytes = zstd::encode_all(raw.as_slice(), 3)?;
+        ensure!(
+            decode_region(&decompress(&bytes, MAX_DECOMPRESSED)?)? == r,
+            "fixture region verification"
+        );
+        let reference = object(&source, "zst", &bytes)?;
+        let mut columns = 0;
+        for (i, (h, c)) in r.heights.iter().zip(&r.coverage).enumerate() {
+            if *c == 1 {
+                range[0] = range[0].min(*h);
+                range[1] = range[1].max(*h);
             }
-            refs.push(RegionRef {
-                rx,
-                rz,
-                url: reference.url,
-                sha256: reference.sha256,
-                bytes: reference.bytes,
-                columns,
-            });
+            if *c != 0 {
+                columns += 1;
+            }
+            if let Some(heights) = &mut legacy_heights {
+                let x = (rx + 2) as usize * 256 + i % 256;
+                let z = (rz + 2) as usize * 256 + i / 256;
+                let offset = (z * FIXTURE_SIDE + x) * 2;
+                let height = if *c == 1 {
+                    *h
+                } else {
+                    surface_core::MISSING_HEIGHT
+                };
+                heights[offset..offset + 2].copy_from_slice(&height.to_le_bytes());
+            }
         }
+        refs.push(RegionRef {
+            rx,
+            rz,
+            url: reference.url,
+            sha256: reference.sha256,
+            bytes: reference.bytes,
+            columns,
+        });
     }
     let legacy_height = if let Some(raw) = legacy_heights {
         let compressed = zstd::encode_all(raw.as_slice(), 3)?;
@@ -631,9 +850,23 @@ pub fn create_lod_fixture_with_options(
     let manifest = MapManifest {
         format_version: 1,
         name: "Native LOD Coastline".into(),
-        bounds: [-512, -512, 512, 512],
-        spawn: [64, 64, 64],
-        source_sha256: hash(b"surface-lod-synthetic-coastline-v1"),
+        bounds,
+        spawn: if options.sparse_extreme {
+            [-WORLD_LIMIT + 64, 64, -WORLD_LIMIT + 64]
+        } else {
+            [64, 64, 64]
+        },
+        source_sha256: if options.size == 1024 && !options.sparse_extreme {
+            hash(b"surface-lod-synthetic-coastline-v1")
+        } else {
+            hash(
+                format!(
+                    "surface-lod-synthetic-coastline-v2:size={}:sparse={}",
+                    options.size, options.sparse_extreme
+                )
+                .as_bytes(),
+            )
+        },
         catalog_version: hash(&serde_json::to_vec(&materials)?),
         materials,
         atlas,
@@ -657,15 +890,28 @@ pub fn create_lod_fixture_with_options(
             },
         ],
     };
-    atomic_write(
-        &source.join("manifest.json"),
-        &serde_json::to_vec_pretty(&manifest)?,
-    )?;
+    // Keep a durable recovery manifest without replacing the published source.
+    let source_descriptor = serde_json::to_vec_pretty(&manifest)?;
+    let staged = fixture_checkpoint(output, &manifest, "converting")?;
     let conversion_started = Instant::now();
-    let lod = prepare_lod(&source.join("manifest.json"), output)?;
+    let (lod, conversion) =
+        prepare_lod_with_options(&staged, output, PrepareLodOptions::default())?;
+    atomic_write(&source.join("manifest.json"), &source_descriptor)?;
+    fixture_checkpoint(output, &manifest, "complete")?;
     let conversion_elapsed_ms = conversion_started.elapsed().as_secs_f64() * 1000.;
     let mut diagnostics = fixture_diagnostics(output, &lod)?;
     diagnostics["source_regions"] = json!(manifest.regions.len());
+    diagnostics["layout"] = json!(if options.sparse_extreme {
+        "sparse-extreme-4096"
+    } else {
+        "dense"
+    });
+    diagnostics["dense_size"] = if options.sparse_extreme {
+        Value::Null
+    } else {
+        json!(options.size)
+    };
+    diagnostics["conversion"] = conversion;
     if let Some(height) = legacy_height {
         diagnostics["legacy_reference"] = json!({
             "manifest":"source/manifest.json","width":FIXTURE_SIDE,"height":FIXTURE_SIDE,
@@ -676,6 +922,58 @@ pub fn create_lod_fixture_with_options(
     diagnostics["conversion_elapsed_ms"] = json!(conversion_elapsed_ms);
     diagnostics["elapsed_ms"] = json!(started.elapsed().as_secs_f64() * 1000.);
     Ok((lod, diagnostics))
+}
+
+fn fixture_checkpoint(output: &Path, manifest: &MapManifest, phase: &str) -> Result<PathBuf> {
+    let bytes = serde_json::to_vec_pretty(manifest)?;
+    let path = output.join("source/pending-manifest.json");
+    atomic_write(&path, &bytes)?;
+    atomic_write(
+        &output.join("progress.json"),
+        &serde_json::to_vec_pretty(&json!({
+            "schema_version":1,"phase":phase,"source_manifest":"source/pending-manifest.json",
+            "source_manifest_sha256":hash(&bytes),"source_regions":manifest.regions.len(),
+            "bounds":manifest.bounds,"lod":"lod.json"
+        }))?,
+    )?;
+    Ok(path)
+}
+
+type FixtureLayout = ([i32; 4], Vec<(i32, i32)>);
+
+fn fixture_layout(options: LodFixtureOptions) -> Result<FixtureLayout> {
+    ensure!(
+        [1024, 2048, 4096, 8192, 16384].contains(&options.size),
+        "fixture size must be 1024, 2048, 4096, 8192 or 16384"
+    );
+    ensure!(
+        !options.sparse_extreme || options.size == 1024,
+        "--sparse-extreme cannot be combined with a non-default --size"
+    );
+    ensure!(
+        !options.legacy_reference || (options.size == 1024 && !options.sparse_extreme),
+        "--legacy-reference is restricted to the dense 1024 synthetic fixture"
+    );
+    if options.sparse_extreme {
+        // Include both extreme regions exactly. Only these 4096 regions exist.
+        let axis = (0..64).map(|i| -32768 + i * 65535 / 63).collect::<Vec<_>>();
+        let coordinates = axis
+            .iter()
+            .flat_map(|z| axis.iter().map(move |x| (*x, *z)))
+            .collect();
+        Ok((
+            [-WORLD_LIMIT, -WORLD_LIMIT, WORLD_LIMIT, WORLD_LIMIT],
+            coordinates,
+        ))
+    } else {
+        let half = options.size as i32 / 2;
+        let axis = -half / 256..half / 256;
+        let coordinates = axis
+            .clone()
+            .flat_map(|z| axis.clone().map(move |x| (x, z)))
+            .collect();
+        Ok(([-half, -half, half, half], coordinates))
+    }
 }
 
 #[derive(Default)]

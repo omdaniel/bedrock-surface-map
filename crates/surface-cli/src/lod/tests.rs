@@ -60,6 +60,13 @@ fn lod_fixture_is_deterministic_complete_and_self_contained() {
     assert_eq!(manifest.material_count, 8);
     assert_eq!(manifest.catalog.len(), 1);
     assert!(a.path().join("source/manifest.json").is_file());
+    assert_eq!(
+        fs::read(a.path().join("source/manifest.json")).unwrap(),
+        fs::read(a.path().join("source/pending-manifest.json")).unwrap()
+    );
+    let progress: Value =
+        serde_json::from_slice(&fs::read(a.path().join("progress.json")).unwrap()).unwrap();
+    assert_eq!(progress["phase"], "complete");
     let source_manifest: MapManifest =
         serde_json::from_slice(&fs::read(a.path().join("source/manifest.json")).unwrap()).unwrap();
     assert!(source_manifest.heights.is_empty() && source_manifest.heights_sha256.is_empty());
@@ -417,7 +424,8 @@ fn lod_catalog_pages_limit_encoded_size_and_entry_count() {
     for (i, m) in materials.iter_mut().enumerate() {
         m.key = format!("{i}-{}", "x".repeat(1000));
     }
-    let pages = publish_catalog(root.path(), &materials).unwrap();
+    let mut store = OutputStore::new(root.path(), PrepareLodOptions::default());
+    let pages = publish_catalog(&mut store, &materials).unwrap();
     assert!(pages.len() > 3);
     let mut next = 0;
     for p in pages {
@@ -432,7 +440,298 @@ fn lod_catalog_pages_limit_encoded_size_and_entry_count() {
     }
     assert_eq!(next, materials.len());
     materials[0].key = "x".repeat(MAX_CATALOG_PAGE_BYTES);
-    assert!(publish_catalog(root.path(), &materials).is_err());
+    assert!(publish_catalog(&mut store, &materials).is_err());
+}
+
+#[test]
+fn lod_scale_layouts_have_bounded_coordinates_and_exact_leaf_counts() {
+    let placeholder = SourceRegion {
+        surface: ObjectRef {
+            url: "objects/source.zst".into(),
+            sha256: "0".repeat(64),
+            bytes: 1,
+        },
+        index: None,
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let (path, _) = small_source(temp.path(), [-128, -128, 0, 0]);
+    let mut snapshot = read_source(&path).unwrap();
+    for size in [1024, 2048, 4096, 8192, 16384] {
+        let options = LodFixtureOptions {
+            size,
+            ..Default::default()
+        };
+        let (bounds, positions) = fixture_layout(options).unwrap();
+        assert_eq!(positions.len(), (size as usize / 256).pow(2));
+        assert_eq!(
+            positions.iter().copied().collect::<BTreeSet<_>>().len(),
+            positions.len()
+        );
+        snapshot.bounds = bounds;
+        snapshot.roots = root_keys(bounds).unwrap();
+        snapshot.regions = positions
+            .iter()
+            .map(|(x, z)| ((*z, *x), placeholder.clone()))
+            .collect();
+        let estimate = snapshot.estimate().unwrap();
+        let leaves = (size as u64 / 128).pow(2);
+        assert_eq!(estimate["detail_tiles"], leaves);
+        assert_eq!(estimate["node_count"], (leaves * 4 - 4) / 3);
+        assert_eq!(snapshot.roots.len(), 4);
+        for root in &snapshot.roots {
+            assert_eq!(root.span().unwrap(), size as i32 / 2);
+        }
+    }
+    let (bounds, positions) = fixture_layout(LodFixtureOptions {
+        sparse_extreme: true,
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(positions.len(), 4096);
+    assert_eq!(positions.first(), Some(&(-32768, -32768)));
+    assert_eq!(positions.last(), Some(&(32767, 32767)));
+    snapshot.bounds = bounds;
+    snapshot.roots = root_keys(bounds).unwrap();
+    snapshot.regions = positions
+        .iter()
+        .map(|(x, z)| ((*z, *x), placeholder.clone()))
+        .collect();
+    let estimate = snapshot.estimate().unwrap();
+    assert_eq!(estimate["detail_tiles"], 16384);
+    assert!(estimate["node_count"].as_u64().unwrap() < 4096 * 4 * 17);
+    assert!(snapshot.roots.iter().all(|key| key.level == 16));
+    assert_eq!(
+        fixture_layout(LodFixtureOptions {
+            sparse_extreme: true,
+            ..Default::default()
+        })
+        .unwrap()
+        .1,
+        positions
+    );
+    for options in [
+        LodFixtureOptions {
+            size: 512,
+            ..Default::default()
+        },
+        LodFixtureOptions {
+            size: 2048,
+            legacy_reference: true,
+            ..Default::default()
+        },
+        LodFixtureOptions {
+            sparse_extreme: true,
+            legacy_reference: true,
+            ..Default::default()
+        },
+    ] {
+        assert!(fixture_layout(options).is_err());
+    }
+}
+
+#[test]
+fn lod_quota_is_inclusive_reused_objects_are_charged_and_failure_keeps_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, mut source) = small_source(&temp.path().join("source"), [-128, -128, 0, 0]);
+    let before = fs::read(&path).unwrap();
+    let output = temp.path().join("output");
+    let (manifest, report) =
+        prepare_lod_with_options(&path, &output, PrepareLodOptions::default()).unwrap();
+    let descriptor = fs::read(output.join("lod.json")).unwrap();
+    let charged = report["charged_output_bytes"].as_u64().unwrap();
+    assert_eq!(
+        fixture_diagnostics(&output, &manifest).unwrap()["referenced_bytes"]["total"],
+        charged
+    );
+    assert!(
+        charged
+            < report["estimate"]["output_bytes_upper_bound"]
+                .as_u64()
+                .unwrap()
+    );
+    assert_eq!(
+        report["source_publication"]["manifest_sha256"],
+        hash(&before)
+    );
+    let (repeat, same_report) = prepare_lod_with_options(
+        &path,
+        &output,
+        PrepareLodOptions {
+            max_output_bytes: Some(charged),
+        },
+    )
+    .unwrap();
+    assert_eq!(repeat, manifest);
+    assert_eq!(same_report["charged_output_bytes"], charged);
+    let err = prepare_lod_with_options(
+        &path,
+        &output,
+        PrepareLodOptions {
+            max_output_bytes: Some(charged - 1),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("quota"));
+    assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+    assert_eq!(fs::read(&path).unwrap(), before);
+    let fresh = temp.path().join("fresh");
+    assert!(
+        prepare_lod_with_options(
+            &path,
+            &fresh,
+            PrepareLodOptions {
+                max_output_bytes: Some(0)
+            }
+        )
+        .is_err()
+    );
+    assert!(!fresh.join("lod.json").exists());
+    assert!(!fresh.join("objects").exists());
+    let partial = temp.path().join("partial");
+    let partial_budget = charged / 2;
+    let err = prepare_lod_with_options(
+        &path,
+        &partial,
+        PrepareLodOptions {
+            max_output_bytes: Some(partial_budget),
+        },
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("quota"));
+    assert!(!partial.join("lod.json").exists());
+    let written: u64 = fs::read_dir(partial.join("objects"))
+        .unwrap()
+        .map(|entry| entry.unwrap().metadata().unwrap().len())
+        .sum();
+    assert!(written > 0 && written <= partial_budget);
+    source["name"] = json!("Replacement publication");
+    atomic_write(&path, &serde_json::to_vec(&source).unwrap()).unwrap();
+    assert!(
+        prepare_lod_with_options(
+            &path,
+            &output,
+            PrepareLodOptions {
+                max_output_bytes: Some(charged - 1)
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+    // Old reachable objects remain valid after a failed replacement.
+    for root in &manifest.roots {
+        node(&output, root);
+    }
+}
+
+#[test]
+fn lod_source_publication_change_is_detected_even_without_revision_change() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, mut manifest) = small_source(temp.path(), [-128, -128, 0, 0]);
+    manifest["generation"] = json!("generation-identity");
+    manifest["world_id"] = json!("synthetic-world");
+    manifest["revision"] = json!(17);
+    atomic_write(&path, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+    let snapshot = read_source(&path).unwrap();
+    let output = temp.path().join("output");
+    let mut published = prepare_lod(&path, &output).unwrap();
+    let old_descriptor = fs::read(output.join("lod.json")).unwrap();
+    snapshot.verify_unchanged().unwrap();
+    assert_eq!(snapshot.identity()["revision"], 17);
+    assert_eq!(snapshot.identity()["world_id"], "synthetic-world");
+    manifest["name"] = json!("Changed without revision bump");
+    atomic_write(&path, &serde_json::to_vec(&manifest).unwrap()).unwrap();
+    assert!(
+        snapshot
+            .verify_unchanged()
+            .unwrap_err()
+            .to_string()
+            .contains("publication changed")
+    );
+    assert_ne!(snapshot.identity(), read_source(&path).unwrap().identity());
+    published.name = "Must not publish".into();
+    let mut store = OutputStore::new(&output, PrepareLodOptions::default());
+    assert!(snapshot.publish(&mut store, &published).is_err());
+    assert_eq!(fs::read(output.join("lod.json")).unwrap(), old_descriptor);
+    // The estimate does not read source terrain, even if an object is missing.
+    let reference = &snapshot.regions.values().next().unwrap().surface;
+    fs::remove_file(temp.path().join(&reference.url)).unwrap();
+    assert_eq!(estimate_lod(&path).unwrap()["detail_tiles"], 1);
+}
+
+#[test]
+fn lod_converter_cannot_overwrite_its_source_descriptor() {
+    let temp = tempfile::tempdir().unwrap();
+    let (path, _) = small_source(temp.path(), [-128, -128, 0, 0]);
+    let source = temp.path().join("lod.json");
+    fs::rename(path, &source).unwrap();
+    let before = fs::read(&source).unwrap();
+    assert!(
+        prepare_lod(&source, temp.path())
+            .unwrap_err()
+            .to_string()
+            .contains("replace the source")
+    );
+    assert_eq!(fs::read(source).unwrap(), before);
+}
+
+#[test]
+fn lod_fixture_recovery_checkpoint_survives_failed_conversion_without_replacing_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let (published, _) = small_source(&temp.path().join("source"), [-128, -128, 0, 0]);
+    let old_source = fs::read(&published).unwrap();
+    let recovery = MapManifest {
+        format_version: 1,
+        name: "Recovery fixture".into(),
+        bounds: [-128, -128, 0, 0],
+        spawn: [-1, 24, -1],
+        source_sha256: hash(b"recovery"),
+        catalog_version: String::new(),
+        materials: fixture_materials(),
+        atlas: "missing.png".into(),
+        regions: Vec::new(),
+        heights: String::new(),
+        heights_sha256: String::new(),
+        height_range: [0, 0],
+        approximations: Vec::new(),
+    };
+    let checkpoint = fixture_checkpoint(temp.path(), &recovery, "converting").unwrap();
+    let before = fs::read(&checkpoint).unwrap();
+    assert!(prepare_lod(&checkpoint, temp.path()).is_err());
+    assert_eq!(fs::read(&checkpoint).unwrap(), before);
+    assert_eq!(fs::read(&published).unwrap(), old_source);
+    let progress: Value =
+        serde_json::from_slice(&fs::read(temp.path().join("progress.json")).unwrap()).unwrap();
+    assert_eq!(progress["source_manifest_sha256"], hash(&before));
+    assert_eq!(progress["phase"], "converting");
+    assert!(!temp.path().join("lod.json").exists());
+}
+
+#[test]
+fn lod_repeated_terrain_is_exact_at_both_coordinate_limits() {
+    for (rx, rz) in [
+        (-32768, -32768),
+        (32767, 32767),
+        (-32768, 32767),
+        (32767, -32768),
+    ] {
+        let region = fixture_region_pattern(rx, rz, true);
+        let expected = fixture_region_pattern(rx.rem_euclid(4), rz.rem_euclid(4), true);
+        assert_eq!(region.heights, expected.heights);
+        assert_eq!(region.coverage, expected.coverage);
+        assert_eq!(region.materials, expected.materials);
+        let encoded = encode_live_region(&region).unwrap();
+        assert_eq!(decode_region(&encoded).unwrap(), region);
+        for z in 0..2 {
+            for x in 0..2 {
+                let key = TileKey::new(0, rx * 2 + x, rz * 2 + z).unwrap();
+                let detail = DetailTile::from_region(&region, key).unwrap();
+                assert_eq!(
+                    DetailTile::decode(&detail.encode().unwrap()).unwrap(),
+                    detail
+                );
+            }
+        }
+    }
 }
 
 #[test]
@@ -519,6 +818,7 @@ fn lod_fixture_legacy_reference_height_dimensions_and_manifest_match_native() {
         temp.path(),
         LodFixtureOptions {
             legacy_reference: true,
+            ..Default::default()
         },
     )
     .unwrap();

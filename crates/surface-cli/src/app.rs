@@ -24,14 +24,26 @@ enum Command {
         map: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        /// Byte budget for this publication, including reused objects.
+        #[arg(long)]
+        max_output_bytes: Option<u64>,
+        /// Report topology and a conservative size ceiling without writing output.
+        #[arg(long)]
+        estimate: bool,
     },
-    /// Generate a deterministic 1024-square synthetic native LOD dataset.
+    /// Generate a deterministic dense or sparse synthetic native LOD dataset.
     LodFixture {
         #[arg(long)]
         output: PathBuf,
         /// Also make source/manifest.json viewable by the legacy renderer.
         #[arg(long)]
         legacy_reference: bool,
+        /// Dense square side: 1024, 2048, 4096, 8192 or 16384 blocks.
+        #[arg(long, default_value_t = 1024)]
+        size: u32,
+        /// Populate 4096 regions across the full supported coordinate extent.
+        #[arg(long)]
+        sparse_extreme: bool,
     },
     Sample {
         #[arg(long)]
@@ -547,20 +559,39 @@ pub fn run_cli() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     match Args::parse().command {
-        Command::PrepareLod { map, output } => {
-            let manifest = crate::prepare_lod(&map, &output)?;
+        Command::PrepareLod {
+            map,
+            output,
+            max_output_bytes,
+            estimate,
+        } => {
+            if estimate {
+                println!("{}", crate::lod::estimate_lod(&map)?);
+                return Ok(());
+            }
+            let (manifest, diagnostics) = crate::lod::prepare_lod_with_options(
+                &map,
+                &output,
+                crate::lod::PrepareLodOptions { max_output_bytes },
+            )?;
             println!(
                 "{}",
-                serde_json::json!({"lod":output.join("lod.json"),"roots":manifest.roots.len(),"bounds":manifest.bounds})
+                serde_json::json!({"lod":output.join("lod.json"),"roots":manifest.roots.len(),"bounds":manifest.bounds,"diagnostics":diagnostics})
             );
         }
         Command::LodFixture {
             output,
             legacy_reference,
+            size,
+            sparse_extreme,
         } => {
             let (manifest, diagnostics) = crate::lod::create_lod_fixture_with_options(
                 &output,
-                crate::lod::LodFixtureOptions { legacy_reference },
+                crate::lod::LodFixtureOptions {
+                    legacy_reference,
+                    size,
+                    sparse_extreme,
+                },
             )?;
             println!(
                 "{}",
