@@ -6,6 +6,7 @@ import type {
   RegionRef,
 } from "./types";
 import { boundedBytes } from "./http";
+import { heightWindowBytes } from "./cache-budget";
 
 export interface LiveRoot {
   format_version: 2;
@@ -340,13 +341,11 @@ export class TerrainClient {
         Math.floor((view.left + view.right) / 512) * 256 + 256,
         Math.floor((view.top + view.bottom) / 512) * 256 + 256,
       ];
-    const estimate = (bounds: number[]) =>
-      count(bounds) * ((8 * 4) / 3 + 2) + 1024;
-    if (estimate(window) > availableHeightBytes) window = required;
+    if (heightWindowBytes(window) > availableHeightBytes) window = required;
     if (
       count(window) <= 0 ||
       count(window) > 16 * 1024 * 1024 ||
-      estimate(window) > availableHeightBytes
+      heightWindowBytes(window) > availableHeightBytes
     )
       throw Error("Height coverage exceeds the 256 MiB cache. Zoom in.");
     const pages = new Map<string, { sha: string; data: Int16Array }>();

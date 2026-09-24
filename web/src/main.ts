@@ -19,6 +19,12 @@ import { TerrainClient, type LiveRoot } from "./terrain";
 import { boundedBytes } from "./http";
 import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
 import { DemoPlayback } from "./demo";
+import {
+  MAP_CACHE_BYTES,
+  REGION_BYTES,
+  REGION_GPU_BYTES,
+  heightWindowBytes,
+} from "./cache-budget";
 import "./style.css";
 
 const DEFAULT_SUN_AZIMUTH = 330;
@@ -81,6 +87,8 @@ let terrainBusy = false,
   terrainPollAgain = false;
 let terrainTimer: ReturnType<typeof setTimeout> | undefined;
 let terrainFailures = 0;
+let supportedView: [number, number, number, number] | null = null;
+let capacityWarning = false;
 let cx = 0,
   cz = 0,
   scale = 1,
@@ -213,8 +221,7 @@ function memory() {
     : 0;
 }
 function makeSpace() {
-  const need = 65536 * 40 + 349524;
-  while (memory() + need > 256 * 1024 * 1024) {
+  while (memory() + REGION_BYTES > MAP_CACHE_BYTES) {
     const victim = [...cache.entries()]
       .filter(([, v]) => !visible(v.ref))
       .sort((a, b) => a[1].last - b[1].last)[0];
@@ -225,7 +232,14 @@ function makeSpace() {
   return true;
 }
 function loadRegions() {
-  if (!renderer || disposed || renderer.is_lost() || terrainBusy) return;
+  if (
+    !renderer ||
+    disposed ||
+    renderer.is_lost() ||
+    terrainBusy ||
+    needsHeightWindow()
+  )
+    return;
   const wanted = manifest.regions
     .filter(visible)
     .sort(
@@ -297,6 +311,7 @@ function updateStatus() {
     active === 0 &&
     failures.size === 0 &&
     terrainFailures === 0 &&
+    !capacityWarning &&
     ready === wanted.length
   )
     message("");
@@ -353,11 +368,47 @@ function requestDraw() {
     }
   });
 }
-function changed() {
+function fixedMapBytes() {
+  return (
+    renderer.gpu_bytes() - renderer.cpu_bytes() - cache.size * REGION_GPU_BYTES
+  );
+}
+function viewFits() {
+  const heights = terrain
+    ? heightWindowBytes(terrain.needed(viewport(), elevation))
+    : renderer.cpu_bytes() * 2;
+  return (
+    fixedMapBytes() +
+      heights +
+      manifest.regions.filter(visible).length * REGION_BYTES <=
+    MAP_CACHE_BYTES
+  );
+}
+function admitView(resized: boolean) {
+  if (viewFits()) {
+    supportedView = [cx, cz, scale, elevation];
+    if (!resized) capacityWarning = false;
+    return true;
+  }
+  if (supportedView) [cx, cz, scale, elevation] = supportedView;
+  // A resized viewport can outgrow the last supported camera too.
+  while (!viewFits() && scale < 80) scale = Math.min(80, scale * 1.5);
+  $<HTMLInputElement>("elevation").value = String(elevation);
+  $("elevation-value").textContent = `${elevation}\u00b0`;
+  capacityWarning = true;
+  message(
+    "Visible area exceeds the 256 MiB cache. Keeping a supported view. Zoom in for more detail.",
+  );
+  if (!viewFits()) return false;
+  supportedView = [cx, cz, scale, elevation];
+  return true;
+}
+function changed(resized = false) {
+  if (!renderer || !manifest || !admitView(resized)) return;
   for (const c of cache.values())
     if (visible(c.ref)) c.last = performance.now();
-  loadRegions();
-  if (terrain && !terrain.covers(viewport(), elevation)) void syncTerrain();
+  if (needsHeightWindow()) void syncTerrain();
+  else loadRegions();
   requestDraw();
 }
 
@@ -382,10 +433,21 @@ function updatePick(ref: RegionRef, words: Uint32Array) {
   cache.set(key(ref), { ref, pick, last: performance.now() });
 }
 function terrainBudget() {
-  // Height storage includes its GPU tree, CPU tree and compact source pages.
-  const nonHeight = renderer.gpu_bytes() - renderer.cpu_bytes();
-  const picks = [...cache.values()].reduce((n, r) => n + r.pick.byteLength, 0);
-  return 256 * 1024 * 1024 - nonHeight - picks;
+  const missing = manifest.regions.filter(
+    (r) => visible(r) && !cache.has(key(r)),
+  ).length;
+  // Reserve all visible detail before enlarging the height window, not just
+  // regions that have already arrived. Nonvisible detail can be evicted on retry.
+  return (
+    MAP_CACHE_BYTES - fixedMapBytes() - (cache.size + missing) * REGION_BYTES
+  );
+}
+function needsHeightWindow() {
+  return (
+    terrain !== null &&
+    (!terrain.covers(viewport(), elevation) ||
+      renderer.cpu_bytes() * 2 + terrain.memoryBytes > terrainBudget())
+  );
 }
 async function syncTerrain(poll = false) {
   if (
@@ -718,8 +780,14 @@ $("retry").onclick = () => {
   message("Retrying map data...");
   changed();
 };
+let resizeQueued = false;
 new ResizeObserver(() => {
-  changed();
+  if (resizeQueued || disposed) return;
+  resizeQueued = true;
+  requestAnimationFrame(() => {
+    resizeQueued = false;
+    if (!disposed) changed(true);
+  });
 }).observe(main);
 document.addEventListener("visibilitychange", () => {
   if (terrainTimer) clearTimeout(terrainTimer);
@@ -1003,8 +1071,8 @@ async function boot() {
     );
     if (demo) [cx, cz, scale] = demo.camera;
     const budget = () =>
-      256 * 1024 * 1024 -
-      manifest.regions.filter(visible).length * (65536 * 40 + 349524) -
+      MAP_CACHE_BYTES -
+      manifest.regions.filter(visible).length * REGION_BYTES -
       (rgba.byteLength * 21) / 16 -
       manifest.materials.length * 48;
     let update;
@@ -1049,6 +1117,7 @@ async function boot() {
     c.width,
     c.height,
   );
+  supportedView = [cx, cz, scale, elevation];
   window.__map.ready = true;
   if (demo) {
     demo.mount();
