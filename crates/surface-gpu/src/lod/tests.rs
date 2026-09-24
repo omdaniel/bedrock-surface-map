@@ -533,12 +533,18 @@ fn coarse_lighting_is_cached_bounded_and_stitches_siblings() {
     };
     render_vivid(&mut gpu);
     assert_eq!(
+        gpu.height_status()[0],
+        8,
+        "a stale lighting cache is not exact current feedback"
+    );
+    assert_eq!(
         gpu.pending_preparations(),
         1,
         "only one of two caches may be rebuilt in one frame"
     );
     render_vivid(&mut gpu);
     assert_eq!(gpu.pending_preparations(), 0);
+    assert_eq!(gpu.height_status()[0], 0);
     let frame = pixels(&gpu, &out);
     let at = 64 * 1024;
     assert!(frame[at + 120 * 4 + 2] > 250);
@@ -589,11 +595,17 @@ fn height_approximation_preserves_ground_and_coarse_max_is_only_pruning() {
         .flat_map(|_| [4 << 16, 32768 * 65537])
         .collect();
     gpu.add_height(key, unknown).unwrap();
+    assert!(!gpu.height_status_ready() || gpu.height_status()[0] != 0);
     draw(&mut gpu, &out, [128., 128., 1.], true, 0.);
     assert_eq!(
         gpu.pending_preparations(),
         1,
         "height build and relighting occupy separate frames"
+    );
+    assert_eq!(
+        gpu.height_status()[0],
+        1 | 8,
+        "old cache keeps its warning until the latest shade is ready"
     );
     draw(&mut gpu, &out, [128., 128., 1.], true, 0.);
     assert_eq!(
@@ -669,4 +681,260 @@ fn distant_fine_camera_and_material_range_upload() {
         .poll(wgpu::PollType::wait_indefinitely())
         .unwrap();
     assert_eq!(gpu.gpu_bytes(), before);
+}
+
+#[test]
+fn latest_lighting_only_prepares_visible_cut_and_keeps_offcut_fallbacks() {
+    let mut gpu = setup();
+    let out = output(&gpu, 128, 128);
+    let keys = [
+        Key::new(1, 0, 0).unwrap(),
+        Key::new(1, 1, 0).unwrap(),
+        Key::new(1, 4, 0).unwrap(),
+    ];
+    gpu.set_world([0, 0, 1280, 256], 0).unwrap();
+    for key in keys {
+        gpu.add_tile(key, summary([13107, 26214, 39321], 0))
+            .unwrap();
+        draw(&mut gpu, &out, [128., 128., 1.], false, 0.);
+    }
+    gpu.set_cut(
+        keys.into_iter()
+            .map(|key| CutEntry { key, opacity: 1. })
+            .collect(),
+    )
+    .unwrap();
+    let first_epoch = gpu.lighting_epoch();
+    draw(&mut gpu, &out, [128., 128., 1.], false, 0.5);
+    let second_epoch = gpu.lighting_epoch();
+    assert_eq!(second_epoch, first_epoch + 1);
+    assert_eq!(gpu.tile_lighting_epoch(keys[0]), second_epoch);
+    assert_eq!(gpu.tile_lighting_epoch(keys[1]), first_epoch);
+    assert_eq!(
+        gpu.pending_preparations(),
+        0,
+        "offscreen dirty cut members must not sustain RAF"
+    );
+    draw(&mut gpu, &out, [128., 128., 1.], false, 0.75);
+    let latest = gpu.lighting_epoch();
+    gpu.set_cut(vec![CutEntry {
+        key: keys[1],
+        opacity: 1.,
+    }])
+    .unwrap();
+    assert!(
+        !gpu.height_status_ready(),
+        "cut mutation invalidates completed feedback"
+    );
+    draw(&mut gpu, &out, [384., 128., 1.], false, 0.75);
+    assert_eq!(
+        gpu.tile_lighting_epoch(keys[1]),
+        latest,
+        "skip every obsolete lighting revision"
+    );
+    assert_eq!(
+        gpu.tile_lighting_epoch(keys[2]),
+        first_epoch,
+        "offcut fallback remains resident without preparation"
+    );
+    assert!(gpu.has_tile(keys[2]));
+    assert_eq!(gpu.pending_preparations(), 0);
+    gpu.remove_tile(keys[0]);
+    gpu.remove_height(Key::new(1, 0, 0).unwrap());
+    assert_eq!(gpu.pending_preparations(), 0);
+}
+
+#[test]
+fn allocation_queries_height_admission_and_explicit_disposal() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let key = Key::new(0, 0, 0).unwrap();
+    assert_eq!(gpu.available_height_slots(), 127);
+    assert!(
+        !gpu.height_status_ready(),
+        "no readback yet is not an exact result"
+    );
+    gpu.add_height(key, vec![1 << 16; SAMPLES]).unwrap();
+    assert_eq!(gpu.available_height_slots(), 126);
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    assert_eq!(gpu.available_height_slots(), 126);
+    gpu.add_height(key, vec![1 << 16; SAMPLES]).unwrap();
+    assert_eq!(
+        gpu.available_height_slots(),
+        125,
+        "pending replacement reserves a second slot"
+    );
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    assert_eq!(gpu.available_height_slots(), 126);
+    gpu.remove_height(key);
+    assert_eq!(
+        gpu.available_height_slots(),
+        126,
+        "retired slots are not immediately reusable"
+    );
+    assert_eq!(gpu.retiring_height_slots(), 1);
+    let retiring = gpu.retiring_bytes();
+    assert_eq!(
+        retiring,
+        TABLE_ENTRIES as u64 * 16,
+        "arena slot retirement adds no allocation charge"
+    );
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(
+        gpu.available_height_slots(),
+        127,
+        "read-only query reaps completed slots"
+    );
+    gpu.add_tile(key, detail(0, 1)).unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let a = gpu.allocation_bytes();
+    assert_eq!(a[0], a[1..].iter().sum::<u64>());
+    assert_eq!(a[0], gpu.gpu_bytes());
+    assert_eq!(a[2], gpu.tile_bytes(0));
+    assert_eq!(a[3], 128 * HEIGHT_PAGE_BYTES);
+    assert_eq!(a[4], 64 * 64 * 8);
+    assert_eq!(texture_bytes(&gpu.atlas), (32 * 32 + 16 * 16 + 8 * 8) * 4);
+    let old_total = gpu.gpu_bytes();
+    gpu.resize(128, 64).unwrap();
+    assert_eq!(gpu.gpu_bytes(), old_total + gpu.resize_bytes(64, 128));
+    assert_eq!(gpu.retiring_bytes(), 64 * 64 * 8);
+    gpu.remove_tile(key);
+    gpu.add_tile(key, detail(0, 1)).unwrap();
+    assert!(gpu.cpu_bytes() > SAMPLES * 32);
+    gpu.dispose();
+    assert_eq!(gpu.allocation_bytes(), [0; 6]);
+    assert_eq!(gpu.retiring_bytes(), 0);
+    assert_eq!(gpu.pending_preparations(), 0);
+    assert_eq!(gpu.pending_submissions(), 0);
+    assert_eq!(gpu.available_height_slots(), 0);
+    assert!(gpu.cpu_bytes() < 8192);
+    assert!(!gpu.height_status_ready());
+    assert!(gpu.add_height(key, vec![1 << 16; SAMPLES]).is_err());
+    gpu.dispose();
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(gpu.gpu_bytes(), 0);
+}
+
+#[test]
+fn cached_gutter_status_copies_and_clears_without_recursive_contamination() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let left = Key::new(1, 0, 0).unwrap();
+    let right = Key::new(1, 1, 0).unwrap();
+    for key in [left, right] {
+        gpu.add_tile(key, summary([65535, 0, 0], 0)).unwrap();
+        draw(&mut gpu, &out, [128., 128., 1.], false, 0.);
+    }
+    gpu.queue.write_buffer(
+        gpu.tiles[&right].cached_status.as_ref().unwrap(),
+        0,
+        bytemuck::bytes_of(&2u32),
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.stitch_lit_gutters(left, &mut encoder);
+    gpu.submit(encoder);
+    let bytes = read(&gpu, gpu.tiles[&left].cached_status.as_ref().unwrap());
+    let flags: &[u32] = bytemuck::cast_slice(&bytes);
+    assert_eq!(flags[0], 0);
+    assert_eq!(flags[gutter_status_offset(1, 0) as usize / 4], 2);
+    let bytes = read(&gpu, gpu.tiles[&right].cached_status.as_ref().unwrap());
+    let flags: &[u32] = bytemuck::cast_slice(&bytes);
+    assert_eq!(flags[gutter_status_offset(-1, 0) as usize / 4], 0);
+    gpu.set_cut(vec![CutEntry {
+        key: left,
+        opacity: 1.,
+    }])
+    .unwrap();
+    draw(&mut gpu, &out, [128., 128., 1.], false, 0.);
+    assert_eq!(
+        gpu.height_status()[0],
+        2,
+        "offcut sibling border must not claim exact height evidence"
+    );
+    gpu.remove_tile(right);
+    draw(&mut gpu, &out, [128., 128., 1.], false, 0.);
+    assert_eq!(
+        gpu.height_status()[0],
+        0,
+        "eviction restores own border and clears only neighbor status"
+    );
+}
+
+#[test]
+fn fine_four_page_corners_are_translation_invariant() {
+    let mut gpu = setup();
+    let out = output(&gpu, 96, 96);
+    let mut reference = None;
+    for tile_origin in [0, -100_000, 16_000_000] {
+        let old: Vec<_> = gpu.tiles.keys().copied().collect();
+        for key in old {
+            gpu.remove_tile(key);
+            gpu.remove_height(key);
+        }
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let origin = tile_origin * 128;
+        gpu.set_world(
+            [origin - 128, -origin - 128, origin + 128, -origin + 128],
+            160,
+        )
+        .unwrap();
+        let mut cut = Vec::new();
+        for dz in -1..=0 {
+            for dx in -1..=0 {
+                let key = Key::new(0, tile_origin + dx, -tile_origin + dz).unwrap();
+                let mut cells = detail(0, 1);
+                let mut heights = vec![1u32 << 16; SAMPLES];
+                for z in 0..128 {
+                    for x in 0..128 {
+                        let wall = dx == 0 && x < 2;
+                        let h = if wall { 160 } else { 0 };
+                        cells[(z * 128 + x) * 8] = h;
+                        cells[(z * 128 + x) * 8 + 2] = if dz < 0 { 0xffc080 } else { 0x80c0ff };
+                        heights[z * 128 + x] |= h;
+                    }
+                }
+                gpu.add_tile(key, cells).unwrap();
+                draw(
+                    &mut gpu,
+                    &out,
+                    [origin as f64 + 0.125, -origin as f64 - 0.25, 8.],
+                    true,
+                    0.5,
+                );
+                gpu.add_height(key, heights).unwrap();
+                draw(
+                    &mut gpu,
+                    &out,
+                    [origin as f64 + 0.125, -origin as f64 - 0.25, 8.],
+                    true,
+                    0.5,
+                );
+                cut.push(CutEntry { key, opacity: 1. });
+            }
+        }
+        gpu.set_cut(cut).unwrap();
+        draw(
+            &mut gpu,
+            &out,
+            [origin as f64 + 0.125, -origin as f64 - 0.25, 8.],
+            true,
+            0.5,
+        );
+        assert_eq!(gpu.height_status()[0], 0);
+        let actual = pixels(&gpu, &out);
+        if let Some(expected) = &reference {
+            assert_eq!(
+                &actual, expected,
+                "per-draw coordinates must agree at all four translated page corners"
+            );
+        } else {
+            reference = Some(actual);
+        }
+    }
 }

@@ -11,6 +11,7 @@ pub struct LodRenderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     lost: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[wasm_bindgen]
@@ -47,18 +48,6 @@ impl LodRenderer {
             })
             .await
             .map_err(js_error)?;
-        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let flag = lost.clone();
-        device.set_device_lost_callback(move |_, message| {
-            flag.store(true, std::sync::atomic::Ordering::Relaxed);
-            web_sys::console::error_1(&js_error(format!("LOD GPU device lost: {message}")));
-            if let (Some(window), Ok(event)) = (
-                web_sys::window(),
-                web_sys::Event::new("surface-device-lost"),
-            ) {
-                let _ = window.dispatch_event(&event);
-            }
-        });
         let caps = surface.get_capabilities(&adapter);
         let format = caps
             .formats
@@ -123,11 +112,31 @@ impl LodRenderer {
         );
         let gpu =
             GpuLod::new(device, queue, format, &materials.to_vec(), texture).map_err(js_error)?;
+        let lost = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let flag = lost.clone();
+        let callback_active = active.clone();
+        // Register only after successful construction, so a failed create cannot
+        // dispatch a delayed loss event into the controller's next renderer.
+        gpu.device.set_device_lost_callback(move |_, message| {
+            if !callback_active.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            web_sys::console::error_1(&js_error(format!("LOD GPU device lost: {message}")));
+            if let (Some(window), Ok(event)) = (
+                web_sys::window(),
+                web_sys::Event::new("surface-device-lost"),
+            ) {
+                let _ = window.dispatch_event(&event);
+            }
+        });
         Ok(Self {
             gpu,
             surface,
             config,
             lost,
+            active,
         })
     }
     pub fn add_tile(
@@ -137,6 +146,7 @@ impl LodRenderer {
         z: i32,
         words: js_sys::Uint32Array,
     ) -> Result<(), JsValue> {
+        self.ensure_active()?;
         let key = Key::new(level, x, z).map_err(js_error)?;
         let stride = if level == 0 { 8 } else { 6 };
         if words.length() != 128 * 128 * stride {
@@ -151,6 +161,7 @@ impl LodRenderer {
         z: i32,
         words: js_sys::Uint32Array,
     ) -> Result<(), JsValue> {
+        self.ensure_active()?;
         let key = Key::new(level, x, z).map_err(js_error)?;
         let stride = if level == 0 { 1 } else { 2 };
         if words.length() != 128 * 128 * stride {
@@ -179,6 +190,7 @@ impl LodRenderer {
         bounds: js_sys::Int32Array,
         height_max: i32,
     ) -> Result<(), JsValue> {
+        self.ensure_active()?;
         if bounds.length() != 4 {
             return Err(js_error("LOD world requires four bounds"));
         }
@@ -187,6 +199,7 @@ impl LodRenderer {
         self.gpu.set_world(values, height_max).map_err(js_error)
     }
     pub fn set_cut(&mut self, entries: js_sys::Float32Array) -> Result<(), JsValue> {
+        self.ensure_active()?;
         if !entries.length().is_multiple_of(4) || entries.length() as usize > MAX_TILES * 4 {
             return Err(js_error("LOD cut length mismatch"));
         }
@@ -210,6 +223,7 @@ impl LodRenderer {
         self.gpu.set_cut(cut).map_err(js_error)
     }
     pub fn set_materials(&mut self, values: js_sys::Float32Array) -> Result<(), JsValue> {
+        self.ensure_active()?;
         if values.length() > 65536 * 12 {
             return Err(js_error("LOD catalog exceeds limit"));
         }
@@ -220,6 +234,7 @@ impl LodRenderer {
         start: u32,
         values: js_sys::Float32Array,
     ) -> Result<(), JsValue> {
+        self.ensure_active()?;
         if values.length() > 65536 * 12 {
             return Err(js_error("LOD catalog exceeds limit"));
         }
@@ -229,6 +244,14 @@ impl LodRenderer {
     }
     pub fn gpu_bytes(&self) -> f64 {
         self.gpu.gpu_bytes() as f64
+    }
+    /// [total, retiring, tiles, height arena, presentation, other shared].
+    pub fn allocation_stats(&self) -> Vec<f64> {
+        self.gpu
+            .allocation_bytes()
+            .into_iter()
+            .map(|n| n as f64)
+            .collect()
     }
     pub fn cpu_bytes(&self) -> f64 {
         self.gpu.cpu_bytes() as f64
@@ -254,6 +277,19 @@ impl LodRenderer {
     pub fn height_capacity(&self) -> u32 {
         self.gpu.height_capacity() as u32
     }
+    pub fn available_height_slots(&self) -> u32 {
+        if self.is_lost() {
+            0
+        } else {
+            self.gpu.available_height_slots() as u32
+        }
+    }
+    pub fn lighting_epoch(&self) -> f64 {
+        self.gpu.lighting_epoch() as f64
+    }
+    pub fn tile_lighting_epoch(&self, level: u32, x: i32, z: i32) -> f64 {
+        Key::new(level, x, z).map_or(0., |key| self.gpu.tile_lighting_epoch(key) as f64)
+    }
     pub fn tile_bytes(&self, level: u32) -> f64 {
         self.gpu.tile_bytes(level) as f64
     }
@@ -264,7 +300,10 @@ impl LodRenderer {
         self.gpu.resize_bytes(width, height) as f64
     }
     pub fn height_status(&self) -> u32 {
-        self.gpu.height_status()[0]
+        self.gpu.height_status()[0] | if self.is_lost() { 8 } else { 0 }
+    }
+    pub fn height_status_ready(&self) -> bool {
+        self.height_status() & 8 == 0
     }
     pub fn missing_height_samples(&self) -> u32 {
         self.gpu.height_status()[1]
@@ -282,6 +321,20 @@ impl LodRenderer {
         self.lost.load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn simulate_device_loss(&self) {
+        if self.gpu.is_disposed() {
+            return;
+        }
+        self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.gpu.device.destroy();
+    }
+    pub fn is_disposed(&self) -> bool {
+        self.gpu.is_disposed()
+    }
+    pub fn dispose(&mut self) {
+        if !self.active.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        self.gpu.dispose();
         self.gpu.device.destroy();
     }
     #[allow(clippy::too_many_arguments)]
@@ -301,10 +354,8 @@ impl LodRenderer {
         relief: f32,
         relief_width: f32,
     ) -> Result<bool, JsValue> {
-        if self.is_lost() {
-            return Err(js_error("LOD GPU device lost; reload the map"));
-        }
-        if width == 0 || height == 0 || self.gpu.pending_submissions() >= 3 {
+        self.ensure_active()?;
+        if width == 0 || height == 0 {
             return Ok(false);
         }
         if self.config.width != width || self.config.height != height {
@@ -353,5 +404,22 @@ impl LodRenderer {
             self.gpu.queue.present(frame);
         }
         Ok(rendered)
+    }
+}
+
+impl LodRenderer {
+    fn ensure_active(&self) -> Result<(), JsValue> {
+        if self.is_lost() || self.is_disposed() {
+            Err(js_error(
+                "LOD GPU unavailable; free and recreate the renderer",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl Drop for LodRenderer {
+    fn drop(&mut self) {
+        self.dispose();
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! See `LOD.md` for the browser contract and the memory ledger's scope.
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, ensure};
@@ -17,6 +17,7 @@ pub const HEIGHT_PAGE_BYTES: u64 = 21845 * 8;
 const TABLE_ENTRIES: usize = 17 * 256;
 const COARSE_BYTES: u64 = 130 * 130 * 8 * 2;
 const SHADED_BYTES: u64 = 130 * 130 * 8;
+const CACHE_STATUS_BYTES: u64 = 9 * 4;
 const MAX_QUEUE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_GPU_BYTES: u64 = 200_000_000;
 
@@ -80,6 +81,45 @@ struct DrawUniform {
     world: [f32; 4],
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct View {
+    camera: [f64; 2],
+    scale: f64,
+    width: u32,
+    height: u32,
+}
+impl View {
+    fn origin(self, key: Key) -> [f64; 2] {
+        [
+            key.x as f64 * key.span() - self.camera[0],
+            key.z as f64 * key.span() - self.camera[1],
+        ]
+    }
+    fn visible(self, key: Key) -> bool {
+        let [x, z] = self.origin(key);
+        let half_x = self.width as f64 / self.scale * 0.5;
+        let half_z = self.height as f64 / self.scale * 0.5;
+        x < half_x && x + key.span() > -half_x && z < half_z && z + key.span() > -half_z
+    }
+}
+
+fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    let (bw, bh) = texture.format().block_dimensions();
+    let block = texture
+        .format()
+        .block_copy_size(None)
+        .expect("LOD textures use copyable color formats") as u64;
+    (0..texture.mip_level_count())
+        .map(|mip| {
+            (texture.width() >> mip).max(1).div_ceil(bw) as u64
+                * (texture.height() >> mip).max(1).div_ceil(bh) as u64
+                * texture.depth_or_array_layers() as u64
+                * texture.sample_count() as u64
+                * block
+        })
+        .sum()
+}
+
 fn buffer(
     device: &wgpu::Device,
     label: &str,
@@ -141,45 +181,48 @@ struct Tile {
     cached_status: Option<wgpu::Buffer>,
     dirty: bool,
     ready: bool,
+    lighting_epoch: u64,
 }
 impl Tile {
     fn bytes(&self) -> u64 {
         self.data.size()
             + self.origin.size()
-            + self
-                .color
-                .as_ref()
-                .map_or(0, |_| COARSE_BYTES + SHADED_BYTES + 4)
+            + self.color.as_ref().map_or(0, texture_bytes)
+            + self.lit.as_ref().map_or(0, texture_bytes)
+            + self.cached_status.as_ref().map_or(0, wgpu::Buffer::size)
     }
     fn resources(self) -> Vec<Resource> {
         let mut resources = vec![Resource::Buffer(self.data), Resource::Buffer(self.origin)];
         if let Some(t) = self.color {
-            resources.push(Resource::Texture(t, COARSE_BYTES));
+            resources.push(Resource::Texture(t));
         }
         if let Some(t) = self.lit {
-            resources.push(Resource::Texture(t, SHADED_BYTES));
+            resources.push(Resource::Texture(t));
         }
         if let Some(b) = self.cached_status {
             resources.push(Resource::Buffer(b));
         }
         resources
     }
+    fn needs_shade(&self, epoch: u64) -> bool {
+        self.color.is_some() && (self.dirty || self.lighting_epoch != epoch)
+    }
 }
 enum Resource {
     Buffer(wgpu::Buffer),
-    Texture(wgpu::Texture, u64),
+    Texture(wgpu::Texture),
 }
 impl Resource {
     fn bytes(&self) -> u64 {
         match self {
             Self::Buffer(b) => b.size(),
-            Self::Texture(_, bytes) => *bytes,
+            Self::Texture(t) => texture_bytes(t),
         }
     }
     fn destroy(self) {
         match self {
             Self::Buffer(b) => b.destroy(),
-            Self::Texture(t, _) => t.destroy(),
+            Self::Texture(t) => t.destroy(),
         }
     }
 }
@@ -244,7 +287,7 @@ struct Target {
 }
 impl Target {
     fn bytes(&self) -> u64 {
-        self.width as u64 * self.height as u64 * 8
+        texture_bytes(&self.texture)
     }
 }
 #[derive(Default)]
@@ -252,7 +295,9 @@ struct FeedbackState {
     busy: [bool; 3],
     ready: [bool; 3],
     serials: [u64; 3],
+    revisions: [u64; 3],
     serial: u64,
+    revision: u64,
     values: [u32; 4],
 }
 
@@ -275,7 +320,6 @@ pub struct GpuLod {
     material_count: usize,
     atlas: wgpu::Texture,
     atlas_view: wgpu::TextureView,
-    atlas_bytes: u64,
     atlas_sampler: wgpu::Sampler,
     coarse_sampler: wgpu::Sampler,
     dummy: wgpu::Texture,
@@ -297,6 +341,10 @@ pub struct GpuLod {
     upload_peak: usize,
     world: Option<([i32; 4], i32)>,
     lighting: Option<[f32; 8]>,
+    lighting_epoch: u64,
+    view: Option<View>,
+    active: Arc<AtomicBool>,
+    feedback_revision: u64,
 }
 
 fn render_pipeline(
@@ -359,6 +407,21 @@ impl GpuLod {
         atlas: wgpu::Texture,
     ) -> Result<Self> {
         validate_materials(materials)?;
+        ensure!(
+            atlas.format() == wgpu::TextureFormat::Rgba8Unorm
+                && atlas.dimension() == wgpu::TextureDimension::D2
+                && atlas.depth_or_array_layers() == 1
+                && atlas.sample_count() == 1
+                && (1..=3).contains(&atlas.mip_level_count())
+                && atlas.usage().contains(
+                    wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING
+                ),
+            "LOD atlas must be a single-layer RGBA8 texture with one to three GPU-writable mips"
+        );
+        ensure!(
+            texture_bytes(&atlas) <= 64 * 1024 * 1024,
+            "LOD atlas exceeds 64 MiB"
+        );
         let additive = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
             dst_factor: wgpu::BlendFactor::One,
@@ -421,7 +484,7 @@ impl GpuLod {
         let empty_status = buffer(
             &device,
             "unused fine cache status",
-            &[0u8; 4],
+            &[0u8; CACHE_STATUS_BYTES as usize],
             wgpu::BufferUsages::STORAGE,
         );
         let gutter_scratch = device.create_buffer(&wgpu::BufferDescriptor {
@@ -474,9 +537,6 @@ impl GpuLod {
             &nodes,
             &feedback,
         );
-        let atlas_bytes = (0..atlas.mip_level_count())
-            .map(|m| (atlas.width() >> m).max(1) as u64 * (atlas.height() >> m).max(1) as u64 * 4)
-            .sum();
         let mut this = Self {
             device,
             queue,
@@ -496,7 +556,6 @@ impl GpuLod {
             material_count: materials.len() / 12,
             atlas,
             atlas_view,
-            atlas_bytes,
             atlas_sampler,
             coarse_sampler,
             dummy,
@@ -518,6 +577,10 @@ impl GpuLod {
             upload_peak: 0,
             world: None,
             lighting: None,
+            lighting_epoch: 0,
+            view: None,
+            active: Arc::new(AtomicBool::new(true)),
+            feedback_revision: 1,
         };
         this.generate_atlas_mips();
         Ok(this)
@@ -654,8 +717,14 @@ impl GpuLod {
         let serial = self.submitted;
         self.queue.submit([encoder.finish()]);
         let completed = self.completed.clone();
+        #[cfg(target_arch = "wasm32")]
+        let active = self.active.clone();
         self.queue.on_submitted_work_done(move || {
             completed.fetch_max(serial, Ordering::Release);
+            #[cfg(target_arch = "wasm32")]
+            if !active.load(Ordering::Acquire) {
+                return;
+            }
             #[cfg(target_arch = "wasm32")]
             if let (Some(window), Ok(event)) = (
                 web_sys::window(),
@@ -672,31 +741,62 @@ impl GpuLod {
             .complete(self.completed.load(Ordering::Acquire));
     }
     pub fn gpu_bytes(&self) -> u64 {
+        self.allocation_bytes()[0]
+    }
+    /// One coherent nominal allocation snapshot: total, retirement, tiles,
+    /// height arena, presentation target, other shared resources.
+    pub fn allocation_bytes(&self) -> [u64; 6] {
+        if self.is_disposed() {
+            return [0; 6];
+        }
         self.reap();
-        self.params.size()
+        let shared = self.params.size()
             + self.material_buffer.size()
-            + self.atlas_bytes
-            + 8
-            + 68
+            + texture_bytes(&self.atlas)
+            + texture_bytes(&self.dummy)
+            + self.feedback.size()
+            + self.readbacks.iter().map(wgpu::Buffer::size).sum::<u64>()
+            + self.empty_status.size()
             + self.gutter_scratch.size()
-            + self.page_table.size()
-            + self.nodes.size()
-            + self.tiles.values().map(Tile::bytes).sum::<u64>()
-            + self.target.as_ref().map_or(0, Target::bytes)
-            + self.retirement.lock().unwrap().allocated_bytes()
+            + self.page_table.size();
+        let retired = self.retirement.lock().unwrap().allocated_bytes();
+        let tiles = self.tiles.values().map(Tile::bytes).sum::<u64>();
+        let arena = self.nodes.size();
+        let target = self.target.as_ref().map_or(0, Target::bytes);
+        [
+            shared + retired + tiles + arena + target,
+            retired,
+            tiles,
+            arena,
+            target,
+            shared,
+        ]
     }
     pub fn cpu_bytes(&self) -> usize {
         // Rust payload allocations and conservatively charged map metadata. The
         // external ImageBitmap and caller's typed arrays remain caller-owned.
+        let retirement = self.retirement.lock().unwrap();
+        let retired_metadata = retirement.entries.capacity() * std::mem::size_of::<Retired>()
+            + retirement.free_slots.capacity() * std::mem::size_of::<usize>()
+            + retirement
+                .entries
+                .iter()
+                .map(|r| {
+                    r.resources.capacity() * std::mem::size_of::<Resource>()
+                        + r.slots.capacity() * std::mem::size_of::<usize>()
+                })
+                .sum::<usize>();
         self.pending
             .iter()
             .map(|p| p.words.capacity() * 4)
             .sum::<usize>()
             + self.pending.capacity() * std::mem::size_of::<Pending>()
             + self.cut.capacity() * std::mem::size_of::<CutEntry>()
-            + (self.tiles.len() + self.heights.len()) * 256
+            + self.tiles.len() * (std::mem::size_of::<(Key, Tile)>() + 128)
+            + self.heights.len() * (std::mem::size_of::<(Key, usize)>() + 128)
             + self.free_slots.capacity() * std::mem::size_of::<usize>()
             + std::mem::size_of::<Self>()
+            + retired_metadata
     }
     pub fn upload_peak_bytes(&self) -> usize {
         self.upload_peak
@@ -716,6 +816,9 @@ impl GpuLod {
             .sum()
     }
     pub fn pending_submissions(&self) -> u64 {
+        if self.is_disposed() {
+            return 0;
+        }
         self.reap();
         self.submitted - self.completed.load(Ordering::Acquire)
     }
@@ -723,27 +826,97 @@ impl GpuLod {
         self.pending.len()
     }
     pub fn pending_preparations(&self) -> usize {
-        self.pending.len() + self.tiles.values().filter(|t| t.dirty).count()
+        self.pending.len()
+            + self
+                .cut
+                .iter()
+                .filter(|e| self.schedulable_shade(e))
+                .count()
+    }
+    fn schedulable_shade(&self, entry: &CutEntry) -> bool {
+        entry.opacity > 0.
+            && self.view.is_some_and(|view| view.visible(entry.key))
+            && self
+                .tiles
+                .get(&entry.key)
+                .is_some_and(|t| t.needs_shade(self.lighting_epoch))
     }
     pub fn pending_uploads(&self) -> usize {
         self.pending.len()
     }
     pub fn height_status(&self) -> [u32; 4] {
+        if self.is_disposed() {
+            return [8, 0, 0, 0];
+        }
         self.reap_feedback();
-        self.feedback_state.lock().unwrap().values
+        let state = self.feedback_state.lock().unwrap();
+        let mut values = state.values;
+        if state.revision != self.feedback_revision {
+            values[0] |= 8;
+        }
+        values
+    }
+    pub fn height_status_ready(&self) -> bool {
+        self.height_status()[0] & 8 == 0
+    }
+    pub fn lighting_epoch(&self) -> u64 {
+        self.lighting_epoch
+    }
+    pub fn tile_lighting_epoch(&self, key: Key) -> u64 {
+        self.tiles.get(&key).map_or(0, |t| t.lighting_epoch)
+    }
+    pub fn world(&self) -> Option<([i32; 4], i32)> {
+        self.world
+    }
+    pub fn is_disposed(&self) -> bool {
+        !self.active.load(Ordering::Acquire)
+    }
+    fn ensure_active(&self) -> Result<()> {
+        ensure!(
+            !self.is_disposed(),
+            "LOD renderer disposed; reconstruct before use"
+        );
+        Ok(())
     }
     pub fn height_capacity(&self) -> usize {
         self.capacity
     }
+    /// Admission capacity for new pages, excluding queued uploads, quarantined
+    /// slots and the one slot reserved for atomic replacement.
+    pub fn available_height_slots(&self) -> usize {
+        if self.is_disposed() {
+            return 0;
+        }
+        self.reap();
+        let queued = self
+            .pending
+            .iter()
+            .filter(|p| p.kind == Kind::Height)
+            .count();
+        let new_pages = self
+            .pending
+            .iter()
+            .filter(|p| p.kind == Kind::Height && !self.heights.contains_key(&p.key))
+            .count();
+        let free = self.free_slots.len() + self.retirement.lock().unwrap().free_slots.len();
+        free.saturating_sub(queued + 1).min(
+            self.capacity
+                .saturating_sub(1 + self.heights.len() + new_pages),
+        )
+    }
     pub fn set_world(&mut self, bounds: [i32; 4], height_max: i32) -> Result<()> {
+        self.ensure_active()?;
         ensure!(
             bounds[0] < bounds[2]
                 && bounds[1] < bounds[3]
                 && (i16::MIN as i32..=i16::MAX as i32).contains(&height_max),
             "invalid LOD world bounds or quantized height maximum"
         );
-        self.world = Some((bounds, height_max));
-        self.dirty_coarse();
+        if self.world != Some((bounds, height_max)) {
+            self.world = Some((bounds, height_max));
+            self.dirty_coarse();
+            self.feedback_revision += 1;
+        }
         Ok(())
     }
     pub fn has_tile(&self, key: Key) -> bool {
@@ -756,7 +929,7 @@ impl GpuLod {
         if level == 0 {
             SAMPLES as u64 * 32 + 48
         } else {
-            SAMPLES as u64 * 24 + 48 + COARSE_BYTES + SHADED_BYTES + 4
+            SAMPLES as u64 * 24 + 48 + COARSE_BYTES + SHADED_BYTES + CACHE_STATUS_BYTES
         }
     }
     /// Incremental GPU reservation for temporary upload/build buffers. Page slots
@@ -794,6 +967,7 @@ impl GpuLod {
         Ok(())
     }
     fn enqueue(&mut self, key: Key, kind: Kind, words: Vec<u32>) -> Result<()> {
+        self.ensure_active()?;
         self.validate_words(key, kind, &words)?;
         let replaced = self
             .pending
@@ -827,8 +1001,20 @@ impl GpuLod {
             ensure!(
                 self.heights.contains_key(&key)
                     || replaced != 0
-                    || self.heights.len() + additions < MAX_HEIGHT_PAGES - 1,
+                    || self.heights.len() + additions < self.capacity - 1,
                 "LOD height slots full"
+            );
+            self.reap();
+            let free = self.free_slots.len() + self.retirement.lock().unwrap().free_slots.len();
+            let queued = self
+                .pending
+                .iter()
+                .filter(|p| p.kind == Kind::Height)
+                .count();
+            let reserve = usize::from(!self.heights.contains_key(&key));
+            ensure!(
+                replaced != 0 || free > queued + reserve,
+                "LOD height slots await retirement"
             );
         }
         self.upload_peak = self.upload_peak.max(self.cpu_bytes() + words.len() * 4);
@@ -843,6 +1029,7 @@ impl GpuLod {
         self.enqueue(key, Kind::Height, words)
     }
     pub fn set_cut(&mut self, cut: Vec<CutEntry>) -> Result<()> {
+        self.ensure_active()?;
         ensure!(cut.len() <= MAX_TILES, "LOD draw cut exceeds 128 entries");
         let mut keys = std::collections::BTreeSet::new();
         for e in &cut {
@@ -853,10 +1040,20 @@ impl GpuLod {
             ensure!(keys.insert(e.key), "duplicate tile in draw cut");
             ensure!(self.has_tile(e.key), "draw cut includes an unprepared tile");
         }
-        self.cut = cut;
+        if self.cut.len() != cut.len()
+            || self
+                .cut
+                .iter()
+                .zip(&cut)
+                .any(|(a, b)| a.key != b.key || a.opacity != b.opacity)
+        {
+            self.feedback_revision += 1;
+            self.cut = cut;
+        }
         Ok(())
     }
     pub fn set_materials(&mut self, values: &[f32]) -> Result<()> {
+        self.ensure_active()?;
         validate_materials(values)?;
         ensure!(
             values.len() / 12 >= self.material_count,
@@ -874,6 +1071,7 @@ impl GpuLod {
         );
         let old = std::mem::replace(&mut self.material_buffer, new);
         self.material_count = values.len() / 12;
+        self.feedback_revision += 1;
         self.rebind();
         self.retire(vec![Resource::Buffer(old)], vec![]);
         // No tile regeneration: fine appearance reads the catalog dynamically;
@@ -882,6 +1080,7 @@ impl GpuLod {
         Ok(())
     }
     pub fn update_materials(&mut self, start: u32, values: &[f32]) -> Result<()> {
+        self.ensure_active()?;
         validate_materials(values)?;
         ensure!(
             start as usize <= self.material_count
@@ -908,13 +1107,18 @@ impl GpuLod {
         );
         self.upload_peak = self.upload_peak.max(self.cpu_bytes() + values.len() * 4);
         self.retire(vec![Resource::Buffer(staging)], vec![]);
+        self.feedback_revision += 1;
         self.submit(encoder);
         Ok(())
     }
     pub fn remove_tile(&mut self, key: Key) {
+        if self.is_disposed() {
+            return;
+        }
         self.pending
             .retain(|p| p.kind != Kind::Tile || p.key != key);
         if let Some(tile) = self.tiles.remove(&key) {
+            self.feedback_revision += 1;
             self.cut.retain(|e| e.key != key);
             self.retire(tile.resources(), vec![]);
             let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -923,9 +1127,13 @@ impl GpuLod {
         }
     }
     pub fn remove_height(&mut self, key: Key) {
+        if self.is_disposed() {
+            return;
+        }
         self.pending
             .retain(|p| p.kind != Kind::Height || p.key != key);
         if let Some(slot) = self.heights.remove(&key) {
+            self.feedback_revision += 1;
             self.retire(vec![], vec![slot]);
             self.dirty_height_dependents(key);
             let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -1061,8 +1269,10 @@ impl GpuLod {
             buffer(
                 &self.device,
                 "cached LOD approximation flags",
-                &[0u8; 4],
-                wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                &[0u8; CACHE_STATUS_BYTES as usize],
+                wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
             )
         });
         let shade_group = color.as_ref().map(|t| {
@@ -1099,6 +1309,7 @@ impl GpuLod {
             cached_status,
             dirty: key.level != 0,
             ready: key.level == 0,
+            lighting_epoch: 0,
         };
         if let Some(old) = self.tiles.insert(key, tile) {
             self.retire(old.resources(), vec![]);
@@ -1169,10 +1380,7 @@ impl GpuLod {
         let Some(next) = self.pending.front() else {
             return Ok(None);
         };
-        if next.kind == Kind::Height
-            && self.free_slots.is_empty()
-            && self.capacity == MAX_HEIGHT_PAGES
-        {
+        if next.kind == Kind::Height && self.free_slots.is_empty() {
             return Ok(None);
         }
         let reservation = if next.kind == Kind::Height {
@@ -1217,6 +1425,9 @@ impl GpuLod {
                 let Some(tile) = self.tiles.get(&key) else {
                     continue;
                 };
+                if let Some(status) = &tile.cached_status {
+                    encoder.clear_buffer(status, gutter_status_offset(-dx, -dz), Some(4));
+                }
                 let inside = |d: i32| {
                     if d > 0 {
                         1
@@ -1313,6 +1524,7 @@ impl GpuLod {
         }
         tile.dirty = false;
         tile.ready = true;
+        tile.lighting_epoch = self.lighting_epoch;
         self.stitch_lit_gutters(key, encoder);
     }
     fn stitch_lit_gutters(&self, key: Key, encoder: &mut wgpu::CommandEncoder) {
@@ -1332,13 +1544,31 @@ impl GpuLod {
                 let Some(tile) = self
                     .tiles
                     .get(&neighbor_key)
-                    .filter(|t| !t.dirty && t.ready)
+                    .filter(|t| !t.needs_shade(self.lighting_epoch) && t.ready)
                 else {
                     continue;
                 };
                 let Some(neighbor) = &tile.lit else {
                     continue;
                 };
+                // Copy only each tile's own status, never recursively accumulated
+                // gutter flags. A replaced/removed neighbor can then clear its slot.
+                let current_status = self.tiles[&key].cached_status.as_ref().unwrap();
+                let neighbor_status = tile.cached_status.as_ref().unwrap();
+                encoder.copy_buffer_to_buffer(
+                    neighbor_status,
+                    0,
+                    current_status,
+                    gutter_status_offset(dx, dz),
+                    4,
+                );
+                encoder.copy_buffer_to_buffer(
+                    current_status,
+                    0,
+                    neighbor_status,
+                    gutter_status_offset(-dx, -dz),
+                    4,
+                );
                 let width = if dx == 0 { 128 } else { 1 };
                 let height = if dz == 0 { 128 } else { 1 };
                 let inside = |d: i32| {
@@ -1420,8 +1650,7 @@ impl GpuLod {
             width,
             height,
         }) {
-            let bytes = old.bytes();
-            self.retire(vec![Resource::Texture(old.texture, bytes)], vec![]);
+            self.retire(vec![Resource::Texture(old.texture)], vec![]);
         }
         Ok(())
     }
@@ -1436,15 +1665,28 @@ impl GpuLod {
             width as u64 * height as u64 * 8
         }
     }
-    fn read_feedback(&self, index: usize, serial: u64) {
+    fn read_feedback(&self, index: usize, serial: u64, revision: u64) {
         let state = self.feedback_state.clone();
+        let active = self.active.clone();
         self.readbacks[index]
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
+                if !active.load(Ordering::Acquire) {
+                    return;
+                }
                 let mut state = state.lock().unwrap();
                 state.ready[index] = result.is_ok();
                 state.busy[index] = result.is_ok();
                 state.serials[index] = serial;
+                state.revisions[index] = revision;
+                drop(state);
+                #[cfg(target_arch = "wasm32")]
+                if let (Some(window), Ok(event)) = (
+                    web_sys::window(),
+                    web_sys::Event::new("surface-lod-retired"),
+                ) {
+                    let _ = window.dispatch_event(&event);
+                }
             });
     }
     fn reap_feedback(&self) {
@@ -1457,6 +1699,7 @@ impl GpuLod {
                 if state.serials[index] >= state.serial {
                     state.values.copy_from_slice(bytemuck::cast_slice(&mapped));
                     state.serial = state.serials[index];
+                    state.revision = state.revisions[index];
                 }
                 drop(mapped);
             }
@@ -1483,6 +1726,7 @@ impl GpuLod {
         relief: f32,
         relief_width: f32,
     ) -> Result<bool> {
+        self.ensure_active()?;
         ensure!(
             cx.is_finite()
                 && cz.is_finite()
@@ -1505,6 +1749,31 @@ impl GpuLod {
         let (bounds, height_max) = self
             .world
             .ok_or_else(|| anyhow::anyhow!("set_world is required before LOD rendering"))?;
+        let view = View {
+            camera: [cx, cz],
+            scale,
+            width,
+            height,
+        };
+        let lighting = [
+            shadows as u32 as f32,
+            elevation,
+            azimuth,
+            strength,
+            vivid as u32 as f32,
+            relief,
+            relief_width,
+            height_max as f32,
+        ];
+        if self.view != Some(view) {
+            self.view = Some(view);
+            self.feedback_revision += 1;
+        }
+        if self.lighting != Some(lighting) {
+            self.lighting = Some(lighting);
+            self.lighting_epoch += 1;
+            self.feedback_revision += 1;
+        }
         self.reap_feedback();
         if self.pending_submissions() >= 3 {
             return Ok(false);
@@ -1525,22 +1794,20 @@ impl GpuLod {
         self.resize(width, height)?;
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let prepared = self.prepare_one(&mut encoder)?;
+        let shade_key = match prepared {
+            Some((Kind::Tile, key)) if key.level > 0 => Some(key),
+            Some(_) => None,
+            None => self
+                .cut
+                .iter()
+                .find(|e| self.schedulable_shade(e))
+                .map(|e| e.key),
+        };
+        if prepared.is_some() || shade_key.is_some() {
+            self.feedback_revision += 1;
+        }
         encoder.clear_buffer(&self.feedback, 0, None);
         let direction = surface_core::sun_direction(azimuth);
-        let lighting = [
-            shadows as u32 as f32,
-            elevation,
-            azimuth,
-            strength,
-            vivid as u32 as f32,
-            relief,
-            relief_width,
-            height_max as f32,
-        ];
-        if self.lighting != Some(lighting) {
-            self.lighting = Some(lighting);
-            self.dirty_coarse();
-        }
         let params = [
             0.,
             0.,
@@ -1565,10 +1832,8 @@ impl GpuLod {
         ];
         let mut uniforms = Vec::<u8>::with_capacity(80 + self.tiles.len() * 48);
         uniforms.extend_from_slice(bytemuck::cast_slice(&params));
-        for key in self.tiles.keys() {
-            let span = key.span();
-            let x = key.x as f64 * span - cx;
-            let z = key.z as f64 * span - cz;
+        for (key, tile) in &self.tiles {
+            let [x, z] = view.origin(*key);
             let opacity = self
                 .cut
                 .iter()
@@ -1576,7 +1841,16 @@ impl GpuLod {
                 .map_or(1., |e| e.opacity);
             let uniform = DrawUniform {
                 origin: [x as f32, z as f32, (1u32 << key.level) as f32, opacity],
-                key: [key.level as i32, key.x, key.z, 0],
+                key: [
+                    key.level as i32,
+                    key.x,
+                    key.z,
+                    if tile.needs_shade(self.lighting_epoch) && shade_key != Some(*key) {
+                        8
+                    } else {
+                        0
+                    },
+                ],
                 world: relative_bounds(*key, bounds),
             };
             uniforms.extend_from_slice(bytemuck::bytes_of(&uniform));
@@ -1593,22 +1867,6 @@ impl GpuLod {
         }
         self.upload_peak = self.upload_peak.max(self.cpu_bytes() + uniforms.capacity());
         self.retire(vec![Resource::Buffer(staging)], vec![]);
-        let shade_key = match prepared {
-            Some((Kind::Tile, key)) if key.level > 0 => Some(key),
-            Some(_) => None,
-            None => self
-                .cut
-                .iter()
-                .find(|e| self.tiles.get(&e.key).is_some_and(|t| t.dirty))
-                .map(|e| e.key)
-                .or_else(|| {
-                    self.tiles
-                        .iter()
-                        .rev()
-                        .find(|(_, t)| t.dirty)
-                        .map(|(key, _)| *key)
-                }),
-        };
         if let Some(key) = shade_key {
             self.shade_one(key, &mut encoder);
         }
@@ -1630,17 +1888,7 @@ impl GpuLod {
             pass.set_pipeline(&self.terrain);
             pass.set_bind_group(0, &self.global, &[]);
             for e in &self.cut {
-                let span = e.key.span();
-                let x = e.key.x as f64 * span - cx;
-                let z = e.key.z as f64 * span - cz;
-                let half_x = width as f64 / scale * 0.5;
-                let half_z = height as f64 / scale * 0.5;
-                if e.opacity == 0.
-                    || x > half_x
-                    || x + span < -half_x
-                    || z > half_z
-                    || z + span < -half_z
-                {
+                if e.opacity == 0. || !view.visible(e.key) {
                     continue;
                 }
                 if let Some(tile) = self.tiles.get(&e.key).filter(|t| t.ready) {
@@ -1680,9 +1928,58 @@ impl GpuLod {
         }
         self.submit(encoder);
         if let Some(index) = readback {
-            self.read_feedback(index, self.submitted);
+            self.read_feedback(index, self.submitted, self.feedback_revision);
         }
         Ok(true)
+    }
+
+    /// Explicit release without waiting for a failed device's queue. Native
+    /// callers may share the device; only this renderer's resources are destroyed.
+    pub fn dispose(&mut self) {
+        if !self.active.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        self.pending = VecDeque::new();
+        self.cut = Vec::new();
+        self.heights.clear();
+        self.free_slots = Vec::new();
+        for tile in std::mem::take(&mut self.tiles).into_values() {
+            for resource in tile.resources() {
+                resource.destroy();
+            }
+        }
+        if let Some(target) = self.target.take() {
+            target.texture.destroy();
+        }
+        let mut retirement = self.retirement.lock().unwrap();
+        for retired in std::mem::take(&mut retirement.entries) {
+            for resource in retired.resources {
+                resource.destroy();
+            }
+        }
+        retirement.free_slots = Vec::new();
+        for b in [
+            &self.params,
+            &self.material_buffer,
+            &self.feedback,
+            &self.page_table,
+            &self.nodes,
+            &self.empty_status,
+            &self.gutter_scratch,
+        ] {
+            b.destroy();
+        }
+        for b in &self.readbacks {
+            b.destroy();
+        }
+        self.atlas.destroy();
+        self.dummy.destroy();
+    }
+}
+
+impl Drop for GpuLod {
+    fn drop(&mut self) {
+        self.dispose();
     }
 }
 
@@ -1740,13 +2037,9 @@ fn copy_edge(
     );
 }
 
-impl Drop for GpuLod {
-    fn drop(&mut self) {
-        // Explicit disposal ends the renderer's lifetime; pending native/browser
-        // submissions retain their own references until completion.
-        self.dummy.destroy();
-        self.atlas.destroy();
-    }
+fn gutter_status_offset(dx: i32, dz: i32) -> u64 {
+    let i = (dz + 1) * 3 + dx + 1;
+    (if i < 4 { i + 1 } else { i }) as u64 * 4
 }
 
 #[cfg(test)]

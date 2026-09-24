@@ -6,7 +6,7 @@
 @group(1) @binding(0) var<storage,read> words:array<u32>;
 @group(1) @binding(1) var<uniform> draw:Draw;
 @group(1) @binding(2) var shaded:texture_2d<f32>;
-@group(1) @binding(3) var<storage,read> cached_status:u32;
+@group(1) @binding(3) var<storage,read> cached_status:array<u32,9>;
 struct Vertex { @builtin(position) position:vec4f, @location(0) local:vec2f }
 @vertex fn vs(@builtin(vertex_index) i:u32)->Vertex {
     let points=array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
@@ -43,7 +43,8 @@ fn unknown(at:vec2f)->vec3f {
         } else if c.covered!=2u && c.covered!=3u {color=unknown(v.local);}
     } else {
         color=textureSampleLevel(shaded,coarse_sampler,(v.local+vec2f(1))/130.0,0.0).rgb;
-        height_status=cached_status;
+        height_status=u32(draw.key.w);
+        for(var i=0u;i<9u;i++){height_status|=cached_status[i];}
     }
     report_height_status();
     // Every cut member contributes background for empty/unknown coverage. It must
