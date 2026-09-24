@@ -61,8 +61,10 @@ UDP fence, stopped backup, health checks and independent recovery timer.
    appear as a healthy empty roster.
 4. Interrupt terrain collection separately. Confirm last-known terrain remains,
    player delivery continues and missed changes appear after recovery or repair.
-5. Check daily repair's backup/live ordering, independent disable paths and
-   optional-pack fallback for an otherwise healthy BDS upgrade.
+5. Check independent disable paths. If the deployment includes operator-managed
+   daily repair or BDS updates, verify backup/live ordering and optional-pack
+   fallback for an otherwise healthy upgrade. The [initial deployment commands](DEPLOYMENT.md)
+   do not schedule these lifecycle operations.
 
 Outage tests require separately authorized service control and a recovery plan.
 The read-only `scripts/check-tracking-outage.mjs` observer supports

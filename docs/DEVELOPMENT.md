@@ -6,7 +6,7 @@ maintenance entry points without making the demo visitor read an operator guide.
 | Component                       | Responsibility                                                              |
 | ------------------------------- | --------------------------------------------------------------------------- |
 | surface-core                    | Retained surface fields, lossless codecs, reference shadow calculations     |
-| bedrock-map                     | Packaged snapshot initialization, import, serving and diagnostics          |
+| bedrock-map                     | Snapshot import/serving, initial live-deployment preparation and diagnostics |
 | bedrock-adapter / surface-cli   | Read-only archive extraction, assets, validation, import and repair exports |
 | surface-gpu                     | Rust/WASM renderer, bounded GPU cache, shadows, filtered overviews          |
 | surface-tracker / tracking pack | Independent player sampling, collection and browser markers                 |

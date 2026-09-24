@@ -100,6 +100,8 @@ no separate overview-only residency tier. Offline and live height coverage diffe
 as described in [Format and Rendering](FORMAT.md).
 
 Player and terrain feeds require explicit configuration. The public demo uses
-simulated activity, not a live server, and the viewer has no built-in login.
+simulated activity, not a live server. The viewer has no built-in account system;
+the [reference HTTPS gateway](DEPLOYMENT.md) supplies shared-password access by
+default, while the temporary LAN preview supplies no authentication.
 Synthetic checks do not establish retail-client compatibility, server tick
 impact or physical-device acceptance. Include those checks in deployment review.

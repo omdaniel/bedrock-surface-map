@@ -95,7 +95,8 @@ last scan, leaving time for discovery and extraction before the 60-second covera
 target. Unloaded chunks retain their last-known published terrain but are excluded
 from active scan coverage until loaded again. These intervals are not latency
 guarantees; the configured per-tick limits still take priority.
-Choose these settings before initialization; 2A does not update an active handoff.
+Choose these settings before initialization; `deploy init` and `deploy prepare`
+do not update an active handoff.
 
 ```sh
 ./bedrock-map deploy init --dir ./map-deploy --config ./deployment.toml
@@ -155,8 +156,10 @@ Its JSON output (`--json`) distinguishes `prepared`, `serving_awaiting_bds`,
 `live_verified` and `failed`. Starting feeds may await installation; stale,
 unavailable, disabled or degraded enabled feeds fail. `--expect-live` additionally
 requires fresh observations from every enabled feed. Empty roster heartbeats count
-as live; nobody needs to be online. Required check failures exit 3; invalid inputs
-exit 2. Remote firewall vantages and actual browser/game acceptance remain explicit
+as live; nobody needs to be online. A completed report exits 0 on success or 3
+on required-check failure. Usage/configuration errors exit 2; other failures
+before a report is available can exit 1 with an error code instead of a status.
+Remote firewall vantages and actual browser/game acceptance remain explicit
 separate checks, never inferred from localhost success.
 
 ## Install the BDS Handoff
