@@ -109,5 +109,22 @@ The Chrome harness records actual rAF cadence separately from its pan-input cap;
 video and screenshots may affect timing. Reports, screenshots and recordings
 stay under `.local/`. Physical iPad acceptance is separate from desktop layouts.
 
+For generated scale fixtures, run the correctness and residency harness with an
+explicit loopback URL and browser mode:
+
+```sh
+node scripts/check-lod-scale.mjs --mode headful \
+  --url 'http://127.0.0.1:5195/?lod=/maps/prepared-lod/lod.json&players=off'
+```
+
+The harness checks coarse-first loading, Fit World, far-corner navigation,
+revisiting detail, idle rendering and managed memory. `--seconds 1200` requests
+a 20-minute minimum navigation window. `--budget 128000000` verifies an already
+configured constrained viewer; it does not change configuration. Optional
+`--simulate-objects` delays buffered responses using a shared 20 Mbps delivery
+budget plus 50 ms per object. This is not a physical-network or FPS measurement.
+PNG nonblank checks require visual inspection, and a declared dataset extent
+does not prove its populated-region count.
+
 See the [core format contract](../crates/surface-core/LOD.md) and
 [GPU ownership and API contract](../crates/surface-gpu/LOD.md).
