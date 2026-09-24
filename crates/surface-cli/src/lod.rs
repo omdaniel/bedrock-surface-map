@@ -360,6 +360,7 @@ pub fn prepare_lod(map: &Path, output: &Path) -> Result<LodManifest> {
 }
 
 struct SourceSnapshot {
+    requested_map: PathBuf,
     map: PathBuf,
     source: PathBuf,
     source_bytes: Vec<u8>,
@@ -372,7 +373,8 @@ struct SourceSnapshot {
 }
 
 fn read_source(map: &Path) -> Result<SourceSnapshot> {
-    let map = map.canonicalize()?;
+    let requested_map = std::path::absolute(map)?;
+    let map = requested_map.canonicalize()?;
     let source = map.parent().context("manifest parent")?;
     let source_bytes = read_bounded(&map, MAX_SOURCE_JSON)?;
     let manifest: Value = serde_json::from_slice(&source_bytes)?;
@@ -454,6 +456,7 @@ fn read_source(map: &Path) -> Result<SourceSnapshot> {
     }
     Ok(SourceSnapshot {
         source: source.to_owned(),
+        requested_map,
         map,
         source_bytes,
         manifest,
@@ -490,7 +493,8 @@ impl SourceSnapshot {
 
     fn verify_unchanged(&self) -> Result<()> {
         ensure!(
-            read_bounded(&self.map, MAX_SOURCE_JSON)? == self.source_bytes,
+            self.requested_map.canonicalize()? == self.map
+                && read_bounded(&self.map, MAX_SOURCE_JSON)? == self.source_bytes,
             "source publication changed during conversion; lod.json was not replaced"
         );
         Ok(())

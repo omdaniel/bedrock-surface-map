@@ -674,6 +674,33 @@ fn lod_converter_cannot_overwrite_its_source_descriptor() {
     assert_eq!(fs::read(source).unwrap(), before);
 }
 
+#[cfg(unix)]
+#[test]
+fn lod_source_publication_rejects_retargeted_manifest_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let temp = tempfile::tempdir().unwrap();
+    let (original, _) = small_source(temp.path(), [-128, -128, 0, 0]);
+    let alternate = temp.path().join("alternate.json");
+    fs::copy(&original, &alternate).unwrap();
+    let alias = temp.path().join("current.json");
+    symlink(&original, &alias).unwrap();
+    let snapshot = read_source(&alias).unwrap();
+    let output = temp.path().join("output");
+    let mut published = prepare_lod(&alias, &output).unwrap();
+    let previous = fs::read(output.join("lod.json")).unwrap();
+    snapshot.verify_unchanged().unwrap();
+
+    fs::remove_file(&alias).unwrap();
+    symlink(&alternate, &alias).unwrap();
+    // Even identical manifest bytes can resolve objects in a different source root.
+    assert!(snapshot.verify_unchanged().is_err());
+    published.name = "Must not publish after retarget".into();
+    let mut store = OutputStore::new(&output, PrepareLodOptions::default());
+    assert!(snapshot.publish(&mut store, &published).is_err());
+    assert_eq!(fs::read(output.join("lod.json")).unwrap(), previous);
+}
+
 #[test]
 fn lod_fixture_recovery_checkpoint_survives_failed_conversion_without_replacing_source() {
     let temp = tempfile::tempdir().unwrap();

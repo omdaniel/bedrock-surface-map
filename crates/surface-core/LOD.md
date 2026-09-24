@@ -142,7 +142,9 @@ Conversion stdout diagnostics include `source_publication` with the exact input
 `manifest_sha256`, resolved `source_sha256`, `world_id`, `generation`, and
 `revision`. The descriptor schema is unchanged. Immediately before publishing,
 the converter rereads the source manifest and rejects any byte change, including
-changes without a revision bump. Source objects are hash-verified when consumed.
+changes without a revision bump. Retargeting the supplied manifest path or a
+symlink is rejected even if the new target has identical bytes. Source objects
+are hash-verified when consumed.
 This check detects changed input; it is not a concurrent-publisher lock or CAS.
 The converter rejects an output path that would replace its input descriptor.
 
