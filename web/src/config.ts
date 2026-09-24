@@ -1,5 +1,7 @@
 export interface ViewerConfiguration {
   map?: string;
+  lod_url?: string;
+  memory_budget_bytes?: number;
   players?: unknown;
   terrain?: { url: string; world_id: string; generation: string };
   demo?: { scenario: string; poster: string };

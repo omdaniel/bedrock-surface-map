@@ -9,4 +9,4 @@ while read -r local_ref local_sha remote_ref remote_sha; do
  if [ "$local_sha" = 0000000000000000000000000000000000000000 ]; then echo 'Deletion blocked' >&2; exit 1; fi
  if [ "$remote_sha" != 0000000000000000000000000000000000000000 ]; then git merge-base --is-ancestor "$remote_sha" "$local_sha"; fi
 done
-.sources/tools/gitleaks/gitleaks git --redact --no-banner .
+node scripts/scan-secrets.mjs

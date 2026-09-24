@@ -1,5 +1,10 @@
 # Format and Rendering
 
+This page describes the region/chunk viewer. The optional [LOD viewer](LOD.md)
+adds versioned detail, summary and paged-height formats without changing these
+existing encodings. Its [binary contract](../crates/surface-core/LOD.md) documents
+lossless exact fields versus lossy coarse summaries.
+
 ## Region and Chunk Formats
 
 A `SurfaceRegion` contains 256x256 columns in row-major `z * 256 + x` order.

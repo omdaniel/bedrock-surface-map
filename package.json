@@ -28,6 +28,8 @@
     "wasm": "node scripts/wasm.mjs",
     "import": "cargo run --release --locked -p surface-cli -- import",
     "fixture": "cargo run --release --locked -p surface-cli -- fixture",
+    "lod:fixture": "cargo run --release --locked -p surface-cli -- lod-fixture --output web/public/maps/lod-fixture",
+    "lod:test": "node --test tests/lod-unit.test.ts tests/lod-protocol.test.ts tests/lod-cut.test.ts",
     "dev": "vite --config vite.config.ts",
     "serve:lan": "node scripts/serve-lan.mjs",
     "build": "npm run wasm && tsc --noEmit && vite build --config vite.config.ts",
@@ -35,7 +37,7 @@
     "format": "prettier --write web/src web/index.html scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
     "format:check": "prettier --check web/src web/index.html scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
     "test": "playwright test",
-    "verify": "cargo test --workspace && npm run build && npm run fixture && npm test"
+    "verify": "cargo test --workspace --locked && npm run build && npm run fixture && npm run lod:fixture && npm run lod:test && npm test"
   },
   "dependencies": {
     "lucide": "^0.577.0"

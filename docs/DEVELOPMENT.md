@@ -18,6 +18,11 @@ picking data. It does not allocate a heightfield for an arbitrarily large world.
 The logical map budget is 256 MiB, excluding browser RSS, transient allocations
 and graphics-driver overhead. Oversized views request zooming in.
 
+Those limits describe the region-based viewer. The optional
+[static LOD path](LOD.md) uses independent detail/summary tiles and a
+200,000,000-byte ledger including loading and retirement reservations. Its
+preparation commands and current integration boundaries are documented separately.
+
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),
 [acceptance checks](TERRAIN-ACCEPTANCE.md) and [public-demo maintenance](PUBLIC_DEMO.md).
@@ -57,7 +62,9 @@ npm run tracking:test
 npm run terrain:build
 npm run terrain:test
 npm run demo:test
+npm run lod:test
 npm run fixture
+npm run lod:fixture
 node scripts/terrain-fixture.mjs
 npm test
 ```

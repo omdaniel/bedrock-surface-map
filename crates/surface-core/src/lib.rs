@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
+pub mod lod;
 pub mod terrain;
 
 pub const SIDE: usize = 256;
@@ -115,7 +116,10 @@ fn read_u32(input: &mut &[u8]) -> Result<u32> {
 // Each channel independently uses a constant, frame-of-reference, or palette mode.
 fn encode_channel(values: &[u32], out: &mut Vec<u8>) -> Result<()> {
     let cells = values.len();
-    ensure!(cells == CELLS || cells == 256, "invalid channel length");
+    ensure!(
+        cells == CELLS || cells == 256 || cells == lod::TILE_CELLS,
+        "invalid channel length"
+    );
     let min = *values.iter().min().context("empty channel")?;
     let max = *values.iter().max().unwrap();
     let width = (32 - (max - min).leading_zeros()) as u8;
@@ -278,6 +282,10 @@ pub fn decode_region(mut input: &[u8]) -> Result<SurfaceRegion> {
 }
 
 pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
+    decompress_with_window_limit(data, limit, 64 * 1024 * 1024)
+}
+
+fn decompress_with_window_limit(data: &[u8], limit: usize, max_window: u64) -> Result<Vec<u8>> {
     ensure!(
         data.len() <= 64 * 1024 * 1024 && limit <= 64 * 1024 * 1024,
         "compressed payload limit"
@@ -319,7 +327,7 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
             window = size;
         }
     }
-    ensure!(window <= 64 * 1024 * 1024, "zstd window limit");
+    ensure!(window <= max_window, "zstd window limit");
     let mut decoder =
         ruzstd::decoding::StreamingDecoder::new(data).map_err(|e| anyhow::anyhow!("zstd: {e}"))?;
     let mut result = Vec::new();

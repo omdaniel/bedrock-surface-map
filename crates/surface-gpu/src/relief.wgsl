@@ -1,9 +1,3 @@
-fn relief_neighbor(at:vec2i,fallback:f32)->f32 {
-    if any(at<vec2i(0)) || any(at>=vec2i(p.bounds.zw)) {return fallback;}
-    let y=maximum_height(0u,vec2u(at));
-    return select(y,fallback,y< -900000.0);
-}
-
 // Exact footprint coverage of two axis-aligned bands. Equal-height blocks have
 // no interior seam. At 4 pixels/block a 0.25-block band is one pixel wide.
 fn edge_relief(at:vec2f,y:f32,lo:vec2f,hi:vec2f)->vec2f {

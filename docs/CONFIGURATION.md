@@ -53,6 +53,11 @@ operator-owned `viewer-config.json` beside the built site. Its optional
 `map` selects the offline manifest, relative to the application's base path;
 the default is `maps/world/manifest.json`. An explicit `?map=` overrides it.
 Live `terrain` and `players` bindings follow their respective guides.
+
+For the optional [static LOD viewer](LOD.md), `lod_url` selects a prepared
+`lod.json` relative to the application base path. `memory_budget_bytes` can
+reduce its default 200,000,000-byte managed-memory ceiling; it cannot raise it.
+These options do not automatically convert a dataset or enable live LOD updates.
 The development server accepts `SURFACE_MAP` for the same offline selection.
 
 The [packaged snapshot server](INSTALL.md) instead generates `viewer-config.json`
