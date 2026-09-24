@@ -4,6 +4,8 @@ pub const RELIEF_SHADER: &str = include_str!("relief.wgsl");
 pub const TERRAIN_SHADER: &str = concat!(
     include_str!("appearance.wgsl"),
     "\n",
+    include_str!("fine_appearance.wgsl"),
+    "\n",
     include_str!("shadow.wgsl"),
     "\n",
     include_str!("terrain.wgsl"),
@@ -20,6 +22,14 @@ pub const OVERVIEW_SHADER: &str = concat!(
     include_str!("relief.wgsl")
 );
 pub const MIP_SHADER: &str = include_str!("mip.wgsl");
+
+pub mod lod;
+#[cfg(target_arch = "wasm32")]
+mod lod_browser;
+#[cfg(target_arch = "wasm32")]
+pub use lod_browser::LodRenderer;
+#[cfg(target_arch = "wasm32")]
+mod lod_decode;
 
 pub fn compute_pipeline(
     device: &wgpu::Device,

@@ -1,5 +1,5 @@
 #[path = "assets.rs"]
-mod assets;
+pub(crate) mod assets;
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
@@ -18,6 +18,21 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Build bounded native LOD pages from a local surface manifest.
+    PrepareLod {
+        #[arg(long)]
+        map: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Generate a deterministic 1024-square synthetic native LOD dataset.
+    LodFixture {
+        #[arg(long)]
+        output: PathBuf,
+        /// Also make source/manifest.json viewable by the legacy renderer.
+        #[arg(long)]
+        legacy_reference: bool,
+    },
     Sample {
         #[arg(long)]
         input: PathBuf,
@@ -532,6 +547,26 @@ pub fn run_cli() -> std::process::ExitCode {
 
 fn run() -> Result<()> {
     match Args::parse().command {
+        Command::PrepareLod { map, output } => {
+            let manifest = crate::prepare_lod(&map, &output)?;
+            println!(
+                "{}",
+                serde_json::json!({"lod":output.join("lod.json"),"roots":manifest.roots.len(),"bounds":manifest.bounds})
+            );
+        }
+        Command::LodFixture {
+            output,
+            legacy_reference,
+        } => {
+            let (manifest, diagnostics) = crate::lod::create_lod_fixture_with_options(
+                &output,
+                crate::lod::LodFixtureOptions { legacy_reference },
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({"lod":output.join("lod.json"),"roots":manifest.roots.len(),"bounds":manifest.bounds,"diagnostics":diagnostics})
+            );
+        }
         Command::Sample { input, x, z } => {
             let source = file_hash(&input)?;
             let (chunk, materials, verified_samples) = with_private_operation(|operation| {
@@ -781,6 +816,45 @@ mod tests {
         assert_eq!(
             hash(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+    #[test]
+    fn lod_legacy_reference_flag_is_synthetic_only() {
+        let args = Args::try_parse_from([
+            "surface-map",
+            "lod-fixture",
+            "--output",
+            "/tmp/fixture",
+            "--legacy-reference",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Command::LodFixture {
+                legacy_reference: true,
+                ..
+            }
+        ));
+        let args = Args::try_parse_from(["surface-map", "lod-fixture", "--output", "/tmp/fixture"])
+            .unwrap();
+        assert!(matches!(
+            args.command,
+            Command::LodFixture {
+                legacy_reference: false,
+                ..
+            }
+        ));
+        assert!(
+            Args::try_parse_from([
+                "surface-map",
+                "prepare-lod",
+                "--map",
+                "/tmp/source/manifest.json",
+                "--output",
+                "/tmp/lod",
+                "--legacy-reference"
+            ])
+            .is_err()
         );
     }
     #[test]

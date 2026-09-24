@@ -15,7 +15,7 @@ anyhow.workspace = true
 wasm-bindgen.workspace = true
 wasm-bindgen-futures = "=0.4.77"
 js-sys = "=0.3.104"
-web-sys = { version = "=0.3.104", features = ["HtmlCanvasElement", "Window", "console", "Event", "EventTarget"] }
+web-sys = { version = "=0.3.104", features = ["HtmlCanvasElement", "ImageBitmap", "Window", "console", "Event", "EventTarget"] }
 console_error_panic_hook = "0.1"
 [dev-dependencies]
 wgpu = { workspace = true, features = ["metal", "vulkan"] }
