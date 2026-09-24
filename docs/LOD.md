@@ -65,6 +65,12 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
 - Coarse coverage remains available while detail loads. Refinement is debounced;
   a 200 ms transition keeps both cuts resident until completion. Reduced motion
   uses atomic replacement.
+- Available sibling groups refine independently. Adjacent tiles, including
+  corner neighbors, differ by at most one level. Failed detail keeps its
+  covering parent without preventing healthy neighboring groups from refining.
+- Mixed-resolution edges blend through resident parent caches. Camera movement
+  within the same tile footprint reuses the selected cut rather than rebuilding
+  it every frame.
 
 This ledger is not browser RSS. Browser networking, JavaScript engine overhead,
 compositor swapchains and driver allocations require separate process-level

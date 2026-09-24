@@ -10,6 +10,7 @@ import {
   type Bounds,
 } from "./selection";
 import { LodDecoder } from "./decoder";
+import { balancedCut } from "./cut";
 import type { DecodeResult } from "./decoder.worker";
 import {
   localAsset,
@@ -101,6 +102,8 @@ export class LodView {
   private cut: TileKey[] = [];
   private previousCut: TileKey[] = [];
   private transitionStart = 0;
+  private residencyRevision = 0;
+  private cutStamp = "";
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
@@ -304,9 +307,9 @@ export class LodView {
       c.cz + c.height / c.scale / 2,
     ];
   }
-  private shadowArea(level = this.target): Bounds {
+  private shadowArea(level = this.target, area = this.bounds()): Bounds {
     const c = this.camera!,
-      view = this.bounds(),
+      view = area,
       v = viewTargetBounds(
         { left: view[0], top: view[1], right: view[2], bottom: view[3] },
         this.root.bounds,
@@ -507,6 +510,7 @@ export class LodView {
           hash: demand.ref.sha256,
           bytes: raw.byteLength,
         });
+        this.residencyRevision++;
       } else {
         const result = await this.decoder.load(
           demand.ref,
@@ -673,6 +677,7 @@ export class LodView {
         this.tileUploads++;
       }
       this.accountGpu();
+      this.residencyRevision++;
       upload.resolve();
     } catch (error) {
       upload.reject(error instanceof Error ? error : Error(String(error)));
@@ -716,34 +721,72 @@ export class LodView {
     };
     return this.root.roots.every(visit) ? output : null;
   }
-  private readyCut(level: number): TileKey[] | null {
-    const cut = this.referenceCut(level, this.bounds());
-    const heights = this.referenceCut(level, this.shadowArea(level));
-    if (!cut || !heights) return null;
-    if (
-      !cut.every((key) => this.tiles.has(tileId(key))) ||
-      !heights.every((key) => this.heights.has(tileId(key)))
-    )
-      return null;
-    return cut;
+  private renderReady(key: TileKey): boolean {
+    if (!this.tiles.has(tileId(key))) return false;
+    const heights = this.referenceCut(
+      key.level,
+      this.shadowArea(key.level, tileBounds(key)),
+    );
+    return (
+      heights !== null &&
+      heights.every((height) => this.heights.has(tileId(height)))
+    );
   }
   private updateCut() {
     if (!this.camera) return;
-    const max = this.root.roots[0].key.level;
-    let next: TileKey[] | null = null,
-      level = this.target;
-    for (; level <= max; level++) {
-      next = this.readyCut(level);
-      if (next) break;
-    }
-    if (!next) return;
+    const area = this.bounds();
+    const stamp = [
+      Math.floor(area[0] / 128),
+      Math.floor(area[1] / 128),
+      Math.ceil(area[2] / 128),
+      Math.ceil(area[3] / 128),
+      this.target,
+      this.camera.shadows,
+      this.camera.elevation,
+      this.camera.azimuth,
+      this.residencyRevision,
+    ].join(":");
+    if (stamp === this.cutStamp) return;
+    const roots = this.root.roots
+      .map((ref) => ref.key)
+      .filter((key) => intersects(tileBounds(key), area));
+    if (!roots.every((key) => this.renderReady(key))) return;
+    const currentReady = this.cut.every((key) => this.renderReady(key));
+    // Finish an admitted sibling transition before starting another. A changed
+    // shadow footprint can still require an immediate coarser replacement.
+    if (
+      this.previousCut.length &&
+      currentReady &&
+      performance.now() - this.transitionStart < 200
+    )
+      return;
+    this.cutStamp = stamp;
+    const ready = new Map<string, boolean>();
+    const next = balancedCut({
+      roots,
+      bounds: area,
+      focus: [this.camera.cx, this.camera.cz],
+      maxTiles: 64,
+      shouldRefine: (key) => key.level > this.target,
+      children: (key) =>
+        this.nodes.get(tileId(key))?.node.children.map((ref) => ref.key),
+      admit: (_parent, children) =>
+        children.every((key) => {
+          const id = tileId(key);
+          if (!ready.has(id)) ready.set(id, this.renderReady(key));
+          return ready.get(id)!;
+        }),
+    });
     const signature = (cut: TileKey[]) => cut.map(tileId).sort().join(",");
     if (signature(next) === signature(this.cut)) return;
     // A new camera/light footprint can invalidate fine shadows. Blend only
     // when the previous level's full dependency set is still available.
-    this.previousCut = this.readyCut(this.level) ? this.cut : [];
+    this.previousCut = currentReady ? this.cut : [];
     this.cut = next;
-    this.level = level;
+    this.level = Math.min(
+      this.root.roots[0].key.level,
+      ...next.map((key) => key.level),
+    );
     this.transitionStart = performance.now();
     this.requestFrame();
   }
@@ -767,17 +810,20 @@ export class LodView {
         resident.key.z,
       );
       this.tiles.delete(id);
+      this.residencyRevision++;
       this.ledger.release(`pick:${id}`);
     }
     for (const [id, height] of this.heights) {
       if (protectedIds.has(id) || this.demands.has(`height:${id}`)) continue;
       this.renderer.remove_height(height.key.level, height.key.x, height.key.z);
       this.heights.delete(id);
+      this.residencyRevision++;
     }
     for (const [id] of this.nodes) {
       if (this.nodes.size <= METADATA_LIMIT && !aggressive) break;
       if (!protectedIds.has(id) && !this.demands.has(`index:${id}`)) {
         this.nodes.delete(id);
+        this.residencyRevision++;
         this.ledger.release(`index:${id}`);
       }
     }
@@ -823,7 +869,7 @@ export class LodView {
     const width = Math.round(camera.width * camera.dpr);
     const height = Math.round(camera.height * camera.dpr);
     const resizeBytes = this.renderer.resize_bytes(width, height);
-    if (!this.ledger.tryReserve("resize", "surface", resizeBytes))
+    if (!this.ledger.tryReserve("resize", "retirement", resizeBytes))
       throw Error("LOD presentation resize awaits resource retirement");
     let rendered = false;
     try {

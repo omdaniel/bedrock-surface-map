@@ -144,11 +144,33 @@ async function fine(page: Page) {
   await page.evaluate(() => window.__map.zoom(6 / window.__map.state().scale));
 }
 
-async function recovered(page: Page) {
+function coveringLevel(cut: string[], anchor: { x: number; z: number }) {
+  for (const id of cut) {
+    const [level, x, z] = id.split("/").map(Number);
+    const box = tileBounds({ level, x, z });
+    if (
+      anchor.x >= box[0] &&
+      anchor.x < box[2] &&
+      anchor.z >= box[1] &&
+      anchor.z < box[3]
+    )
+      return level;
+  }
+  return -1;
+}
+
+async function recovered(page: Page, anchor: { x: number; z: number }) {
   await expect
-    .poll(() => page.evaluate(() => window.__map.state().lod?.level), {
-      timeout: 60_000,
-    })
+    .poll(
+      async () =>
+        coveringLevel(
+          (await page.evaluate(() => window.__map.state())).lod!.cut,
+          anchor,
+        ),
+      {
+        timeout: 60_000,
+      },
+    )
     .toBe(0);
   await ready(page);
   const state = await page.evaluate(() => window.__map.state());
@@ -161,7 +183,7 @@ async function recovered(page: Page) {
   );
 }
 
-async function responsiveCoarse(page: Page) {
+async function responsiveCoarse(page: Page, anchor: { x: number; z: number }) {
   const before = await page.evaluate(() => window.__map.state());
   await page.evaluate(() => window.__map.pan(8, -5));
   await expect
@@ -173,7 +195,7 @@ async function responsiveCoarse(page: Page) {
   expect(state.cx).toBeCloseTo(before.cx + 8);
   expect(state.cz).toBeCloseTo(before.cz - 5);
   expect(state.scale).toBeCloseTo(6);
-  expect(state.lod!.level).toBeGreaterThan(0);
+  expect(coveringLevel(state.lod!.cut, anchor)).toBeGreaterThan(0);
   expect(state.lod!.cut.length).toBeGreaterThan(0);
   expect(state.lod!.memory.totalBytes).toBeLessThanOrEqual(
     state.lod!.memory.limitBytes,
@@ -241,7 +263,7 @@ test.describe("LOD failures with real synthetic payload references", () => {
     try {
       await fine(page);
       await expect.poll(gate.hits, { timeout: 30_000 }).toBeGreaterThan(0);
-      const state = await responsiveCoarse(page);
+      const state = await responsiveCoarse(page, detail.anchor);
       expect(state.lod!.pending).toBe(1);
       expect(
         state.lod!.memory.entries.find((entry) => entry.id === "job")
@@ -249,7 +271,7 @@ test.describe("LOD failures with real synthetic payload references", () => {
       ).toBeGreaterThan(0);
       await attachCanvas(page, info, "slow-payload-coarse-coverage");
       gate.release();
-      await recovered(page);
+      await recovered(page, detail.anchor);
       expect(errors).toEqual([]);
     } finally {
       await gate.close();
@@ -310,10 +332,10 @@ test.describe("LOD failures with real synthetic payload references", () => {
             { timeout: 15_000 },
           )
           .toBe(true);
-        await responsiveCoarse(page);
+        await responsiveCoarse(page, detail.anchor);
         await attachCanvas(page, info, `${failure}-coarse-coverage`);
         active = false;
-        await recovered(page);
+        await recovered(page, detail.anchor);
         expect(errors).toEqual([]);
       } finally {
         active = false;
@@ -363,7 +385,7 @@ test.describe("LOD failures with real synthetic payload references", () => {
       );
       await attachCanvas(page, info, "canceled-detail-coarse-coverage");
       await fine(page);
-      await recovered(page);
+      await recovered(page, detail.anchor);
     } finally {
       await gate.close();
     }
@@ -438,7 +460,7 @@ test.describe("LOD failures with real synthetic payload references", () => {
           timeout: 3000,
         })
         .toBe("visible");
-      await recovered(page);
+      await recovered(page, detail.anchor);
       await attachCanvas(page, info, "visible-resumed-detail");
     } finally {
       await gate.close();
