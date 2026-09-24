@@ -125,6 +125,30 @@ test("GPU categories and retirement change atomically at a full memory ceiling",
   assert.deepEqual(ledger.snapshot(), before);
 });
 
+test("replacement reservation borrows only protected overlap headroom and retains its charge", () => {
+  const ledger = new MemoryLedger();
+  assert.ok(ledger.set("resident", "surface", ledger.snapshot().freeBytes));
+  assert.ok(ledger.tryReserve("resize", "retirement", 16_000_000));
+  assert.equal(ledger.snapshot().totalBytes, MEMORY_LIMIT_BYTES);
+  assert.equal(
+    ledger.peek(BASELINE_MEMORY_IDS.retirementReserve)!.reservedBytes,
+    2_000_000,
+  );
+  assert.equal(ledger.tryReserve("other", "retirement", 2_000_001), false);
+  ledger.commit("resize", "retirement", 15_000_000);
+  verifyAccounting(ledger);
+  assert.equal(
+    ledger.peek(BASELINE_MEMORY_IDS.retirementReserve)!.reservedBytes,
+    3_000_000,
+  );
+  ledger.release("resize");
+  assert.equal(
+    ledger.peek(BASELINE_MEMORY_IDS.retirementReserve)!.reservedBytes,
+    RETIREMENT_RESERVE_BYTES,
+  );
+  verifyAccounting(ledger);
+});
+
 test("constrained ceiling admits exactly the remaining budget and refuses one byte more", () => {
   const ledger = new MemoryLedger(CONSTRAINED_MEMORY_LIMIT_BYTES);
   assert.equal(ledger.snapshot().limitBytes, 128_000_000);

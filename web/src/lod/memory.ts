@@ -170,7 +170,7 @@ export class MemoryLedger {
       total += value.bytes - (previous?.totalBytes ?? 0);
       retired +=
         (value.category === "retirement" ? value.bytes : 0) -
-        (previous?.category === "retirement" ? previous.capacityBytes : 0);
+        (previous?.category === "retirement" ? previous.totalBytes : 0);
     }
     total += this.retirementReserve(retired);
     if (!Number.isSafeInteger(total) || total > this.limitBytes) return false;
@@ -198,7 +198,7 @@ export class MemoryLedger {
     if (!entry) return;
     const previousReserve = this.retirementReserve();
     if (entry.category === "retirement")
-      this.retirementBytes -= entry.capacityBytes;
+      this.retirementBytes -= entry.totalBytes;
     this.totalBytes +=
       this.retirementReserve() - previousReserve - entry.totalBytes;
     this.entries.delete(id);
@@ -248,8 +248,8 @@ export class MemoryLedger {
     const previous = this.entries.get(id);
     const retirementBytes =
       this.retirementBytes -
-      (previous?.category === "retirement" ? previous.capacityBytes : 0) +
-      (category === "retirement" ? capacityBytes : 0);
+      (previous?.category === "retirement" ? previous.totalBytes : 0) +
+      (category === "retirement" ? totalBytes : 0);
     const otherBytes =
       this.totalBytes -
       (previous?.totalBytes ?? 0) -
