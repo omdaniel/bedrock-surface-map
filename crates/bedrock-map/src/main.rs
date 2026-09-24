@@ -598,6 +598,7 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         "E_CONFIG_INVALID",
         "E_STATE_UNSAFE",
         "E_STATE_BUSY",
+        "E_PREPARE_SYNC",
         "E_PREPARED_DURABILITY",
         "E_RESOURCE_MISMATCH",
         "E_NO_DATASET",
@@ -627,6 +628,8 @@ mod tests {
     fn published_durability_failure_has_a_distinct_error_code() {
         let error = anyhow::anyhow!("E_PREPARED_DURABILITY: prepared/ was published");
         assert_eq!(error_code(&error), "E_PREPARED_DURABILITY");
+        let error = anyhow::anyhow!("E_PREPARE_SYNC: prepared/ was not published");
+        assert_eq!(error_code(&error), "E_PREPARE_SYNC");
     }
 
     #[test]

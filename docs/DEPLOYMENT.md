@@ -110,11 +110,15 @@ preserves identities and credentials. Changed settings or missing secrets fail;
 the command is not a credential-rotation or migration tool.
 
 Preparation validates the snapshot and assets, builds a full material library,
-seeds a new terrain store, and selects a completed directory atomically. It does
+seeds a new terrain store, synchronizes final file contents/metadata and all staged
+directories child-first, and selects the completed directory atomically. It does
 not start services or modify BDS. Identical retries validate without reseeding;
 changed snapshots or active stores refuse. After an interrupted preparation,
 inspect `map-deploy/work/prepare-*` and confirm the process has stopped before
 removing only its abandoned scratch. Never delete `prepared/` to bypass a refusal.
+
+`E_PREPARE_SYNC` means synchronization of the staged tree failed before publication;
+no new `prepared/` is selected. Investigate the filesystem before retrying.
 
 `E_PREPARED_DURABILITY` means the complete `prepared/` tree is published, but the
 parent-directory durability check failed. The command exits nonzero without

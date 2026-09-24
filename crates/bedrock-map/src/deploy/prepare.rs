@@ -165,12 +165,32 @@ pub fn prepare(
 fn publish(
     output: &Path,
     root: &Path,
-    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+    mut sync: impl FnMut(&Path) -> std::io::Result<()>,
 ) -> Result<()> {
+    // Final permissions and every nested directory entry must be durable before
+    // the tree becomes visible at its destination.
+    sync_tree(output, &mut sync).context(
+        "E_PREPARE_SYNC: staged preparation could not be synchronized; prepared/ was not published",
+    )?;
     fs::rename(output, root.join("prepared"))?;
-    sync_parent(root).context(
+    sync(root).context(
         "E_PREPARED_DURABILITY: prepared/ was published, but parent-directory durability could not be confirmed; preserve prepared/, inspect the filesystem, and run deploy check before starting services; do not delete or reseed it",
     )
+}
+
+fn sync_tree(path: &Path, sync: &mut impl FnMut(&Path) -> std::io::Result<()>) -> Result<()> {
+    let kind = fs::symlink_metadata(path)?.file_type();
+    ensure!(
+        kind.is_dir() || kind.is_file(),
+        "E_STATE_UNSAFE: unexpected generated entry"
+    );
+    if kind.is_dir() {
+        for entry in fs::read_dir(path)? {
+            sync_tree(&entry?.path(), sync)?;
+        }
+    }
+    sync(path)?;
+    Ok(())
 }
 
 fn inventories(root: &Path) -> Result<(BTreeMap<String, String>, BTreeMap<String, String>)> {
@@ -238,6 +258,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn staged_tree_is_synchronized_child_first_before_publication() {
+        let root = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir_in(root.path()).unwrap();
+        let output = staging.path().join("prepared");
+        let nested = output.join("public/maps/fixture");
+        fs::create_dir_all(&nested).unwrap();
+        files::write_new(&nested.join("manifest.json"), b"fixture").unwrap();
+        files::make_private(&output).unwrap();
+        let mut synchronized = Vec::new();
+        publish(&output, root.path(), |path| {
+            if path == root.path() {
+                assert!(!output.exists());
+                assert!(
+                    path.join("prepared/public/maps/fixture/manifest.json")
+                        .is_file()
+                );
+            } else {
+                assert!(!root.path().join("prepared").exists());
+                files::private_metadata(path, path.is_dir()).unwrap();
+            }
+            fs::File::open(path)?.sync_all()?;
+            synchronized.push(path.to_path_buf());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            synchronized,
+            [
+                nested.join("manifest.json"),
+                nested,
+                output.join("public/maps"),
+                output.join("public"),
+                output,
+                root.path().to_path_buf(),
+            ]
+        );
+    }
+
+    #[test]
+    fn staged_sync_failure_prevents_publication() {
+        for failure in ["public/nested/fixture", "public/nested", ""] {
+            let root = tempfile::tempdir().unwrap();
+            let staging = tempfile::tempdir_in(root.path()).unwrap();
+            let output = staging.path().join("prepared");
+            fs::create_dir_all(output.join("public/nested")).unwrap();
+            fs::write(output.join("public/nested/fixture"), b"fixture").unwrap();
+            let error = publish(&output, root.path(), |path| {
+                assert_ne!(path, root.path());
+                assert!(!root.path().join("prepared").exists());
+                if path == output.join(failure) {
+                    Err(std::io::Error::other("injected staged sync failure"))
+                } else {
+                    Ok(())
+                }
+            })
+            .unwrap_err();
+            assert!(error.to_string().starts_with("E_PREPARE_SYNC:"));
+            assert!(!error.to_string().contains("E_PREPARED_DURABILITY"));
+            assert_eq!(
+                fs::read(output.join("public/nested/fixture")).unwrap(),
+                b"fixture"
+            );
+            drop(staging);
+            assert!(!root.path().join("prepared").exists());
+        }
+    }
+
+    #[test]
     fn published_preparation_survives_durability_failure() {
         for kind in [
             std::io::ErrorKind::PermissionDenied,
@@ -249,6 +337,10 @@ mod tests {
             fs::create_dir(&output).unwrap();
             fs::write(output.join("preparation.json"), b"completed fixture").unwrap();
             let error = publish(&output, root.path(), |parent| {
+                if parent != root.path() {
+                    assert!(!root.path().join("prepared").exists());
+                    return Ok(());
+                }
                 assert!(parent.join("prepared/preparation.json").is_file());
                 assert!(!output.exists());
                 Err(std::io::Error::new(
@@ -269,11 +361,21 @@ mod tests {
     #[test]
     fn rename_failure_is_not_reported_as_published() {
         let root = tempfile::tempdir().unwrap();
-        let error = publish(&root.path().join("missing"), root.path(), |_| {
-            panic!("durability check must not run before publication")
+        let staging = tempfile::tempdir_in(root.path()).unwrap();
+        let output = staging.path().join("prepared");
+        fs::create_dir(&output).unwrap();
+        fs::write(root.path().join("prepared"), b"existing non-directory").unwrap();
+        let error = publish(&output, root.path(), |path| {
+            assert_eq!(path, output);
+            Ok(())
         })
         .unwrap_err();
         assert!(!error.to_string().contains("E_PREPARED_DURABILITY"));
-        assert!(!root.path().join("prepared").exists());
+        assert!(!error.to_string().contains("E_PREPARE_SYNC"));
+        assert!(output.is_dir());
+        assert_eq!(
+            fs::read(root.path().join("prepared")).unwrap(),
+            b"existing non-directory"
+        );
     }
 }
