@@ -29,7 +29,7 @@
     "import": "cargo run --release --locked -p surface-cli -- import",
     "fixture": "cargo run --release --locked -p surface-cli -- fixture",
     "lod:fixture": "cargo run --release --locked -p surface-cli -- lod-fixture --output web/public/maps/lod-fixture",
-    "lod:test": "node --test tests/lod-unit.test.ts tests/lod-protocol.test.ts",
+    "lod:test": "node --test tests/lod-unit.test.ts tests/lod-protocol.test.ts tests/lod-cut.test.ts",
     "dev": "vite --config vite.config.ts",
     "serve:lan": "node scripts/serve-lan.mjs",
     "build": "npm run wasm && tsc --noEmit && vite build --config vite.config.ts",
