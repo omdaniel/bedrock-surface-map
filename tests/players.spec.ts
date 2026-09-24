@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 const manifest = JSON.parse(
   readFileSync("web/public/maps/fixture/manifest.json", "utf8"),
@@ -6,6 +6,23 @@ const manifest = JSON.parse(
 const template = JSON.parse(
   readFileSync("fixtures/tracking/snapshot.json", "utf8"),
 );
+
+async function waitForTerrainIdle(page: Page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+  });
+  await page.waitForFunction(() => {
+    const state = window.__map?.state();
+    return (
+      window.__map?.ready &&
+      state.cached > 0 &&
+      state.pending === 0 &&
+      !state.renderPending &&
+      !state.terrain?.busy &&
+      state.firstVisible !== null
+    );
+  });
+}
 test("100ms eight-player polling is single-flight and leaves stationary terrain alone", async ({
   page,
 }) => {
@@ -56,13 +73,8 @@ test("100ms eight-player polling is single-flight and leaves stationary terrain 
     }
   });
   await page.goto("/?map=/maps/fixture/manifest.json&terrain=off");
-  await page.waitForFunction(
-    () =>
-      window.__map?.ready &&
-      (window.__map.state() as { pending: number }).pending === 0,
-  );
   await expect(page.locator(".player-marker")).toHaveCount(8);
-  await page.waitForTimeout(500);
+  await waitForTerrainIdle(page);
   const draws = await page.evaluate(
     () => (window.__map.state() as { draws: number }).draws,
   );
@@ -169,10 +181,7 @@ test("player roster, center/follow, overlay-only updates, expiry and mobile", as
   await expect(
     page.getByRole("button", { name: "Center on OtherPlayer", exact: true }),
   ).toBeDisabled();
-  await page.waitForFunction(
-    () => (window.__map.state() as { pending: number }).pending === 0,
-  );
-  await page.waitForTimeout(400);
+  await waitForTerrainIdle(page);
   const draws = await page.evaluate(
     () => (window.__map.state() as { draws: number }).draws,
   );

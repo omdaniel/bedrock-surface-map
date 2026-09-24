@@ -886,6 +886,7 @@ function mapState() {
     reliefWidth,
     cached: cache.size,
     pending: active,
+    renderPending: frameQueued || resizeQueued,
     failures: [...failures],
     memory: memory(),
     draws,
