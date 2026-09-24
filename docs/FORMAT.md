@@ -115,11 +115,12 @@ resident shaded overviews; a material-only chunk update invalidates its region's
 overview. Dirty overviews regenerate before drawing. GPU column patches and
 CPU picking records update together without resetting camera, lighting or players.
 
-Lighting changes invalidate overview colors, not height data. Camera movement
-reuses valid overviews and the height window while covered, but close-up
-fragments perform ray queries on each draw. Unchanged polls and player-only
-motion do not request terrain frames; following a player moves the camera and
-therefore redraws terrain.
+Lighting changes invalidate overview colors. Height samples remain valid, but
+lowering sun elevation can require a larger live height window and a rebuilt
+pyramid for the longer shadow reach. Camera movement reuses valid overviews and
+the height window while covered, but close-up fragments perform ray queries on
+each draw. Unchanged polls and player-only motion do not request terrain frames;
+following a player moves the camera and therefore redraws terrain.
 
 The logical map budget is 256 MiB, including resident detail, picking records,
 CPU/GPU height trees and compact live height pages. Eviction prefers nonvisible
@@ -127,6 +128,6 @@ detail. Camera and lighting changes reserve space for both visible detail and
 required shadow coverage before loading. A view that cannot fit is refused with
 a zoom-in notice; the last supported camera and sun elevation remain usable, and
 the elevation control reflects the retained value. Enlarging the browser
-window tightens the zoom when necessary. Shadows are not silently clipped. This budget is
-not total browser/driver RSS or a bound on transient allocations. Region loading
-uses two requests at a time; an unchanged view has no continuous terrain loop.
+window tightens the zoom when necessary. Shadows are not silently clipped. This
+budget is not total browser/driver RSS or a bound on transient allocations. Region
+loading uses two requests at a time; an unchanged view has no continuous terrain loop.

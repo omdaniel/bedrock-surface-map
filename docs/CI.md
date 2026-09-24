@@ -32,7 +32,7 @@ publication dry run. It retains OCI layouts and native/generated evidence for
 fourteen days; it publishes neither registry images nor a supported live installer. See
 [`deploy/README.md`](../deploy/README.md) for its scope and local commands.
 
-The release jobs are intentionally skipped until those variables exist. A
+The GitLab jobs are skipped until those protected variables exist. A
 cross-compiled archive is build evidence, not native-runtime evidence.
 The buildable prerequisite recipe is `ci/release-image/Dockerfile`. Build its
 AMD64 and ARM64 variants from a Node base image selected by immutable digest,

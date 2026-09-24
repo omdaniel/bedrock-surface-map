@@ -40,8 +40,9 @@ export PATH="$PWD/.sources/tools/wasm-bindgen/0.2.127/bin:$PATH"
 
 See [archive installation](INSTALL.md) for the synthetic and offline-snapshot
 paths. The release executable is separate from the source developer workflow.
-It serves offline snapshots on loopback only and never manages a game server.
-Live feeds require the [separate integration](#optional-live-integration).
+`bedrock-map serve` serves offline snapshots on loopback only. The separate
+[`bedrock-map deploy` commands](DEPLOYMENT.md) prepare an HTTPS live deployment
+using a paired operator/image release. Neither path manages a game server.
 
 ## Import Your Own Snapshot
 
@@ -73,9 +74,10 @@ Open `http://127.0.0.1:5173/?map=/maps/fixture/manifest.json`.
 [Player tracking](TRACKING.md) and [terrain synchronization](TERRAIN-SYNC.md)
 use separate server packs and services. They are explicitly configured; loading
 an offline map does not silently connect it to a server. Public Pages is a demo,
-not hosting for your live service. Persistent self-hosted deployment can serve
-the built frontend and read APIs on an always-on machine, independent of this
-development computer.
+not hosting for your live service. The [initial live deployment](DEPLOYMENT.md)
+serves the built frontend and read APIs on an always-on Linux host, independent
+of this development computer. It uses a shared viewer password by default and
+requires an explicit BDS handoff; it does not automate game-server maintenance.
 
 ## Temporary LAN Preview
 

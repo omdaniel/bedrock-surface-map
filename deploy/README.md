@@ -3,14 +3,15 @@
 `images/Runtime.Dockerfile` packages the verified native distribution without a
 compiler, shell, or package manager. `images/Gateway.Dockerfile` combines a
 digest-pinned Caddy image with the same prebuilt frontend. Both images default to
-numeric user `65532:65532`; Compose tests override that with the non-root operator's
+numeric user `65532:65532`; generated Compose uses the non-root operator's
 UID/GID to read owner-only bind-mounted files. Neither image contains credentials.
 
-These components are not yet a supported operator installation workflow. The
-generator supplies transactional preparation, an authenticated gateway and a
-private BDS handoff and read-only diagnostics. The [operator runbook](../docs/DEPLOYMENT.md)
-describes the initial installation boundary. Actual-BDS/public-HTTPS acceptance
-and registry publication are separate from synthetic generated-container checks.
+The `bedrock-map deploy` commands implement initial installation with transactional
+preparation, an authenticated gateway, a private BDS handoff and read-only
+diagnostics. The [operator runbook](../docs/DEPLOYMENT.md) requires a published,
+registry-verified operator bundle; an OCI candidate alone is not installable through
+that workflow. Actual-BDS/public-HTTPS acceptance and registry publication are
+separate from synthetic generated-container checks.
 
 ## Initialization boundary
 

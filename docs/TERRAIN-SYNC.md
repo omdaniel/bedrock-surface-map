@@ -71,11 +71,14 @@ Exact npm declaration pins are in `package-lock.json`; declarations do not
 establish BDS binary compatibility. Test candidate versions with the actual pack
 on isolated fresh/restored worlds.
 
-Deployment, secrets, resource limits, firewall, idle-only repair scheduling and
-optional-pack update fallback belong in the operator's deployment repository
-(`runproxmox` for the homelab), not in the application. The service needs only
-its derived-store volume, not world files or a Docker socket. Terrain failures
-must not interrupt gameplay or independent player delivery.
+The [initial live deployment](DEPLOYMENT.md) generates Compose isolation/resource
+limits, private secrets, a BDS handoff and a firewall policy for administrator
+review. Installation-specific configuration belongs in operator-managed files;
+credentials stay outside source control. Idle-only repair scheduling and
+optional-pack update fallback require operator-managed workflows; the packaged
+deployment commands do not automate them.
+The service needs only its derived-store volume, not world files or a Docker
+socket. Terrain failures must not interrupt gameplay or independent player delivery.
 
 ## Build and Validate
 
