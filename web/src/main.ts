@@ -81,6 +81,9 @@ app.insertBefore($("message"), main);
 let manifest: Manifest;
 let renderer: Renderer;
 let lod: LodView | null = null;
+let lodSource: { url: URL; configuration: ViewerConfiguration } | null = null;
+let lodRecovering = false;
+let lodRecoveries = 0;
 let base: URL;
 let terrain: TerrainClient | null = null;
 let demo: DemoPlayback | null = null;
@@ -352,6 +355,7 @@ function requestDraw() {
   frameQueued = true;
   requestAnimationFrame(() => {
     frameQueued = false;
+    if (disposed || (!renderer && !lod)) return;
     try {
       const dpr = mapDpr();
       const w = Math.round(main.clientWidth * dpr),
@@ -394,7 +398,7 @@ function requestDraw() {
       updateScale();
       updateMetrics();
     } catch (e) {
-      message(String(e), true);
+      if (!lodRecovering) message(String(e), true);
     }
   });
 }
@@ -842,6 +846,10 @@ $("stats").onclick = () => {
   updateMetrics();
 };
 $("retry").onclick = () => {
+  if (lodSource && (!lod || lod.renderer.is_lost())) {
+    void recoverLod(true);
+    return;
+  }
   if (lod) {
     lod.retry();
     changed();
@@ -882,9 +890,11 @@ window.addEventListener("pagehide", () => {
   lod?.destroy();
   renderer?.free();
 });
-window.addEventListener("surface-device-lost", () =>
-  message("GPU device lost. Reload the map.", true),
-);
+window.addEventListener("surface-device-lost", () => {
+  if (lodSource) {
+    if (!lodRecovering && lod?.renderer.is_lost()) void recoverLod();
+  } else message("GPU device lost. Reload the map.", true);
+});
 window.addEventListener("surface-frame-ready", () =>
   requestAnimationFrame(() => {
     if (firstVisible === null) {
@@ -972,6 +982,8 @@ function mapState() {
     firstVisible: lodState?.firstVisible ?? firstVisible,
     totalDecode,
     lod: lodState,
+    lodRecovering,
+    lodRecoveries,
     terrain: terrain
       ? {
           revision: terrain.root.revision,
@@ -1001,6 +1013,66 @@ window.__map = {
     changed();
   },
 };
+
+async function createLodView() {
+  if (!lodSource) throw Error("LOD source is not configured");
+  const { url, configuration } = lodSource;
+  const view = await LodView.create(
+    url,
+    canvas,
+    requestDraw,
+    (status) => {
+      $("load-state").textContent = status;
+      if (lod?.firstVisible !== null && lod?.firstVisible !== undefined)
+        message("");
+    },
+    configuration.memory_budget_bytes,
+  );
+  if (
+    disposed ||
+    (view.root.world_id &&
+      (!configuration.terrain ||
+        configuration.terrain.world_id !== view.root.world_id ||
+        configuration.terrain.generation !== view.root.generation))
+  ) {
+    view.destroy();
+    throw Error(
+      disposed
+        ? "Viewer stopped"
+        : "No explicit live-terrain binding for this LOD map",
+    );
+  }
+  return view;
+}
+
+async function recoverLod(manual = false) {
+  if (disposed || lodRecovering || !lodSource) return;
+  if (!manual && lodRecoveries >= 1) {
+    lod?.destroy();
+    lod = null;
+    window.__map.ready = false;
+    message("GPU device lost again. Retry to reconstruct the map.", true);
+    return;
+  }
+  lodRecovering = true;
+  lodRecoveries++;
+  window.__map.ready = false;
+  // Release the lost device and terminate its decoder before reserving a new
+  // coarse-first renderer. Camera, lighting and the independent player layer stay.
+  lod?.destroy();
+  lod = null;
+  message("Reconstructing terrain after GPU device loss...");
+  try {
+    lod = await createLodView();
+    manifest = lod.manifest;
+    window.__map.ready = true;
+    changed();
+  } catch (error) {
+    if (!disposed) message(`GPU recovery failed: ${String(error)}`, true);
+  } finally {
+    lodRecovering = false;
+  }
+}
 
 async function boot() {
   const params = new URLSearchParams(location.search);
@@ -1034,25 +1106,9 @@ async function boot() {
     params.get("lod") ??
     (!params.has("map") ? configuration.lod_url : undefined);
   if (lodUrl && !demo) {
-    lod = await LodView.create(
-      new URL(lodUrl, appUrl(".")),
-      canvas,
-      requestDraw,
-      (status) => {
-        $("load-state").textContent = status;
-        if (lod?.firstVisible !== null && lod?.firstVisible !== undefined)
-          message("");
-      },
-      configuration.memory_budget_bytes,
-    );
+    lodSource = { url: new URL(lodUrl, appUrl(".")), configuration };
+    lod = await createLodView();
     manifest = lod.manifest;
-    if (
-      lod.root.world_id &&
-      (!configuration.terrain ||
-        configuration.terrain.world_id !== lod.root.world_id ||
-        configuration.terrain.generation !== lod.root.generation)
-    )
-      throw Error("No explicit live-terrain binding for this LOD map");
     $("app").querySelector(".identity strong")!.textContent = manifest.name;
     document.querySelector(".subtitle")!.textContent =
       "OVERWORLD / SURFACE LOD";

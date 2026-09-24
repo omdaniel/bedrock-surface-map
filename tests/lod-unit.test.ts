@@ -83,6 +83,48 @@ test("ledger defaults to 200,000,000 decimal bytes with fixed allowances and ret
   verifyAccounting(ledger);
 });
 
+test("GPU categories and retirement change atomically at a full memory ceiling", () => {
+  const ledger = new MemoryLedger();
+  const available = ledger.snapshot().freeBytes;
+  assert.equal(ledger.set("gpu", "surface", available), true);
+  const peak = ledger.snapshot().peakBytes;
+  assert.equal(
+    ledger.setCapacities([
+      { id: "heights", category: "height", bytes: 20_000_000 },
+      { id: "atlas", category: "atlas", bytes: 10_000_000 },
+      { id: "gpu", category: "surface", bytes: available - 30_000_000 },
+    ]),
+    true,
+  );
+  verifyAccounting(ledger);
+  assert.equal(ledger.snapshot().peakBytes, peak);
+  assert.equal(
+    ledger.setCapacities([
+      { id: "retired", category: "retirement", bytes: 10_000_000 },
+      { id: "atlas", category: "atlas", bytes: 0 },
+    ]),
+    true,
+  );
+  verifyAccounting(ledger);
+  const before = ledger.snapshot();
+  assert.equal(
+    ledger.setCapacities([
+      { id: "atlas", category: "atlas", bytes: 20_000_001 },
+    ]),
+    false,
+  );
+  assert.deepEqual(ledger.snapshot(), before);
+  assert.throws(
+    () =>
+      ledger.setCapacities([
+        { id: "gpu", category: "surface", bytes: 0 },
+        { id: "gpu", category: "surface", bytes: 0 },
+      ]),
+    /Duplicate/,
+  );
+  assert.deepEqual(ledger.snapshot(), before);
+});
+
 test("constrained ceiling admits exactly the remaining budget and refuses one byte more", () => {
   const ledger = new MemoryLedger(CONSTRAINED_MEMORY_LIMIT_BYTES);
   assert.equal(ledger.snapshot().limitBytes, 128_000_000);
@@ -806,6 +848,18 @@ test("flat global height range is safe even at zero elevation", () => {
     shadowBounds(VIEW, WORLD, [0, 4096], 90, 45),
     [-128, -128, 256, 256],
   );
+});
+
+test("coarse shading includes a whole-sample gutter beyond a tile-aligned footprint", () => {
+  assert.deepEqual(
+    shadowBounds(VIEW, WORLD, [1024, 1024], 45, 0, 512),
+    [-512, -512, 640, 640],
+  );
+  for (const margin of [0, -1, 1.5, NaN, Infinity])
+    assert.throws(
+      () => shadowBounds(VIEW, WORLD, [0, 1], 45, 0, margin),
+      RangeError,
+    );
 });
 
 test("horizon and low-sun extrusion saturate at dataset edges without NaN or infinity", () => {

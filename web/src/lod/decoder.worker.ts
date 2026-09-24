@@ -15,6 +15,7 @@ export interface DecodeResult {
   id: number;
   words?: Uint32Array;
   pick?: Int32Array;
+  materialMask?: Uint32Array;
   wasmBytes: number;
   decodeMs: number;
   error?: string;
@@ -64,12 +65,20 @@ scope.onmessage = ({ data }) => {
         throw Error("LOD decoder exceeds its WASM memory allowance");
       controller.signal.throwIfAborted();
       let pick: Int32Array | undefined;
+      const materialMask =
+        data.kind === "detail"
+          ? new Uint32Array(Math.ceil(data.materials / 32))
+          : undefined;
       if (data.kind !== "height") {
         pick = new Int32Array(128 * 128 * 2);
         for (let i = 0; i < 128 * 128; i++) {
           if (data.kind === "detail") {
             pick[i * 2] = words[i * 8 + 7] === 1 ? words[i * 8] : -32768;
             pick[i * 2 + 1] = words[i * 8 + 1];
+            for (const offset of [1, 3, 5]) {
+              const id = words[i * 8 + offset];
+              materialMask![id >>> 5] |= 1 << (id & 31);
+            }
           } else {
             pick[i * 2] = words[i * 6 + 3];
             pick[i * 2 + 1] =
@@ -82,12 +91,14 @@ scope.onmessage = ({ data }) => {
           id: data.id,
           words,
           pick,
+          materialMask,
           wasmBytes,
           decodeMs,
         },
         [
           words.buffer as ArrayBuffer,
           ...(pick ? [pick.buffer as ArrayBuffer] : []),
+          ...(materialMask ? [materialMask.buffer as ArrayBuffer] : []),
         ],
       );
     } catch (error) {

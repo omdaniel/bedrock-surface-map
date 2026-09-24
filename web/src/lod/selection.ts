@@ -235,6 +235,7 @@ export function shadowBounds(
   heightRange: readonly number[],
   elevation: number,
   azimuth: number,
+  neighborMargin = TILE_SIZE,
 ): Bounds | null {
   validateBounds(bounds);
   if (
@@ -252,6 +253,8 @@ export function shadowBounds(
     throw new RangeError(
       "Sun elevation must be 0..90 and azimuth must be finite",
     );
+  if (!Number.isSafeInteger(neighborMargin) || neighborMargin < 1)
+    throw new RangeError("Invalid shadow neighbor margin");
   const visible = intersection(
     [view.left, view.top, view.right, view.bottom],
     bounds,
@@ -285,10 +288,10 @@ export function shadowBounds(
   const dz = project(north, bounds[3] - bounds[1]);
   return viewTargetBounds(
     {
-      left: visible[0] + Math.min(0, dx) - TILE_SIZE,
-      top: visible[1] + Math.min(0, dz) - TILE_SIZE,
-      right: visible[2] + Math.max(0, dx) + TILE_SIZE,
-      bottom: visible[3] + Math.max(0, dz) + TILE_SIZE,
+      left: visible[0] + Math.min(0, dx) - neighborMargin,
+      top: visible[1] + Math.min(0, dz) - neighborMargin,
+      right: visible[2] + Math.max(0, dx) + neighborMargin,
+      bottom: visible[3] + Math.max(0, dz) + neighborMargin,
     },
     bounds,
   );

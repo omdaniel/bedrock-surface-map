@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   MAX_INDEX_BYTES,
   MAX_TILE_BYTES,
+  catalogPagesForMask,
   parseCatalog,
   parseKey,
   parseManifest,
@@ -15,6 +16,42 @@ import type { TileKey } from "../web/src/lod/protocol.ts";
 const BASE = new URL("https://map.example.test/synthetic/");
 const HASH = "a".repeat(64);
 const WORLD_LIMIT = 8_388_608;
+
+test("material dependency masks select pages across word and page boundaries", () => {
+  const ranges = [
+    [0, 31],
+    [31, 225],
+    [256, 256],
+    [512, 1],
+  ];
+  const pages = ranges.map(([start, count]) => ({ ...ref(), start, count }));
+  const mask = new Uint32Array(Math.ceil(513 / 32));
+  assert.deepEqual(catalogPagesForMask(mask, pages), []);
+  for (const id of [0, 31, 32, 255, 256, 511, 512]) {
+    mask.fill(0);
+    mask[id >>> 5] |= 1 << (id & 31);
+    assert.deepEqual(catalogPagesForMask(mask, pages), [
+      pages.findIndex(
+        (page) => page.start <= id && id < page.start + page.count,
+      ),
+    ]);
+  }
+  mask.fill(0xffffffff);
+  assert.deepEqual(catalogPagesForMask(mask, pages), [0, 1, 2, 3]);
+  assert.throws(() => catalogPagesForMask(new Uint32Array(1), pages));
+});
+
+test("a full catalog uses a bounded 8192-byte material dependency bitset", () => {
+  const pages = Array.from({ length: 256 }, (_, index) => ({
+    ...ref(),
+    start: index * 256,
+    count: 256,
+  }));
+  const mask = new Uint32Array(2048);
+  mask[2047] = 0x80000000;
+  assert.deepEqual(catalogPagesForMask(mask, pages), [255]);
+  assert.equal(mask.byteLength, 8192);
+});
 
 function ref(url = `objects/${HASH}.bin`, bytes = 128) {
   return { url, sha256: HASH, bytes };

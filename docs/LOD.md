@@ -51,10 +51,15 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
   reported separately. Each instance has a 16 MiB allowance.
 - CPU picking and bounded metadata, transport reservations, GPU buffers/textures,
   canvas backing estimates and resources awaiting retirement stay charged.
+- Material descriptors are fetched in pages needed by resident exact tiles and
+  released when those tiles are evicted. A worker-generated dependency bitset
+  avoids scanning surface columns on the UI thread.
 - An 18 MB loading/retirement allowance and 8,445,568 bytes of ancillary headroom
   are unavailable for ordinary cache filling.
 - Height pages use a fixed GPU arena with no CPU world-height pyramid. Empty
   slots remain charged as allocated capacity.
+- Shadow coverage includes each rendered tile's full shaded area and its gutter,
+  including coarse fallback levels. A finer cut waits for its required pages.
 - Upload reservations survive native queuing. Retired GPU resources remain
   charged until asynchronous queue completion, without blocking navigation.
 - Coarse coverage remains available while detail loads. Refinement is debounced;
@@ -66,6 +71,9 @@ compositor swapchains and driver allocations require separate process-level
 measurement. Coarse inspection reports approximate heights and ranges, not an
 exact material. Download failures retain available coverage and retry with
 bounded backoff. Hidden documents suspend new loading and resume when visible.
+Device loss cancels pending work and triggers one coarse-first reconstruction,
+preserving the camera, lighting and independent player layer. A second loss or a
+failed reconstruction requires an explicit Retry.
 
 ## Verification
 

@@ -25,6 +25,35 @@ export interface CatalogRef extends ObjectRef {
   start: number;
   count: number;
 }
+
+/** The decoder returns a bounded ID bitset, not a main-thread column scan. */
+export function catalogPagesForMask(
+  mask: Uint32Array,
+  pages: readonly CatalogRef[],
+): number[] {
+  const last = pages.at(-1);
+  requireValue(
+    last && mask.length === Math.ceil((last.start + last.count) / 32),
+    "material mask",
+  );
+  const result: number[] = [];
+  for (const [index, page] of pages.entries()) {
+    const firstWord = page.start >>> 5;
+    const lastWord = (page.start + page.count - 1) >>> 5;
+    for (let word = firstWord; word <= lastWord; word++) {
+      const firstBit = word === firstWord ? page.start & 31 : 0;
+      const finalBit =
+        word === lastWord ? ((page.start + page.count - 1) & 31) + 1 : 32;
+      const lower = (0xffffffff << firstBit) >>> 0;
+      const upper = finalBit === 32 ? 0xffffffff : 2 ** finalBit - 1;
+      if ((mask[word] & lower & upper) !== 0) {
+        result.push(index);
+        break;
+      }
+    }
+  }
+  return result;
+}
 export interface LodManifest {
   kind: "surface-lod";
   format_version: 1;

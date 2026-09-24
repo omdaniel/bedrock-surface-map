@@ -155,6 +155,40 @@ export class MemoryLedger {
     return this.replace(id, category, bytes, null);
   }
 
+  /** Reclassify a shared allocation atomically, without transient double charging. */
+  setCapacities(
+    values: readonly { id: string; category: MemoryCategory; bytes: number }[],
+  ): boolean {
+    const ids = new Set<string>();
+    let total = this.totalBytes - this.retirementReserve();
+    let retired = this.retirementBytes;
+    for (const value of values) {
+      this.validate(value.id, value.category, value.bytes);
+      if (ids.has(value.id)) throw new Error("Duplicate memory capacity ID");
+      ids.add(value.id);
+      const previous = this.entries.get(value.id);
+      total += value.bytes - (previous?.totalBytes ?? 0);
+      retired +=
+        (value.category === "retirement" ? value.bytes : 0) -
+        (previous?.category === "retirement" ? previous.capacityBytes : 0);
+    }
+    total += this.retirementReserve(retired);
+    if (!Number.isSafeInteger(total) || total > this.limitBytes) return false;
+    for (const value of values)
+      this.entries.set(value.id, {
+        id: value.id,
+        category: value.category,
+        capacityBytes: value.bytes,
+        reservedBytes: 0,
+        reservationBytes: null,
+        totalBytes: value.bytes,
+      });
+    this.retirementBytes = retired;
+    this.totalBytes = total;
+    this.peakBytes = Math.max(this.peakBytes, total);
+    return true;
+  }
+
   /** Retirement stays charged until the owner explicitly releases its ID. */
   release(id: string): void {
     this.validateId(id);

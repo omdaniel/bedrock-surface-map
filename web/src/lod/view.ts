@@ -3,16 +3,17 @@ import type { Material, Manifest, ObjectRef } from "../types";
 import { MemoryLedger, MEMORY_LIMIT_BYTES } from "./memory";
 import {
   desiredLevel,
-  estimateTileBytes,
   intersection,
   intersects,
   shadowBounds,
+  viewTargetBounds,
   type Bounds,
 } from "./selection";
 import { LodDecoder } from "./decoder";
 import type { DecodeResult } from "./decoder.worker";
 import {
   localAsset,
+  catalogPagesForMask,
   parseCatalog,
   parseManifest,
   parseNode,
@@ -42,6 +43,7 @@ interface Resident {
   hash: string;
   pick: Int32Array;
   last: number;
+  catalog: number[];
 }
 interface Demand {
   key: TileKey;
@@ -52,6 +54,7 @@ interface Demand {
 interface PendingUpload {
   demand: Demand;
   result: DecodeResult;
+  catalog: number[];
   resolve: () => void;
   reject: (error: Error) => void;
 }
@@ -76,6 +79,8 @@ export class LodView {
   private readonly heights = new Map<string, { key: TileKey; hash: string }>();
   private readonly materials = new Map<number, Material>();
   private readonly catalogPages = new Set<number>();
+  private readonly gpuCatalogPages = new Set<number>();
+  private readonly pendingCatalog = new Set<number>();
   private readonly demands = new Map<string, Demand>();
   private readonly failed = new Map<
     string,
@@ -195,8 +200,13 @@ export class LodView {
         requestFrame,
         notify,
       );
-      view.accountGpu();
-      return view;
+      try {
+        view.accountGpu();
+        return view;
+      } catch (error) {
+        view.destroy();
+        throw error;
+      }
     } finally {
       bitmap.close();
     }
@@ -230,6 +240,8 @@ export class LodView {
       tiles: this.tiles.size,
       heights: this.heights.size,
       indexes: this.nodes.size,
+      catalogPages: this.catalogPages.size,
+      materialDescriptors: this.materials.size,
       pending: Number(this.busy),
       failures: [...this.failed.values()].map((v) => v.reason),
       firstVisible: this.firstVisible,
@@ -245,6 +257,18 @@ export class LodView {
       activeKind: this.active?.demand.kind ?? null,
       queuedUpload: this.upload !== null || this.submittedUpload !== null,
       heightStatus: this.renderer.height_status(),
+      logicalOccupancy: {
+        surfaceBytes: [...this.tiles.values()].reduce(
+          (sum, tile) => sum + this.renderer.tile_bytes(tile.key.level),
+          0,
+        ),
+        pickingBytes: [...this.tiles.values()].reduce(
+          (sum, tile) => sum + tile.pick.byteLength,
+          0,
+        ),
+        heightSlots: this.heights.size,
+        heightSlotCapacity: 128,
+      },
     };
   }
   setCamera(camera: LodCamera) {
@@ -280,9 +304,15 @@ export class LodView {
       c.cz + c.height / c.scale / 2,
     ];
   }
-  private shadowArea(): Bounds {
+  private shadowArea(level = this.target): Bounds {
     const c = this.camera!,
-      v = this.bounds();
+      view = this.bounds(),
+      v = viewTargetBounds(
+        { left: view[0], top: view[1], right: view[2], bottom: view[3] },
+        this.root.bounds,
+        level,
+      );
+    if (!v) return [0, 0, 0, 0];
     return (
       shadowBounds(
         { left: v[0], top: v[1], right: v[2], bottom: v[3] },
@@ -290,6 +320,7 @@ export class LodView {
         c.shadows ? this.root.height_range : [0, 0],
         c.elevation,
         c.azimuth,
+        Math.max(128, 2 ** level),
       ) ?? v
     );
   }
@@ -298,32 +329,41 @@ export class LodView {
       max = this.root.roots[0].key.level;
     let target = desiredLevel(c.scale * c.dpr, this.target, max);
     const visible = intersection(this.bounds(), this.root.bounds);
-    const shadow = intersection(this.shadowArea(), this.root.bounds);
     const count = (area: Bounds | null, size: number) =>
       area
         ? (Math.ceil(area[2] / size) - Math.floor(area[0] / size)) *
           (Math.ceil(area[3] / size) - Math.floor(area[1] / size))
         : 0;
     const reclaimableTiles = [...this.tiles.values()].reduce((sum, tile) => {
-      const bytes = estimateTileBytes(tile.key.level);
-      return sum + bytes.surfaceBytes + bytes.shadeBytes + bytes.pickBytes;
+      return (
+        sum + this.renderer.tile_bytes(tile.key.level) + tile.pick.byteLength
+      );
     }, 0);
     const fixedCharge = Math.max(
       0,
       this.ledger.snapshot().totalBytes - reclaimableTiles,
     );
     for (; target < max; target++) {
-      const size = 128 * 2 ** target,
-        cost = estimateTileBytes(target);
-      const detail =
-        count(visible, size) *
-        (cost.surfaceBytes + cost.pickBytes + cost.shadeBytes);
-      const heights = count(shadow, size) * cost.heightBytes;
-      // Parent overlap, transfer work and fixed resources are admitted before refinement.
+      let surface = 0,
+        heightPages = 0;
+      for (let level = target; level <= max; level++) {
+        const size = 128 * 2 ** level;
+        const tiles =
+          level === max ? this.root.roots.length : count(visible, size);
+        surface += tiles * (this.renderer.tile_bytes(level) + 131072);
+        heightPages +=
+          level === max
+            ? this.root.roots.length
+            : count(
+                intersection(this.shadowArea(level), this.root.bounds),
+                size,
+              );
+      }
+      // The allocated height arena is already charged. Keep spare slots and
+      // transfer capacity for replacing the cut, rather than filling to its limit.
       if (
-        count(shadow, size) <= 96 &&
-        detail * 1.5 + heights * 1.25 <
-          Math.min(96_000_000, this.ledger.limitBytes - fixedCharge - 8_000_000)
+        heightPages <= 96 &&
+        surface * 1.25 < this.ledger.limitBytes - fixedCharge - 8_000_000
       )
         break;
     }
@@ -335,8 +375,11 @@ export class LodView {
     const next = this.targetLevel();
     if (refine || next >= this.target) this.target = next;
     this.demands.clear();
-    const area = this.bounds(),
-      shadow = this.shadowArea();
+    const area = this.bounds();
+    const footprints = Array.from(
+      { length: this.root.roots[0].key.level + 1 },
+      (_, level) => (level >= this.target ? this.shadowArea(level) : null),
+    );
     const add = (
       ref: ObjectRef,
       key: TileKey,
@@ -351,8 +394,15 @@ export class LodView {
         id = tileId(key),
         box = tileBounds(key);
       const visible = intersects(area, box),
-        casts = intersects(shadow, box);
-      if (!root && !visible && !casts) return;
+        casts =
+          footprints[key.level] !== null &&
+          intersects(footprints[key.level]!, box),
+        descendants =
+          key.level > this.target &&
+          footprints
+            .slice(this.target, key.level)
+            .some((bounds) => bounds !== null && intersects(bounds, box));
+      if (!root && !visible && !casts && !descendants) return;
       add(
         ref.index,
         key,
@@ -368,18 +418,24 @@ export class LodView {
           key.level ? "summary" : "detail",
           root ? 1 : 30 - key.level,
         );
-      if (root || (casts && key.level === this.target) || visible)
+      if (root || casts || visible)
         add(stored.node.height, key, "height", root ? 2 : 20 - key.level);
-      if (key.level > this.target)
+      if (key.level > this.target && (descendants || visible))
         for (const child of stored.node.children) visit(child);
     };
     for (const root of this.root.roots) visit(root, true);
-    if (this.active && !this.demands.has(this.active.id)) {
+    if (
+      this.active &&
+      this.demands.get(this.active.id)?.ref.sha256 !==
+        this.active.demand.ref.sha256
+    ) {
       this.active.abort.abort();
       this.cancellations++;
     }
     this.evict();
     this.updateCut();
+    for (const id of this.failed.keys())
+      if (!this.demands.has(id)) this.failed.delete(id);
     void this.loadNext();
   }
   private has(demand: Demand) {
@@ -404,6 +460,16 @@ export class LodView {
     const job = wanted[0];
     if (!job) return;
     const [id, demand] = job;
+    if (
+      demand.kind === "height" &&
+      this.renderer.available_height_slots() === 0
+    ) {
+      this.evict(true);
+      if (this.renderer.available_height_slots() === 0) {
+        this.requestFrame();
+        return;
+      }
+    }
     const reserve =
       demand.kind === "index"
         ? demand.ref.bytes * 8 + 8192
@@ -451,10 +517,13 @@ export class LodView {
           abort.signal,
         );
         abort.signal.throwIfAborted();
-        if (demand.kind === "detail")
-          await this.ensureMaterials(result.words!, abort.signal);
+        const catalog =
+          demand.kind === "detail"
+            ? await this.ensureMaterials(result.materialMask!, abort.signal)
+            : [];
+        abort.signal.throwIfAborted();
         await new Promise<void>((resolve, reject) => {
-          this.upload = { demand, result, resolve, reject };
+          this.upload = { demand, result, catalog, resolve, reject };
           this.requestFrame();
         });
       }
@@ -474,6 +543,7 @@ export class LodView {
       }
     } finally {
       this.ledger.release("job");
+      this.pendingCatalog.clear();
       this.active = null;
       if (!this.disposed) {
         this.accountGpu();
@@ -482,47 +552,72 @@ export class LodView {
       }
     }
   }
-  private async ensureMaterials(words: Uint32Array, signal: AbortSignal) {
-    const ids = new Set<number>();
-    for (let i = 0; i < words.length; i += 8)
-      for (const offset of [1, 3, 5]) ids.add(words[i + offset]);
-    for (const page of this.root.catalog) {
+  private async ensureMaterials(mask: Uint32Array, signal: AbortSignal) {
+    const pages = this.root.catalog;
+    const required = catalogPagesForMask(mask, pages);
+    for (const index of required) this.pendingCatalog.add(pages[index].start);
+    this.evictCatalog();
+    for (const index of required) {
+      const page = pages[index];
+      if (this.catalogPages.has(page.start)) continue;
+      const capacity = page.bytes * 4 + page.count * 48;
       if (
-        this.catalogPages.has(page.start) ||
-        ![...ids].some((id) => id >= page.start && id < page.start + page.count)
-      )
-        continue;
-      const raw = await readObject(page, this.base, signal);
-      const materials = parseCatalog(
-        JSON.parse(new TextDecoder().decode(raw)),
-        page.count,
-      );
-      if (
-        !this.ledger.set(
-          `catalog:${page.start}`,
-          "cpu",
-          raw.byteLength * 4 + page.count * 48,
+        !this.ledger.tryReserve(
+          "catalog-job",
+          "transit",
+          capacity + page.bytes * 2,
         )
       )
-        throw Error("LOD catalog memory limit");
-      const data = new Float32Array(page.count * 12);
-      for (let i = 0; i < materials.length; i++) {
-        const m = materials[i];
-        data.set(
-          [
-            ...m.uv,
-            ...m.average,
-            m.tint,
-            Number(m.name.toLowerCase() === "sand"),
-            0,
-            0,
-          ],
-          i * 12,
+        throw Error("LOD catalog cannot fit alongside the active detail cut");
+      try {
+        const raw = await readObject(page, this.base, signal);
+        const materials = parseCatalog(
+          JSON.parse(new TextDecoder().decode(raw)),
+          page.count,
         );
-        this.materials.set(page.start + i, m);
+        signal.throwIfAborted();
+        const data = new Float32Array(page.count * 12);
+        for (let i = 0; i < materials.length; i++) {
+          const m = materials[i];
+          data.set(
+            [
+              ...m.uv,
+              ...m.average,
+              m.tint,
+              Number(m.name.toLowerCase() === "sand"),
+              0,
+              0,
+            ],
+            i * 12,
+          );
+        }
+        if (!this.gpuCatalogPages.has(page.start)) {
+          this.renderer.update_materials(page.start, data);
+          this.gpuCatalogPages.add(page.start);
+        }
+        this.ledger.release("catalog-job");
+        if (!this.ledger.set(`catalog:${page.start}`, "cpu", capacity))
+          throw Error("LOD catalog memory limit");
+        for (let i = 0; i < materials.length; i++)
+          this.materials.set(page.start + i, materials[i]);
+        this.catalogPages.add(page.start);
+      } finally {
+        this.ledger.release("catalog-job");
       }
-      this.renderer.update_materials(page.start, data);
-      this.catalogPages.add(page.start);
+    }
+    return [...required].map((index) => pages[index].start);
+  }
+  private evictCatalog() {
+    const protectedPages = new Set(this.pendingCatalog);
+    for (const resident of this.tiles.values())
+      for (const start of resident.catalog) protectedPages.add(start);
+    for (const page of this.root.catalog) {
+      if (!this.catalogPages.has(page.start) || protectedPages.has(page.start))
+        continue;
+      for (let i = page.start; i < page.start + page.count; i++)
+        this.materials.delete(i);
+      this.catalogPages.delete(page.start);
+      this.ledger.release(`catalog:${page.start}`);
     }
   }
   private integrate() {
@@ -573,6 +668,7 @@ export class LodView {
           hash: demand.ref.sha256,
           pick: result.pick!,
           last: this.clock,
+          catalog: upload.catalog,
         });
         this.tileUploads++;
       }
@@ -587,11 +683,24 @@ export class LodView {
       throw Error("LOD renderer exceeds its WASM memory allowance");
     this.ledger.observeWasm("main", this.mainWasm.buffer.byteLength);
     this.ledger.observeWasm("worker", this.decoder.wasmBytes);
-    const retired = this.renderer.retiring_bytes();
-    if (!this.ledger.set("gpu", "surface", this.renderer.gpu_bytes() - retired))
+    const [total, retired, surfaces, heights, presentation, shared] =
+      this.renderer.allocation_stats();
+    if (total !== retired + surfaces + heights + presentation + shared)
+      throw Error("LOD GPU allocation accounting mismatch");
+    if (
+      !this.ledger.setCapacities([
+        { id: "gpu:surface", category: "surface", bytes: surfaces },
+        { id: "gpu:height", category: "height", bytes: heights },
+        { id: "gpu:shared", category: "atlas", bytes: shared },
+        {
+          id: "gpu:presentation",
+          category: "presentation",
+          bytes: presentation,
+        },
+        { id: "gpu-retired", category: "retirement", bytes: retired },
+      ])
+    )
       throw Error("LOD GPU resources exceed admitted memory");
-    if (!this.ledger.set("gpu-retired", "retirement", retired))
-      throw Error("LOD retirement headroom exhausted");
   }
   private referenceCut(level: number, area: Bounds): TileKey[] | null {
     const output: TileKey[] = [];
@@ -609,7 +718,7 @@ export class LodView {
   }
   private readyCut(level: number): TileKey[] | null {
     const cut = this.referenceCut(level, this.bounds());
-    const heights = this.referenceCut(level, this.shadowArea());
+    const heights = this.referenceCut(level, this.shadowArea(level));
     if (!cut || !heights) return null;
     if (
       !cut.every((key) => this.tiles.has(tileId(key))) ||
@@ -630,7 +739,9 @@ export class LodView {
     if (!next) return;
     const signature = (cut: TileKey[]) => cut.map(tileId).sort().join(",");
     if (signature(next) === signature(this.cut)) return;
-    this.previousCut = this.cut;
+    // A new camera/light footprint can invalidate fine shadows. Blend only
+    // when the previous level's full dependency set is still available.
+    this.previousCut = this.readyCut(this.level) ? this.cut : [];
     this.cut = next;
     this.level = level;
     this.transitionStart = performance.now();
@@ -670,6 +781,7 @@ export class LodView {
         this.ledger.release(`index:${id}`);
       }
     }
+    this.evictCatalog();
     this.accountGpu();
   }
   draw(
