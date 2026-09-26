@@ -1071,9 +1071,13 @@ async function createLodView() {
         }
       },
       (state) => {
-        if (lod === view)
-          document.querySelector<HTMLElement>(".local-state")!.textContent =
-            state === "live" ? "Terrain live" : "Terrain delayed";
+        if (lod !== view) return;
+        const element = document.querySelector<HTMLElement>(".local-state")!;
+        element.textContent = `Terrain ${state}`;
+        const publication = view.stats.live?.publication;
+        element.title = publication
+          ? `Last reported LOD revision lag: ${publication.revision_lag}; pending: ${publication.pending_age_ms === null ? "none" : `${(publication.pending_age_ms / 1000).toFixed(1)}s`}${publication.reason ? `; ${publication.reason}` : ""}`
+          : "Terrain publication status unavailable";
       },
     );
   }

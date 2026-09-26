@@ -79,8 +79,12 @@ work older than 30 seconds or a publication error reports degraded LOD status.
 This does not substitute for the existing gameplay-scan freshness status.
 
 The browser revalidates a bound live root every two seconds while visible, with
-one root read in flight, bounded backoff and an explicit delayed status. Unchanged
-roots do not redraw terrain. Wrong-world, older-revision and generation-mismatch
+one polling cycle in flight and bounded backoff. Each cycle also reads the
+same-origin terrain `status` endpoint, including after a 304 root response.
+Collection and publication health distinguish starting, live, updating, stale,
+degraded and deliberately disabled feeds; failed or invalid reads show delayed.
+Diagnostics include publication revision lag and pending age. Status-only changes
+and unchanged roots do not redraw terrain. Wrong-world, older-revision and generation-mismatch
 responses retain the last valid map. A generation change requires an updated
 explicit viewer binding and reopening the map; unrelated generations never blend.
 

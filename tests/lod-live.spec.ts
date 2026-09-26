@@ -48,7 +48,9 @@ test("live LOD replaces resident chunks, preserves camera and players, and resum
   let step = 0,
     outage = false,
     x = -120.5,
-    sequence = 0;
+    sequence = 0,
+    publicationLag = 0,
+    publicationAge = 0;
   const requests: string[] = [];
   const errors: string[] = [];
   const player = JSON.parse(
@@ -93,6 +95,32 @@ test("live LOD replaces resident chunks, preserves camera and players, and resum
     const path = new URL(route.request().url()).pathname;
     requests.push(path);
     if (outage) return route.fulfill({ status: 503 });
+    if (path.endsWith("/status"))
+      return route.fulfill({
+        json: {
+          schema_version: 1,
+          world_id: "fixture-world",
+          generation: "fixture-generation",
+          status: "live",
+          reason: "live",
+          sample_age_ms: 0,
+          last_repair_ms: 1000,
+          lod: {
+            status: publicationLag
+              ? publicationAge > 30000
+                ? "degraded"
+                : "updating"
+              : "live",
+            revision: roots[step].revision,
+            source_revision: roots[step].revision + publicationLag,
+            published_source_revision: roots[step].revision,
+            revision_lag: publicationLag,
+            pending_age_ms: publicationAge || null,
+            last_published_ms: 1000,
+            reason: null,
+          },
+        },
+      });
     if (path.endsWith("lod.json")) {
       const etag = `"lod-${step}"`;
       return route.request().headers()["if-none-match"] === etag
@@ -168,6 +196,20 @@ test("live LOD replaces resident chunks, preserves camera and players, and resum
   await expect(page.locator(".player-detail")).toContainText("-120,");
   await page.waitForTimeout(4200);
   expect(await page.evaluate(() => window.__map.state().draws)).toBe(draws);
+  publicationLag = 1;
+  publicationAge = 1000;
+  await expect(page.locator(".local-state")).toHaveText("Terrain updating", {
+    timeout: 10000,
+  });
+  publicationAge = 31001;
+  await expect(page.locator(".local-state")).toHaveText("Terrain degraded", {
+    timeout: 10000,
+  });
+  expect(await page.evaluate(() => window.__map.state().draws)).toBe(draws);
+  publicationLag = publicationAge = 0;
+  await expect(page.locator(".local-state")).toHaveText("Terrain live", {
+    timeout: 10000,
+  });
   outage = true;
   await expect(page.locator(".local-state")).toHaveText("Terrain delayed", {
     timeout: 15000,

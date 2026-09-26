@@ -19,7 +19,12 @@ import {
   patchPicking,
   type ChunkRef,
 } from "./live";
-import { LodRootSource, ROOT_POLL_BYTES, readBytes } from "./root-source";
+import {
+  LodRootSource,
+  ROOT_POLL_BYTES,
+  readBytes,
+  type LodFeedState,
+} from "./root-source";
 import {
   localAsset,
   catalogPagesForMask,
@@ -265,7 +270,7 @@ export class LodView {
     url: URL,
     changed: () => void,
     rebuild: () => Promise<void>,
-    status: (state: "live" | "delayed") => void,
+    status: (state: LodFeedState) => void,
   ) {
     if (
       !this.root.world_id ||
@@ -291,6 +296,7 @@ export class LodView {
       () => this.ledger.tryReserve("root-poll", "transit", ROOT_POLL_BYTES),
       () => this.ledger.release("root-poll"),
       status,
+      new URL("status", url),
     );
     this.live.visibility(!document.hidden);
   }
@@ -396,6 +402,7 @@ export class LodView {
             state: this.live.state,
             error: this.live.error,
             revision: this.root.revision,
+            publication: this.live.publication,
           }
         : null,
       targetLevel: this.target,
