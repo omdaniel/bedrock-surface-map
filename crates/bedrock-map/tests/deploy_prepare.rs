@@ -527,6 +527,7 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         assert_eq!(config.get("terrain").is_some(), terrain);
         assert_eq!(config.get("players").is_some(), players);
         let static_lod = format!("maps/{}/lod.json", p.dataset_id);
+        assert_eq!(config["lod_url"], static_lod);
         assert!(f.root.join("prepared/public").join(&static_lod).is_file());
         assert!(
             p.immutable_files
@@ -534,7 +535,7 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         );
         if terrain {
             assert_eq!(
-                config["lod_url"],
+                config["terrain"]["lod_url"],
                 format!("/api/v1/worlds/{}/terrain/lod.json", p.world_id)
             );
             let db = rusqlite::Connection::open_with_flags(
@@ -557,8 +558,6 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
             for root in lod.roots {
                 assert_eq!(p.seed_files.get(&root.index.url), Some(&root.index.sha256));
             }
-        } else {
-            assert_eq!(config["lod_url"], static_lod);
         }
         if players {
             assert_eq!(config["players"]["source_sha256"], p.source_sha256);

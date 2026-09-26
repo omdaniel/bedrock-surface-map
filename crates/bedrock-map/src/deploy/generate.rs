@@ -107,8 +107,8 @@ pub fn viewer(config: &Config, lock: &Lock, dataset: &ActiveDataset) -> Value {
         "lod_url":format!("maps/{}/lod.json",dataset.dataset_id)});
     if config.features.terrain {
         viewer["terrain"] = json!({"world_id":lock.world_id,"generation":lock.generation,
-        "url":format!("/api/v1/worlds/{}/terrain/manifest.json",lock.world_id)});
-        viewer["lod_url"] = format!("/api/v1/worlds/{}/terrain/lod.json", lock.world_id).into();
+        "url":format!("/api/v1/worlds/{}/terrain/manifest.json",lock.world_id),
+        "lod_url":format!("/api/v1/worlds/{}/terrain/lod.json",lock.world_id)});
     }
     if config.features.players {
         viewer["players"] = json!({"world_id":lock.world_id,"source_sha256":dataset.source_sha256,

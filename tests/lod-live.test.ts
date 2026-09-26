@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { configuredLodUrl } from "../web/src/config.ts";
 import {
   assertLiveRevision,
   catalogAppendPages,
@@ -22,6 +23,35 @@ import {
 } from "../web/src/lod/protocol.ts";
 
 const url = new URL("https://example.test/map/lod.json");
+test("configured LOD separates the snapshot, live feed, and explicit URL selection", () => {
+  const config = {
+    lod_url: "maps/snapshot/lod.json",
+    terrain: {
+      url: "api/v1/worlds/test-world/terrain/manifest.json",
+      lod_url: "api/v1/worlds/test-world/terrain/lod.json",
+      world_id: "test-world",
+      generation: "test-generation",
+    },
+  };
+  const selected = (query: string) =>
+    configuredLodUrl(config, new URLSearchParams(query));
+  assert.equal(selected(""), config.terrain.lod_url);
+  assert.equal(selected("terrain=off"), config.lod_url);
+  assert.equal(selected("players=off"), config.terrain.lod_url);
+  assert.equal(selected("map=another/manifest.json"), undefined);
+  assert.equal(selected("lod=chosen/lod.json&terrain=off"), "chosen/lod.json");
+  assert.equal(
+    configuredLodUrl({ lod_url: config.lod_url }, new URLSearchParams()),
+    config.lod_url,
+  );
+  assert.equal(
+    configuredLodUrl(
+      { terrain: config.terrain },
+      new URLSearchParams("terrain=off"),
+    ),
+    undefined,
+  );
+});
 const healthURL = new URL("status", url);
 const ref = (letter = "a") => ({
   url: `objects/${letter.repeat(64)}.bin`,

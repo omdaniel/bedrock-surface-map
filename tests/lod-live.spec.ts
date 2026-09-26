@@ -60,8 +60,8 @@ test("live LOD replaces resident chunks, preserves camera and players, and resum
   await page.route("**/viewer-config.json", (route) =>
     route.fulfill({
       json: {
-        lod_url: "/api/v1/worlds/fixture-world/terrain/lod.json",
         terrain: {
+          lod_url: "/api/v1/worlds/fixture-world/terrain/lod.json",
           world_id: "fixture-world",
           generation: "fixture-generation",
           url: "/api/v1/worlds/fixture-world/terrain/manifest.json",
@@ -236,6 +236,40 @@ test("live LOD replaces resident chunks, preserves camera and players, and resum
   ).toBeLessThanOrEqual(200000000);
   expect(errors).toEqual([]);
   await page.screenshot({ path: "test-results/lod-live.png" });
+});
+
+test("terrain opt-out uses snapshot LOD without contacting the live terrain service", async ({
+  page,
+}) => {
+  const requests: string[] = [];
+  page.on("request", (request) => requests.push(request.url()));
+  await page.route("**/viewer-config.json", (route) =>
+    route.fulfill({
+      json: {
+        lod_url: "/snapshot/lod.json",
+        terrain: {
+          lod_url: "/api/v1/worlds/fixture-world/terrain/lod.json",
+          url: "/api/v1/worlds/fixture-world/terrain/manifest.json",
+          world_id: "fixture-world",
+          generation: "fixture-generation",
+        },
+      },
+    }),
+  );
+  await page.route("**/snapshot/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/lod.json")) {
+      const root = structuredClone(roots[0]);
+      delete root.world_id;
+      return route.fulfill({ json: root });
+    }
+    return route.fulfill({ body: object(`objects/${path.split("/").at(-1)}`) });
+  });
+  await page.goto("/?terrain=off&players=off");
+  await settled(page);
+  expect(requests.some((url) => url.endsWith("/snapshot/lod.json"))).toBe(true);
+  expect(requests.some((url) => url.includes("/terrain/"))).toBe(false);
+  expect(await page.evaluate(() => window.__map.state().lod?.live)).toBeNull();
 });
 
 test.afterEach(async ({ page }, info) => {

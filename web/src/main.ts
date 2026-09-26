@@ -17,7 +17,12 @@ import { bindSunDial } from "./sun-dial";
 import { PlayerLayer } from "./players";
 import { TerrainClient, type LiveRoot } from "./terrain";
 import { boundedBytes } from "./http";
-import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
+import {
+  appUrl,
+  configuredLodUrl,
+  loadConfiguration,
+  type ViewerConfiguration,
+} from "./config";
 import { DemoPlayback } from "./demo";
 import { LodView, type LodCamera } from "./lod/view";
 import {
@@ -1141,9 +1146,7 @@ async function boot() {
     demo = new DemoPlayback();
     await demo.initialize(appUrl(configuration.demo!.scenario));
   }
-  const lodUrl =
-    params.get("lod") ??
-    (!params.has("map") ? configuration.lod_url : undefined);
+  const lodUrl = configuredLodUrl(configuration, params);
   if (lodUrl && !demo) {
     lodSource = { url: new URL(lodUrl, appUrl(".")), configuration };
     lod = await createLodView();

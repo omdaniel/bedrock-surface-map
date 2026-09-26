@@ -80,6 +80,7 @@ export async function verifyGeneratedBrowser({
         await page.waitForFunction(
           () =>
             window.__map?.ready &&
+            window.__map.state().lod?.tiles > 0 &&
             window.__map.state().cached > 0 &&
             window.__map.state().pending === 0 &&
             window.__map.state().draws > 0,
@@ -95,7 +96,8 @@ export async function verifyGeneratedBrowser({
         await page.waitForFunction(
           () =>
             window.__map.state().pending === 0 &&
-            !window.__map.state().terrain?.busy &&
+            !window.__map.state().renderPending &&
+            window.__map.state().lod?.level === 0 &&
             window.__map.state().firstVisible !== null,
           undefined,
           { timeout: 20_000 },
@@ -110,9 +112,11 @@ export async function verifyGeneratedBrowser({
         await page
           .locator("#inspect")
           .waitFor({ state: "visible", timeout: 10_000 });
-        assert.equal(
-          await page.locator("#block-pos").textContent(),
-          "-9 / 65 / -9",
+        assert.deepEqual(
+          (await page.locator("#block-pos").textContent())
+            .split("/")
+            .map(Number),
+          [-9, 65, -9],
         );
         assert.match(await page.locator("#block-name").textContent(), /grass/i);
         const pixels = PNG.sync.read(await canvas.screenshot());
@@ -137,7 +141,7 @@ export async function verifyGeneratedBrowser({
         const state = await page.evaluate(() => window.__map.state());
         assert.equal(state.failures.length, 0);
         assert.equal(
-          Boolean(state.terrain),
+          Boolean(state.lod?.live),
           features.terrain && !suffix.includes("terrain=off"),
         );
         if (!features.players || suffix.includes("players=off"))
@@ -162,13 +166,14 @@ export async function verifyGeneratedBrowser({
           await producer.negativeChecks();
           const change = async (height, material, expectedName) => {
             const before = await page.evaluate(
-              () => window.__map.state().terrain.revision,
+              () => window.__map.state().lod.live.revision,
             );
             await producer.terrain(material, height);
             await page.waitForFunction(
               (revision) =>
-                !window.__map.state().terrain?.busy &&
-                window.__map.state().terrain?.revision > revision,
+                window.__map.state().pending === 0 &&
+                !window.__map.state().renderPending &&
+                window.__map.state().lod?.live?.revision > revision,
               before,
               { timeout: 20_000 },
             );
@@ -177,13 +182,21 @@ export async function verifyGeneratedBrowser({
               bounds.y + bounds.height / 2,
             );
             await page.waitForFunction(
-              ({ height, material }) =>
-                document.querySelector("#block-pos")?.textContent ===
-                  `-9 / ${height} / -9` &&
-                document
-                  .querySelector("#block-name")
-                  ?.textContent?.toLowerCase()
-                  .includes(material),
+              ({ height, material }) => {
+                const position = document
+                  .querySelector("#block-pos")
+                  ?.textContent?.split("/")
+                  .map(Number);
+                return (
+                  position?.[0] === -9 &&
+                  position[1] === height &&
+                  position[2] === -9 &&
+                  document
+                    .querySelector("#block-name")
+                    ?.textContent?.toLowerCase()
+                    .includes(material)
+                );
+              },
               { height, material: expectedName },
               { timeout: 20_000 },
             );
@@ -264,7 +277,7 @@ export async function verifyGeneratedBrowser({
           picking: "-9 / 65 / -9",
           material: "grass",
           distinct_pixel_colors: colors.size,
-          terrain_live_binding: Boolean(state.terrain),
+          terrain_live_binding: Boolean(state.lod?.live),
           terrain_draws: state.draws,
           protocol,
           adapter: await page.evaluate(async () => {

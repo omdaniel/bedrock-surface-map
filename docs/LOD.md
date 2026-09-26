@@ -36,10 +36,11 @@ Open `http://127.0.0.1:5173/?lod=/maps/prepared-lod/lod.json&players=off`.
 For a configured viewer, set `lod_url` relative to the application base path.
 An explicitly selected `map` URL retains the non-LOD reader. A prepared map
 carrying a live world identity requires a matching viewer binding; preparation
-alone does not create a publishing service. Configure `lod_url` to the same-origin
+alone does not create a publishing service. Configure `terrain.lod_url` to the same-origin
 `api/v1/worlds/{world}/terrain/lod.json` route and match `terrain.world_id` and
 `terrain.generation` to the dataset. `terrain.url` retains the corresponding
-legacy manifest route. `?terrain=off` disables LOD polling for that view.
+legacy manifest route. The top-level `lod_url` identifies the static snapshot;
+`?terrain=off` selects it without contacting the live terrain service.
 
 The synthetic fixture requires no Minecraft assets or private data:
 
