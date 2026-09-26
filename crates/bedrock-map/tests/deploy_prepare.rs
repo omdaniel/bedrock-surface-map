@@ -453,8 +453,11 @@ fn active_live_store_and_changed_assets_refuse_another_prepare() {
     let prepared = f.prepare().unwrap();
     let database = f.root.join("prepared/terrain/current.sqlite3");
     let db = rusqlite::Connection::open(&database).unwrap();
-    db.execute("UPDATE meta SET value='1' WHERE key='observation'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='observation'",
+        [],
+    )
+    .unwrap();
     drop(db);
     let live = inventory(&f.root.join("prepared/terrain"));
     assert!(f.prepare().is_err());
