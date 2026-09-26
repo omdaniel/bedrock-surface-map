@@ -15,6 +15,11 @@ renderer.add_height(level, x, z, words); // Uint32Array, queued
 renderer.has_tile(level, x, z);         // prepared and submitted in queue order
 renderer.has_height(level, x, z);
 renderer.set_cut(new Float32Array([level, x, z, opacity /* ... */]));
+renderer.set_transition(
+  new Float32Array([oldLevel, oldX, oldZ /* ... */]),
+  new Float32Array([newLevel, newX, newZ /* ... */]), progress);
+const sources = renderer.required_sources(
+  topologyKeyTriples, cx, cz, physicalScale, width, height); // Int32Array triples
 renderer.render(cx, cz, physicalScale, width, height, grid, shadows,
   elevation, azimuth, strength, vivid, relief, reliefWidth);
 renderer.update_materials(startMaterialId, values); // bounded Float32Array range
@@ -34,20 +39,49 @@ supplies physical pixels per block; there is no implicit DPR multiplication.
 Per-tile origins and bounds are computed relative to the camera/tile in f64 before
 GPU conversion. Cut entries are unique keys with finite opacity in [0,1], and
 must name prepared tiles. Float32 cut keys must be exactly representable integers.
+Use `set_cut` for a stable cut; it also retains weighted entries for native
+compositing fixtures. Use `set_transition(previous, next, progress)` for fades:
+both arrays contain key triples, with implicit unit opacity. Each topology must
+be nonoverlapping and edge/corner 2:1 balanced. Progress is finite in [0,1]; the
+combined entry count is at most 128, including keys shared by both cuts. Native
+`GpuLod::set_transition` takes two `Vec<CutEntry>` with every opacity equal to one.
+Invalid input leaves the current cuts unchanged. Repeating the same ordered keys
+reuses topology maps; only the external weights (1-progress, progress) change.
+Each topology derives its own boundary bands, independent of the other topology
+or its fade weight. The two contributions use ordered render passes into the
+same accumulation target, followed by one resolve. There is no second framebuffer.
+At progress zero/one only the contributing topology schedules lighting or requires
+visible resources. Call `set_cut` at completion to release obsolete CPU topology.
+`required_sources` validates one supplied unit-opacity topology without requiring
+its tiles to be resident or changing the active cut. It returns sorted unique
+Int32 key triples for every immediate boundary parent and visibly sampled
+in-world parent-level gutter sibling, at most 512 keys for a 128-entry cut.
+Query both transition topologies and union the dependencies before admission;
+retain them through the fade. This query excludes draw tiles themselves and
+height pages. Use the actual physical camera/viewport and world bounds; query
+again when the topology or view changes, not just when progress changes.
 Spatially adjacent cut members differing by one level use a two-finer-sample
 edge band (one parent sample). `set_cut` discovers these 2:1 edges using integer
 keys and requires the finer tile's immediate parent to be prepared/resident.
 The parent is not another cut contribution: its shaded cache is sampled only
-inside the band, using child parity and tile-local coordinates. Coarser-neighbor
-opacity weights the band during cut transitions. Fine interiors remain exact;
+inside the band, using child parity and tile-local coordinates. Transition bands
+have full spatial weight before the external fade multiplies the contribution.
+Fine interiors remain exact;
 unknown/empty/outside child cells and partially covered coarse samples do not
 blend to parent ground. Retain required parents until the mixed edge leaves the
 cut; removing one while its child remains visible produces an explicit render
-error instead of sampling a blank placeholder.
+error instead of sampling a blank placeholder. Visible in-world parent-level
+gutter siblings must also be retained, even if they are not ancestors of any cut
+entry; missing sources produce errors naming the child and source keys. Sources
+entirely outside world bounds need no residency. Stale resident sources still
+draw their previous cached color and report approximation until relit. Removing
+an active transition tile does not silently delete it from the topology: rendering
+fails until it is restored or the controller supplies a new valid topology.
 Diagonal 2:1 neighbors use a two-by-two finer-sample corner patch with the product
 of the two edge weights, meeting adjacent edge bands continuously. Keep the level
-spread at a shared corner to at most one; recursive three-level corners are not
-supported by this immediate-parent scheme.
+spread at a shared corner to at most one; unsupported within-cut edge/corner level
+jumps are rejected, including by `set_cut`. The two transition topologies may
+have a larger combined level spread because their boundaries remain independent.
 
 Tile side is 128 samples; `(level,x,z)` has origin
 `(x,z) * (128 << level)`, with levels 0 through 16. Level zero detail has eight
@@ -74,8 +108,8 @@ preparation limit. An interior-only view does not schedule offscreen edge bands.
 height-dependency invalidation is tracked separately. Initial queued tile uploads
 still prepare their cache before `has_tile` becomes true. Already submitted GPU
 work is not canceled. Cut opacities use additive premultiplied
-accumulation and a final background resolve; the controller must partition the
-cut and provide transition weights. Unknown and empty contributions cover the
+accumulation and a final background resolve; the controller supplies independently
+partitioned cuts, never a weighted union of transition topologies. Unknown and empty contributions cover the
 background instead of discarding and exposing parent ground. Root fallback is
 usable with approximate lighting before its height dependencies arrive.
 
@@ -88,7 +122,7 @@ Gutters propagate the sibling's own height-status flags without recursive
 contamination. Only equally current lighting caches are stitched. Mixed-level
 2:1 edges blend toward these common parent/sibling samples. Parent-cache status
 and stale edge dependencies propagate into height feedback. Level jumps larger
-than one and multi-level corner transitions are not given recursive blending.
+than one inside a topology are not given recursive blending.
 The caller supplies atlas padding; two mip levels are generated on the GPU.
 ImageBitmap upload uses `copy_external_image_to_texture`, without a WASM RGBA copy.
 
@@ -147,7 +181,7 @@ These are nominal resource bytes, not an estimate of driver heap overhead.
 | Temporary level-zero height upload/build/table | 135,296 |
 | Temporary coarse height upload/build/table | 200,832 |
 | Accumulation target | width * height * 8 |
-| Frame uniform upload | 80 + residentTiles * 80 |
+| Frame uniform upload | 80 + visible contributing draws * 80 + (one cache preparation ? 80 : 0), at most 10,400 |
 
 The arena is allocated with `create_buffer`, not a CPU zero vector. One slot is
 reserved for atomic replacement: at most 127 height pages are resident and

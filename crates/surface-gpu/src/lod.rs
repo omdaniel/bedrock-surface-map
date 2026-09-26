@@ -198,10 +198,74 @@ fn cut_boundaries(cut: &[CutEntry]) -> BTreeMap<Key, Boundary> {
     boundaries
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CutEntry {
     pub key: Key,
     pub opacity: f32,
+}
+
+#[derive(Default)]
+struct Topology {
+    entries: Vec<CutEntry>,
+    boundaries: BTreeMap<Key, Boundary>,
+}
+impl Topology {
+    fn new(entries: Vec<CutEntry>, opaque: bool) -> Result<Self> {
+        ensure!(
+            entries.len() <= MAX_TILES,
+            "LOD draw cut exceeds 128 entries"
+        );
+        let mut keys = std::collections::BTreeSet::new();
+        for entry in &entries {
+            Key::new(entry.key.level, entry.key.x, entry.key.z)?;
+            ensure!(
+                entry.opacity.is_finite() && (0.0..=1.0).contains(&entry.opacity),
+                "invalid cut opacity"
+            );
+            ensure!(
+                !opaque || entry.opacity == 1.,
+                "transition cuts require unit opacity"
+            );
+            ensure!(keys.insert(entry.key), "duplicate tile in draw cut");
+        }
+        for (i, a) in entries.iter().enumerate().filter(|(_, e)| e.opacity > 0.) {
+            let a_rect = key_rect(a.key);
+            for b in entries[..i].iter().filter(|e| e.opacity > 0.) {
+                let b_rect = key_rect(b.key);
+                let dx = a_rect[2].min(b_rect[2]) - a_rect[0].max(b_rect[0]);
+                let dz = a_rect[3].min(b_rect[3]) - a_rect[1].max(b_rect[1]);
+                let overlap = dx > 0 && dz > 0;
+                ensure!(
+                    !opaque || !overlap,
+                    "transition cut has overlapping tiles: {:?}, {:?}",
+                    a.key,
+                    b.key
+                );
+                ensure!(
+                    overlap || dx < 0 || dz < 0 || a.key.level.abs_diff(b.key.level) <= 1,
+                    "LOD cut is not 2:1 balanced at an edge or corner: {:?}, {:?}",
+                    a.key,
+                    b.key
+                );
+            }
+        }
+        Ok(Self {
+            boundaries: cut_boundaries(&entries),
+            entries,
+        })
+    }
+    fn cpu_bytes(&self) -> usize {
+        self.entries.capacity() * std::mem::size_of::<CutEntry>()
+            + self.boundaries.len() * (std::mem::size_of::<(Key, Boundary)>() + 128)
+    }
+}
+
+// Exact block bounds also cover level-16 keys beyond the f32 world range.
+fn key_rect(key: Key) -> [i64; 4] {
+    let span = 128i64 << key.level;
+    let x = key.x as i64 * span;
+    let z = key.z as i64 * span;
+    [x, z, x + span, z + span]
 }
 
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -223,6 +287,21 @@ struct View {
     height: u32,
 }
 impl View {
+    fn new(camera: [f64; 2], scale: f64, width: u32, height: u32) -> Result<Self> {
+        ensure!(
+            camera.into_iter().all(f64::is_finite)
+                && scale.is_finite()
+                && scale > 0.
+                && scale <= 65536.,
+            "invalid LOD camera"
+        );
+        Ok(Self {
+            camera,
+            scale,
+            width,
+            height,
+        })
+    }
     fn origin(self, key: Key) -> [f64; 2] {
         [
             key.x as f64 * key.span() - self.camera[0],
@@ -233,6 +312,9 @@ impl View {
         self.local_visible(key, [0., 0., 128., 128.])
     }
     fn local_visible(self, key: Key, rect: [f64; 4]) -> bool {
+        if self.width == 0 || self.height == 0 {
+            return false;
+        }
         let [x, z] = self.origin(key);
         let sample = (1u32 << key.level) as f64;
         let half_x = self.width as f64 / self.scale * 0.5;
@@ -476,8 +558,8 @@ pub struct GpuLod {
     tiles: BTreeMap<Key, Tile>,
     heights: BTreeMap<Key, usize>,
     pending: VecDeque<Pending>,
-    cut: Vec<CutEntry>,
-    boundaries: BTreeMap<Key, Boundary>,
+    cuts: [Topology; 2],
+    transition: Option<f32>,
     target: Option<Target>,
     retirement: Mutex<Retirement>,
     completed: Arc<AtomicU64>,
@@ -716,8 +798,8 @@ impl GpuLod {
             tiles: BTreeMap::new(),
             heights: BTreeMap::new(),
             pending: VecDeque::new(),
-            cut: Vec::new(),
-            boundaries: BTreeMap::new(),
+            cuts: Default::default(),
+            transition: None,
             target: None,
             retirement: Mutex::default(),
             completed: Arc::default(),
@@ -951,10 +1033,9 @@ impl GpuLod {
             .map(|p| p.words.capacity() * 4)
             .sum::<usize>()
             + self.pending.capacity() * std::mem::size_of::<Pending>()
-            + self.cut.capacity() * std::mem::size_of::<CutEntry>()
+            + self.cuts.iter().map(Topology::cpu_bytes).sum::<usize>()
             + self.tiles.len() * (std::mem::size_of::<(Key, Tile)>() + 128)
             + self.heights.len() * (std::mem::size_of::<(Key, usize)>() + 128)
-            + self.boundaries.len() * (std::mem::size_of::<(Key, Boundary)>() + 128)
             + self.free_slots.capacity() * std::mem::size_of::<usize>()
             + std::mem::size_of::<Self>()
             + retired_metadata
@@ -989,6 +1070,24 @@ impl GpuLod {
     pub fn pending_preparations(&self) -> usize {
         self.pending.len() + self.preparation_keys().len()
     }
+    fn cut_weights(&self) -> [f32; 2] {
+        self.transition.map_or([1., 0.], |t| [1. - t, t])
+    }
+    fn active_cuts(&self) -> impl Iterator<Item = (&Topology, f32)> {
+        self.cuts
+            .iter()
+            .zip(self.cut_weights())
+            .filter(|(_, w)| *w > 0.)
+    }
+    fn in_world(&self, key: Key) -> bool {
+        self.world.is_none_or(|(bounds, _)| {
+            let rect = key_rect(key);
+            rect[0] < bounds[2] as i64
+                && rect[2] > bounds[0] as i64
+                && rect[1] < bounds[3] as i64
+                && rect[3] > bounds[1] as i64
+        })
+    }
     fn preparation_keys(&self) -> Vec<Key> {
         let mut keys = Vec::new();
         let Some(view) = self.view else {
@@ -1004,14 +1103,18 @@ impl GpuLod {
                 keys.push(key);
             }
         };
-        for (key, boundary) in &self.boundaries {
-            for source in boundary.sources(*key, view) {
-                add(source);
+        for (cut, _) in self.active_cuts() {
+            for (key, boundary) in &cut.boundaries {
+                for source in boundary.sources(*key, view) {
+                    if source == boundary.parent || self.in_world(source) {
+                        add(source);
+                    }
+                }
             }
-        }
-        for entry in &self.cut {
-            if entry.opacity > 0. && view.visible(entry.key) {
-                add(entry.key);
+            for entry in &cut.entries {
+                if entry.opacity > 0. && view.visible(entry.key) {
+                    add(entry.key);
+                }
             }
         }
         keys
@@ -1205,35 +1308,97 @@ impl GpuLod {
     }
     pub fn set_cut(&mut self, cut: Vec<CutEntry>) -> Result<()> {
         self.ensure_active()?;
-        ensure!(cut.len() <= MAX_TILES, "LOD draw cut exceeds 128 entries");
-        let mut keys = std::collections::BTreeSet::new();
-        for e in &cut {
-            ensure!(
-                e.opacity.is_finite() && (0.0..=1.0).contains(&e.opacity),
-                "invalid cut opacity"
-            );
-            ensure!(keys.insert(e.key), "duplicate tile in draw cut");
-            ensure!(self.has_tile(e.key), "draw cut includes an unprepared tile");
-        }
-        if self.cut.len() != cut.len()
-            || self
-                .cut
-                .iter()
-                .zip(&cut)
-                .any(|(a, b)| a.key != b.key || a.opacity != b.opacity)
-        {
-            let boundaries = cut_boundaries(&cut);
-            for boundary in boundaries.values() {
-                ensure!(
-                    self.has_tile(boundary.parent),
-                    "mixed LOD edge requires a prepared resident parent"
-                );
-            }
+        if self.transition.is_some() || self.cuts[0].entries != cut {
+            let topology = Topology::new(cut, false)?;
+            self.validate_residency(&topology)?;
             self.feedback_revision += 1;
-            self.cut = cut;
-            self.boundaries = boundaries;
+            self.cuts = [topology, Topology::default()];
+            self.transition = None;
         }
         Ok(())
+    }
+    /// Each topology is nonoverlapping, unit opacity and edge/corner 2:1 balanced.
+    /// Repeating the same ordered keys changes only the external fade weight.
+    pub fn set_transition(
+        &mut self,
+        previous: Vec<CutEntry>,
+        next: Vec<CutEntry>,
+        progress: f32,
+    ) -> Result<()> {
+        self.ensure_active()?;
+        ensure!(
+            (0.0..=1.0).contains(&progress),
+            "invalid LOD transition progress"
+        );
+        ensure!(
+            previous.len() + next.len() <= MAX_TILES,
+            "LOD transition exceeds 128 combined draws"
+        );
+        if self.transition.is_none()
+            || self.cuts[0].entries != previous
+            || self.cuts[1].entries != next
+        {
+            let cuts = [Topology::new(previous, true)?, Topology::new(next, true)?];
+            for cut in &cuts {
+                self.validate_residency(cut)?;
+            }
+            self.cuts = cuts;
+            self.feedback_revision += 1;
+        }
+        if self.transition != Some(progress) {
+            self.transition = Some(progress);
+            self.feedback_revision += 1;
+        }
+        Ok(())
+    }
+    fn validate_residency(&self, cut: &Topology) -> Result<()> {
+        for entry in &cut.entries {
+            ensure!(
+                self.has_tile(entry.key),
+                "draw cut includes an unprepared tile: {:?}",
+                entry.key
+            );
+        }
+        for boundary in cut.boundaries.values() {
+            ensure!(
+                self.has_tile(boundary.parent),
+                "mixed LOD edge requires a prepared resident parent: {:?}",
+                boundary.parent
+            );
+        }
+        Ok(())
+    }
+    /// Pure residency planning: accepts an opaque topology before its tiles exist.
+    /// Includes every boundary parent and only visibly sampled in-world gutters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn required_sources(
+        &self,
+        entries: Vec<CutEntry>,
+        cx: f64,
+        cz: f64,
+        scale: f64,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<Key>> {
+        self.ensure_active()?;
+        ensure!(
+            self.world.is_some(),
+            "set_world is required before LOD dependency planning"
+        );
+        let view = View::new([cx, cz], scale, width, height)?;
+        let topology = Topology::new(entries, true)?;
+        let mut keys = std::collections::BTreeSet::new();
+        for (key, boundary) in &topology.boundaries {
+            keys.insert(boundary.parent);
+            for source in boundary.sources(*key, view) {
+                if self.in_world(source) {
+                    keys.insert(source);
+                }
+            }
+        }
+        // One parent and its three possible side/corner siblings per finer key.
+        debug_assert!(keys.len() <= MAX_TILES * 4);
+        Ok(keys.into_iter().collect())
     }
     pub fn set_materials(&mut self, values: &[f32]) -> Result<()> {
         self.ensure_active()?;
@@ -1302,8 +1467,10 @@ impl GpuLod {
             .retain(|p| p.kind != Kind::Tile || p.key != key);
         if let Some(tile) = self.tiles.remove(&key) {
             self.feedback_revision += 1;
-            self.cut.retain(|e| e.key != key);
-            self.boundaries = cut_boundaries(&self.cut);
+            if self.transition.is_none() {
+                self.cuts[0].entries.retain(|e| e.key != key);
+                self.cuts[0].boundaries = cut_boundaries(&self.cuts[0].entries);
+            }
             self.retire(tile.resources(), vec![]);
             let mut encoder = self.device.create_command_encoder(&Default::default());
             self.reset_neighbor_gutters(key, &mut encoder);
@@ -1901,6 +2068,68 @@ impl GpuLod {
             state.busy[index] = false;
         }
     }
+    fn validate_visible_sources(&self, view: View) -> Result<()> {
+        for (cut, _) in self.active_cuts() {
+            for entry in &cut.entries {
+                ensure!(
+                    entry.opacity == 0. || !view.visible(entry.key) || self.has_tile(entry.key),
+                    "active LOD transition tile was removed: {:?}",
+                    entry.key
+                );
+            }
+            for (key, boundary) in &cut.boundaries {
+                for source in boundary.sources(*key, view) {
+                    ensure!(
+                        (source != boundary.parent && !self.in_world(source))
+                            || self.has_tile(source),
+                        "mixed LOD edge for {:?} requires resident parent/gutter source {:?}",
+                        key,
+                        source
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+    fn draw_uniform(
+        &self,
+        key: Key,
+        opacity: f32,
+        boundary: Option<&Boundary>,
+        view: View,
+        shade_key: Option<Key>,
+        bounds: [i32; 4],
+    ) -> DrawUniform {
+        let [x, z] = view.origin(key);
+        let tile = &self.tiles[&key];
+        let weights = boundary.map_or([0.; 8], |b| b.weights);
+        let parent_stale = boundary.is_some_and(|b| {
+            b.sources(key, view).into_iter().any(|k| {
+                (k == b.parent || self.in_world(k))
+                    && shade_key != Some(k)
+                    && self
+                        .tiles
+                        .get(&k)
+                        .is_none_or(|t| t.needs_shade(self.lighting_epoch))
+            })
+        });
+        DrawUniform {
+            origin: [x as f32, z as f32, (1u32 << key.level) as f32, opacity],
+            key: [
+                key.level as i32,
+                key.x,
+                key.z,
+                (if tile.needs_shade(self.lighting_epoch) && shade_key != Some(key) {
+                    8
+                } else {
+                    0
+                }) | if parent_stale { 16 } else { 0 },
+            ],
+            world: relative_bounds(key, bounds),
+            edges: weights[..4].try_into().unwrap(),
+            corners: weights[4..].try_into().unwrap(),
+        }
+    }
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -1920,14 +2149,7 @@ impl GpuLod {
         relief_width: f32,
     ) -> Result<bool> {
         self.ensure_active()?;
-        ensure!(
-            cx.is_finite()
-                && cz.is_finite()
-                && scale.is_finite()
-                && scale > 0.0
-                && scale <= 65536.0,
-            "invalid LOD camera"
-        );
+        let view = View::new([cx, cz], scale, width, height)?;
         ensure!(
             (15.0..=75.0).contains(&elevation)
                 && (0.0..=360.0).contains(&azimuth)
@@ -1942,12 +2164,6 @@ impl GpuLod {
         let (bounds, height_max) = self
             .world
             .ok_or_else(|| anyhow::anyhow!("set_world is required before LOD rendering"))?;
-        let view = View {
-            camera: [cx, cz],
-            scale,
-            width,
-            height,
-        };
         let lighting = [
             shadows as u32 as f32,
             elevation,
@@ -1971,13 +2187,17 @@ impl GpuLod {
         if self.pending_submissions() >= 3 {
             return Ok(false);
         }
-        for (key, boundary) in &self.boundaries {
-            ensure!(
-                !view.visible(*key) || self.has_tile(boundary.parent),
-                "mixed LOD edge parent was removed while its child remains in the cut"
-            );
-        }
-        let upload_bytes = 80 + (self.tiles.len() as u64 + 1) * DRAW_BYTES;
+        self.validate_visible_sources(view)?;
+        let draw_count: usize = self
+            .active_cuts()
+            .map(|(cut, _)| {
+                cut.entries
+                    .iter()
+                    .filter(|e| e.opacity > 0. && view.visible(e.key))
+                    .count()
+            })
+            .sum();
+        let upload_bytes = 80 + (draw_count as u64 + 1) * DRAW_BYTES;
         let prepare_bytes = self.pending.front().map_or(0, |next| {
             if next.kind == Kind::Height {
                 self.height_bytes(next.key.level)
@@ -2025,44 +2245,35 @@ impl GpuLod {
             0.,
             0.,
         ];
-        let mut uniforms = Vec::<u8>::with_capacity(80 + self.tiles.len() * DRAW_BYTES as usize);
+        let mut uniforms = Vec::<u8>::with_capacity(
+            80 + (draw_count + usize::from(shade_key.is_some())) * DRAW_BYTES as usize,
+        );
         uniforms.extend_from_slice(bytemuck::cast_slice(&params));
-        for (key, tile) in &self.tiles {
-            let [x, z] = view.origin(*key);
-            let boundary = self.boundaries.get(key);
-            let weights = boundary.map_or([0.; 8], |b| b.weights);
-            let parent_stale = boundary.is_some_and(|b| {
-                let stale = |k| {
-                    shade_key != Some(k)
-                        && self
-                            .tiles
-                            .get(&k)
-                            .is_none_or(|t| t.needs_shade(self.lighting_epoch))
-                };
-                b.sources(*key, view).into_iter().any(stale)
-            });
-            let opacity = self
-                .cut
-                .iter()
-                .find(|e| e.key == *key)
-                .map_or(1., |e| e.opacity);
-            let uniform = DrawUniform {
-                origin: [x as f32, z as f32, (1u32 << key.level) as f32, opacity],
-                key: [
-                    key.level as i32,
-                    key.x,
-                    key.z,
-                    (if tile.needs_shade(self.lighting_epoch) && shade_key != Some(*key) {
-                        8
-                    } else {
-                        0
-                    }) | if parent_stale { 16 } else { 0 },
-                ],
-                world: relative_bounds(*key, bounds),
-                edges: weights[..4].try_into().unwrap(),
-                corners: weights[4..].try_into().unwrap(),
-            };
+        if let Some(key) = shade_key {
+            let uniform = self.draw_uniform(key, 1., None, view, shade_key, bounds);
             uniforms.extend_from_slice(bytemuck::bytes_of(&uniform));
+        }
+        let mut draws: [Vec<(Key, u64)>; 2] = Default::default();
+        for ((cut, weight), draws) in self.cuts.iter().zip(self.cut_weights()).zip(&mut draws) {
+            if weight == 0. {
+                continue;
+            }
+            for e in cut
+                .entries
+                .iter()
+                .filter(|e| e.opacity > 0. && view.visible(e.key))
+            {
+                draws.push((e.key, uniforms.len() as u64));
+                let uniform = self.draw_uniform(
+                    e.key,
+                    e.opacity * weight,
+                    cut.boundaries.get(&e.key),
+                    view,
+                    shade_key,
+                    bounds,
+                );
+                uniforms.extend_from_slice(bytemuck::bytes_of(&uniform));
+            }
         }
         let staging = buffer(
             &self.device,
@@ -2071,22 +2282,26 @@ impl GpuLod {
             wgpu::BufferUsages::COPY_SRC,
         );
         encoder.copy_buffer_to_buffer(&staging, 0, &self.params, 0, 80);
-        for (i, tile) in self.tiles.values().enumerate() {
-            encoder.copy_buffer_to_buffer(
-                &staging,
-                80 + i as u64 * DRAW_BYTES,
-                &tile.origin,
-                0,
-                DRAW_BYTES,
-            );
-        }
-        self.upload_peak = self.upload_peak.max(self.cpu_bytes() + uniforms.capacity());
-        self.retire(vec![Resource::Buffer(staging)], vec![]);
         if let Some(key) = shade_key {
+            encoder.copy_buffer_to_buffer(&staging, 80, &self.tiles[&key].origin, 0, DRAW_BYTES);
             self.shade_one(key, &mut encoder);
         }
         let target = self.target.as_ref().unwrap();
-        {
+        for (index, (cut, draws)) in self.cuts.iter().zip(&draws).enumerate() {
+            if index > 0 && draws.is_empty() {
+                continue;
+            }
+            // Shared tile keys may have different boundaries in the two cuts.
+            // Ordered copies between passes preserve both using the same buffers.
+            for (key, offset) in draws {
+                encoder.copy_buffer_to_buffer(
+                    &staging,
+                    *offset,
+                    &self.tiles[key].origin,
+                    0,
+                    DRAW_BYTES,
+                );
+            }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("LOD premultiplied additive cut"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -2094,7 +2309,11 @@ impl GpuLod {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        load: if index == 0 {
+                            wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
+                        } else {
+                            wgpu::LoadOp::Load
+                        },
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -2102,15 +2321,12 @@ impl GpuLod {
             });
             pass.set_pipeline(&self.terrain);
             pass.set_bind_group(0, &self.global, &[]);
-            for e in &self.cut {
-                if e.opacity == 0. || !view.visible(e.key) {
-                    continue;
-                }
-                if let Some(tile) = self.tiles.get(&e.key).filter(|t| t.ready) {
+            for (key, _) in draws {
+                if let Some(tile) = self.tiles.get(key).filter(|t| t.ready) {
                     pass.set_bind_group(1, &tile.group, &[]);
-                    let source = self
+                    let source = cut
                         .boundaries
-                        .get(&e.key)
+                        .get(key)
                         .and_then(|b| self.tiles.get(&b.parent))
                         .and_then(|t| t.edge_source.as_ref())
                         .unwrap_or(&self.dummy_edge_source);
@@ -2137,6 +2353,15 @@ impl GpuLod {
             pass.set_bind_group(0, &target.group, &[]);
             pass.draw(0..3, 0..1);
         }
+        self.upload_peak = self.upload_peak.max(
+            self.cpu_bytes()
+                + uniforms.capacity()
+                + draws
+                    .iter()
+                    .map(|d| d.capacity() * std::mem::size_of::<(Key, u64)>())
+                    .sum::<usize>(),
+        );
+        self.retire(vec![Resource::Buffer(staging)], vec![]);
         let readback = {
             let mut state = self.feedback_state.lock().unwrap();
             let index = state.busy.iter().position(|busy| !busy);
@@ -2162,8 +2387,8 @@ impl GpuLod {
             return;
         }
         self.pending = VecDeque::new();
-        self.cut = Vec::new();
-        self.boundaries.clear();
+        self.cuts = Default::default();
+        self.transition = None;
         self.heights.clear();
         self.free_slots = Vec::new();
         for tile in std::mem::take(&mut self.tiles).into_values() {

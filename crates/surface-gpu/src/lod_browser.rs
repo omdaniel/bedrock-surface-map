@@ -5,6 +5,32 @@ fn js_error(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
 
+fn parse_cut(entries: js_sys::Float32Array, stride: usize) -> Result<Vec<CutEntry>, JsValue> {
+    if !(entries.length() as usize).is_multiple_of(stride)
+        || entries.length() as usize > MAX_TILES * stride
+    {
+        return Err(js_error("LOD cut length mismatch"));
+    }
+    let values = entries.to_vec();
+    let mut cut = Vec::with_capacity(values.len() / stride);
+    for e in values.chunks_exact(stride) {
+        if e[..3].iter().any(|v| !v.is_finite() || v.fract() != 0.)
+            || !(0.0..=16.0).contains(&e[0])
+            || e[1].abs() > 16777216.
+            || e[2].abs() > 16777216.
+        {
+            return Err(js_error(
+                "cut keys must be exactly representable Float32 integers",
+            ));
+        }
+        cut.push(CutEntry {
+            key: Key::new(e[0] as u32, e[1] as i32, e[2] as i32).map_err(js_error)?,
+            opacity: if stride == 4 { e[3] } else { 1. },
+        });
+    }
+    Ok(cut)
+}
+
 #[wasm_bindgen]
 pub struct LodRenderer {
     gpu: GpuLod,
@@ -200,27 +226,49 @@ impl LodRenderer {
     }
     pub fn set_cut(&mut self, entries: js_sys::Float32Array) -> Result<(), JsValue> {
         self.ensure_active()?;
-        if !entries.length().is_multiple_of(4) || entries.length() as usize > MAX_TILES * 4 {
-            return Err(js_error("LOD cut length mismatch"));
+        self.gpu.set_cut(parse_cut(entries, 4)?).map_err(js_error)
+    }
+    /// Key triples [level, x, z]; topology opacity is always one.
+    pub fn set_transition(
+        &mut self,
+        previous: js_sys::Float32Array,
+        next: js_sys::Float32Array,
+        progress: f32,
+    ) -> Result<(), JsValue> {
+        self.ensure_active()?;
+        if previous.length() as u64 + next.length() as u64 > (MAX_TILES * 3) as u64 {
+            return Err(js_error("LOD transition exceeds 128 combined draws"));
         }
-        let values = entries.to_vec();
-        let mut cut = Vec::with_capacity(values.len() / 4);
-        for e in values.chunks_exact(4) {
-            if e[..3].iter().any(|v| !v.is_finite() || v.fract() != 0.)
-                || !(0.0..=16.0).contains(&e[0])
-                || e[1].abs() > 16777216.
-                || e[2].abs() > 16777216.
-            {
-                return Err(js_error(
-                    "cut keys must be exactly representable Float32 integers",
-                ));
-            }
-            cut.push(CutEntry {
-                key: Key::new(e[0] as u32, e[1] as i32, e[2] as i32).map_err(js_error)?,
-                opacity: e[3],
-            });
-        }
-        self.gpu.set_cut(cut).map_err(js_error)
+        self.gpu
+            .set_transition(parse_cut(previous, 3)?, parse_cut(next, 3)?, progress)
+            .map_err(js_error)
+    }
+    /// Input Float32 key triples; output Int32 parent/gutter key triples.
+    pub fn required_sources(
+        &self,
+        entries: js_sys::Float32Array,
+        cx: f64,
+        cz: f64,
+        physical_scale: f64,
+        width: u32,
+        height: u32,
+    ) -> Result<Vec<i32>, JsValue> {
+        self.ensure_active()?;
+        let keys = self
+            .gpu
+            .required_sources(
+                parse_cut(entries, 3)?,
+                cx,
+                cz,
+                physical_scale,
+                width,
+                height,
+            )
+            .map_err(js_error)?;
+        Ok(keys
+            .into_iter()
+            .flat_map(|key| [key.level as i32, key.x, key.z])
+            .collect())
     }
     pub fn set_materials(&mut self, values: js_sys::Float32Array) -> Result<(), JsValue> {
         self.ensure_active()?;

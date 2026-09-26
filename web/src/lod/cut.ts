@@ -1,5 +1,6 @@
 import {
   intersects,
+  parentTile,
   tileBounds,
   tileId,
   type Bounds,
@@ -18,6 +19,40 @@ export interface CutOptions {
     children: readonly TileKey[],
     replacement: readonly TileKey[],
   ): boolean;
+}
+
+/** Picking follows displayed coverage, not whichever finer tile is cached. */
+export function coveringTile(
+  cut: readonly TileKey[],
+  x: number,
+  z: number,
+): TileKey | undefined {
+  if (!Number.isFinite(x) || !Number.isFinite(z)) return undefined;
+  return cut.find((key) => {
+    const bounds = tileBounds(key);
+    return x >= bounds[0] && x < bounds[2] && z >= bounds[1] && z < bounds[3];
+  });
+}
+
+/** Active/fading tiles retain the parent caches used by mixed-resolution edges. */
+export function cutAncestors(
+  cut: readonly TileKey[],
+  rootLevel: number,
+): Set<string> {
+  if (!Number.isInteger(rootLevel) || rootLevel < 0 || rootLevel > 16)
+    throw new RangeError("Invalid root level");
+  const ids = new Set<string>();
+  for (const key of cut) {
+    if (key.level > rootLevel) throw new RangeError("Tile is above its root");
+    let current: TileKey | null = key;
+    while (current && current.level <= rootLevel) {
+      const id = tileId(current);
+      if (ids.has(id)) break;
+      ids.add(id);
+      current = parentTile(current);
+    }
+  }
+  return ids;
 }
 
 /** Balanced at edges/corners, sibling-atomic refinement of known sparse nodes. */

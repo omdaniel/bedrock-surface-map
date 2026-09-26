@@ -208,7 +208,21 @@ async function responsiveCoarse(page: Page, anchor: { x: number; z: number }) {
 }
 
 async function attachCanvas(page: Page, info: TestInfo, name: string) {
-  const body = await page.locator("#map").screenshot({ timeout: 3000 });
+  const canvas = page.locator("#map");
+  await expect(canvas).toBeVisible();
+  const clip = await canvas.boundingBox();
+  expect(clip).not.toBeNull();
+  const viewport = page.viewportSize()!;
+  expect(clip!.x).toBeGreaterThanOrEqual(0);
+  expect(clip!.y).toBeGreaterThanOrEqual(0);
+  expect(clip!.width).toBeGreaterThan(0);
+  expect(clip!.height).toBeGreaterThan(0);
+  expect(clip!.x + clip!.width).toBeLessThanOrEqual(viewport.width);
+  expect(clip!.y + clip!.height).toBeLessThanOrEqual(viewport.height);
+  // Capture the current terrain frame without a separate two-rAF element-stability wait.
+  // Camera responsiveness has its own deadline above; software-GPU capture is not that metric.
+  const body = await page.screenshot({ clip: clip!, timeout: 15_000 });
+  expect(await canvas.boundingBox()).toEqual(clip);
   const png = PNG.sync.read(body),
     colors = new Set<string>();
   for (let y = 0; y < png.height; y += 11)
@@ -218,11 +232,11 @@ async function attachCanvas(page: Page, info: TestInfo, name: string) {
         `${png.data[i] >> 3},${png.data[i + 1] >> 3},${png.data[i + 2] >> 3}`,
       );
     }
+  await info.attach(name, { body, contentType: "image/png" });
   expect(
     colors.size,
     "Available coarse terrain must remain rendered",
   ).toBeGreaterThan(20);
-  await info.attach(name, { body, contentType: "image/png" });
 }
 
 async function delayedPayload(page: Page, url: string) {

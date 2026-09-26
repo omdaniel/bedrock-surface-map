@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { balancedCut } from "../web/src/lod/cut.ts";
+import { balancedCut, coveringTile, cutAncestors } from "../web/src/lod/cut.ts";
 import {
   childTiles,
   rootForest,
@@ -94,4 +94,36 @@ test("sparse children and extreme coordinates do not expand a flat world index",
   assert.ok(visited <= 20);
   assert.ok(keys.every((key) => key.level === 0));
   assert.ok(keys.length <= 4);
+});
+
+test("picking uses the selected cut with half-open negative boundaries", () => {
+  const coarse = { level: 1, x: -1, z: -1 };
+  const fine = { level: 0, x: 0, z: -1 };
+  const selected = [coarse, fine];
+  assert.equal(coveringTile(selected, -0.25, -0.25), coarse);
+  assert.equal(coveringTile(selected, -256, -256), coarse);
+  assert.equal(coveringTile(selected, 0, -0.25), fine);
+  assert.equal(coveringTile(selected, 128, -0.25), undefined);
+  assert.equal(coveringTile(selected, -0.25, 0), undefined);
+  assert.equal(coveringTile(selected, Number.NaN, 0), undefined);
+  assert.equal(coveringTile([], -1, -1), undefined);
+});
+
+test("active and retiring cuts retain their shared parent caches exactly once", () => {
+  assert.deepEqual(
+    [
+      ...cutAncestors(
+        [
+          { level: 0, x: -3, z: -1 },
+          { level: 0, x: -4, z: -2 },
+        ],
+        2,
+      ),
+    ],
+    ["0/-3/-1", "1/-2/-1", "2/-1/-1", "0/-4/-2"],
+  );
+  assert.equal(cutAncestors(cut(64), 2).size, 84);
+  assert.equal(cutAncestors([], 16).size, 0);
+  assert.throws(() => cutAncestors([], 17));
+  assert.throws(() => cutAncestors([{ level: 2, x: 0, z: 0 }], 1));
 });

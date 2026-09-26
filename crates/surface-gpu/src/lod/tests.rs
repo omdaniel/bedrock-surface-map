@@ -1302,7 +1302,7 @@ fn diagonal_mixed_corner_uses_common_parent_gutters_and_visible_dependencies() {
         });
         gpu.set_cut(mixed_cut).unwrap();
         assert_eq!(
-            gpu.boundaries[&children[0]].weights[7], 1.,
+            gpu.cuts[0].boundaries[&children[0]].weights[7], 1.,
             "diagonal-only child needs a corner patch"
         );
         draw(&mut gpu, &out, camera, false, 0.);
@@ -1349,5 +1349,401 @@ fn diagonal_mixed_corner_uses_common_parent_gutters_and_visible_dependencies() {
         }
         assert_eq!(gpu.pending_preparations(), 0);
         assert_eq!(gpu.height_status()[0], 0);
+    }
+}
+
+fn unit_cut(keys: impl IntoIterator<Item = Key>) -> Vec<CutEntry> {
+    keys.into_iter()
+        .map(|key| CutEntry { key, opacity: 1. })
+        .collect()
+}
+
+#[test]
+fn transition_topology_rejects_overlap_and_unbalanced_edges_and_corners() {
+    for origin in [0, -1000, 8_000_000] {
+        let coarse = Key::new(2, origin, -origin).unwrap();
+        for (dx, dz) in [(-1, 0), (-1, -1), (4, 4), (4, 0)] {
+            let fine = Key::new(0, origin * 4 + dx, -origin * 4 + dz).unwrap();
+            let entries = unit_cut([coarse, fine]);
+            assert!(Topology::new(entries.clone(), true).is_err());
+            assert!(
+                Topology::new(entries, false).is_err(),
+                "stable cuts also reject unsupported level jumps"
+            );
+        }
+        let child = Key::new(1, origin * 2, -origin * 2).unwrap();
+        assert!(Topology::new(unit_cut([coarse, child]), true).is_err());
+        let separated = Key::new(0, origin * 4 - 2, -origin * 4 - 2).unwrap();
+        assert!(Topology::new(unit_cut([coarse, separated]), true).is_ok());
+    }
+    let key = Key::new(0, 0, 0).unwrap();
+    assert!(Topology::new(unit_cut([key, key]), true).is_err());
+    for opacity in [0., 0.5, f32::NAN, f32::INFINITY] {
+        assert!(Topology::new(vec![CutEntry { key, opacity }], true).is_err());
+    }
+}
+
+fn draw_transition_fixture(gpu: &mut GpuLod, out: &wgpu::Texture, camera: [f64; 3]) {
+    assert!(
+        gpu.render(
+            &out.create_view(&Default::default()),
+            camera[0],
+            camera[1],
+            camera[2],
+            out.width(),
+            out.height(),
+            true,
+            false,
+            45.,
+            90.,
+            0.55,
+            false,
+            0.,
+            0.25
+        )
+        .unwrap()
+    );
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+}
+
+#[test]
+fn transition_is_external_fade_of_independent_topologies_at_edges_and_corners() {
+    let mut gpu = setup();
+    let out = output(&gpu, 128, 128);
+    // The second material exercises nonzero overlay IDs in the exact fine path.
+    gpu.set_materials(&[
+        0., 0., 1., 1., 0.5, 0.4, 0.5, 1., 0., 0., 0., 0., 0., 0., 1., 1., 0.2, 0.7, 0.3, 0.5, 0.,
+        0., 0., 0.,
+    ])
+    .unwrap();
+    let mut translated_reference = None;
+    for p in [0, -1000, 4_000_000] {
+        gpu.set_cut(vec![]).unwrap();
+        for key in gpu.tiles.keys().copied().collect::<Vec<_>>() {
+            gpu.remove_tile(key);
+        }
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        let ox = p as f64 * 512.;
+        let oz = -ox;
+        gpu.set_world(
+            [
+                (ox - 512.) as i32,
+                (oz - 512.) as i32,
+                (ox + 512.) as i32,
+                (oz + 512.) as i32,
+            ],
+            0,
+        )
+        .unwrap();
+        let camera = [ox, oz, 16.];
+        let key =
+            |level, x, z| Key::new(level, p * (4 >> level) + x, -p * (4 >> level) + z).unwrap();
+        let mut previous = Vec::new();
+        let mut next = Vec::new();
+        for z in -2..2 {
+            for x in -2..2 {
+                let k = key(1, x, z);
+                gpu.add_tile(
+                    k,
+                    summary(
+                        [
+                            12000 + (x + 2) as u16 * 8000,
+                            14000 + (z + 2) as u16 * 9000,
+                            44000,
+                        ],
+                        0,
+                    ),
+                )
+                .unwrap();
+                draw_transition_fixture(&mut gpu, &out, camera);
+                if (x, z) != (-1, -1) {
+                    previous.push(k);
+                }
+                if x < 0 || z < 0 {
+                    next.push(k);
+                }
+            }
+        }
+        for (x, z) in [(-1, -1), (0, -1), (-1, 0), (0, 0)] {
+            let k = key(2, x, z);
+            gpu.add_tile(
+                k,
+                summary(
+                    [
+                        52000,
+                        22000 + (x + 1) as u16 * 10000,
+                        6000 + (z + 1) as u16 * 18000,
+                    ],
+                    0,
+                ),
+            )
+            .unwrap();
+            draw_transition_fixture(&mut gpu, &out, camera);
+            if (x, z) == (0, 0) {
+                next.push(k);
+            }
+        }
+        for (x, z) in [(-2, -2), (-1, -2), (-2, -1), (-1, -1)] {
+            let k = key(0, x, z);
+            let mut words = detail(0, 1);
+            for (i, cell) in words.chunks_exact_mut(8).enumerate() {
+                cell[3] = u32::from(i % 3 == 0);
+                cell[4] = if i % 5 == 0 { 4 } else { 0 };
+            }
+            gpu.add_tile(k, words).unwrap();
+            draw_transition_fixture(&mut gpu, &out, camera);
+            previous.push(k);
+        }
+        let previous = unit_cut(previous);
+        let next = unit_cut(next);
+        let mut union = previous.clone();
+        union.extend(next.iter().copied().filter(|e| !previous.contains(e)));
+        assert!(
+            Topology::new(union, false).is_err(),
+            "the old weighted-union topology is unbalanced"
+        );
+        for scale in [0.125, 16.] {
+            let camera = [ox, oz, scale];
+            gpu.set_cut(previous.clone()).unwrap();
+            draw_transition_fixture(&mut gpu, &out, camera);
+            let before = pixels(&gpu, &out);
+            gpu.set_cut(next.clone()).unwrap();
+            draw_transition_fixture(&mut gpu, &out, camera);
+            let after = pixels(&gpu, &out);
+            assert_ne!(before, after);
+            gpu.set_transition(previous.clone(), next.clone(), 0.)
+                .unwrap();
+            let entries = gpu.cuts.each_ref().map(|c| c.entries.as_ptr());
+            let boundaries = gpu
+                .cuts
+                .each_ref()
+                .map(|c| c.boundaries.values().next().unwrap() as *const Boundary);
+            let allocations = gpu.allocation_bytes();
+            for progress in [0., 0.25, 0.5, 0.75, 1., 0.5] {
+                gpu.set_transition(previous.clone(), next.clone(), progress)
+                    .unwrap();
+                assert_eq!(gpu.cuts.each_ref().map(|c| c.entries.as_ptr()), entries);
+                assert_eq!(
+                    gpu.cuts
+                        .each_ref()
+                        .map(|c| c.boundaries.values().next().unwrap() as *const Boundary),
+                    boundaries
+                );
+                draw_transition_fixture(&mut gpu, &out, camera);
+                let actual = pixels(&gpu, &out);
+                for (i, &value) in actual.iter().enumerate() {
+                    let expected = before[i] as f32 * (1. - progress) + after[i] as f32 * progress;
+                    assert!(
+                        (value as f32 - expected).abs() <= 2.,
+                        "external fade mismatch at origin={p},scale={scale},progress={progress},byte={i}: {value} != {expected}"
+                    );
+                }
+                assert!(actual.chunks_exact(4).all(|pixel| pixel[3] == 255));
+                assert_eq!(
+                    gpu.allocation_bytes(),
+                    allocations,
+                    "alpha changes allocate no new persistent resources"
+                );
+                assert_eq!(allocations[4], out.width() as u64 * out.height() as u64 * 8);
+                if progress == 0.5 && scale == 16. {
+                    if let Some(reference) = &translated_reference {
+                        assert_eq!(&actual, reference);
+                    } else {
+                        translated_reference = Some(actual);
+                    }
+                }
+            }
+        }
+        let original = gpu.cuts.each_ref().map(|c| c.entries.as_ptr());
+        for progress in [-0.1, 1.1, f32::NAN] {
+            assert!(
+                gpu.set_transition(previous.clone(), next.clone(), progress)
+                    .is_err()
+            );
+            assert_eq!(gpu.cuts.each_ref().map(|c| c.entries.as_ptr()), original);
+        }
+        assert!(
+            gpu.set_transition(vec![previous[0]; 65], vec![next[0]; 64], 0.5)
+                .is_err()
+        );
+        assert!(
+            gpu.set_transition(unit_cut([key(0, -1, -1), key(2, 0, 0)]), next.clone(), 0.5)
+                .is_err()
+        );
+        assert_eq!(gpu.cuts.each_ref().map(|c| c.entries.as_ptr()), original);
+        assert_eq!(gpu.transition, Some(0.5));
+        // The zero-weight topology must neither keep lighting jobs alive nor
+        // leak status; both contributing cuts deduplicate their shared jobs.
+        gpu.set_transition(previous.clone(), next.clone(), 0.)
+            .unwrap();
+        draw(&mut gpu, &out, camera, false, 0.25);
+        let epoch = gpu.lighting_epoch();
+        assert_eq!(
+            gpu.tiles
+                .values()
+                .filter(|t| t.lighting_epoch == epoch)
+                .count(),
+            1
+        );
+        for _ in 0..32 {
+            if gpu.pending_preparations() == 0 {
+                break;
+            }
+            draw(&mut gpu, &out, camera, false, 0.25);
+        }
+        assert_eq!(gpu.pending_preparations(), 0);
+        assert!(
+            gpu.tiles
+                .iter()
+                .filter(|(k, _)| k.level == 2)
+                .all(|(_, t)| t.lighting_epoch != epoch)
+        );
+        gpu.set_transition(previous, next, 0.5).unwrap();
+        draw(&mut gpu, &out, camera, false, 0.5);
+        let latest = gpu.lighting_epoch();
+        assert_eq!(
+            gpu.tiles
+                .values()
+                .filter(|t| t.lighting_epoch == latest)
+                .count(),
+            1
+        );
+        for _ in 0..32 {
+            if gpu.pending_preparations() == 0 {
+                break;
+            }
+            draw(&mut gpu, &out, camera, false, 0.5);
+        }
+        assert_eq!(gpu.pending_preparations(), 0);
+    }
+}
+
+#[test]
+fn transition_missing_gutter_or_active_tile_is_an_explicit_error() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let camera = [-0.5, -0.5, 128.];
+    gpu.set_world([-256, -256, 256, 256], 0).unwrap();
+    let parents = [(-1, -1), (0, -1), (-1, 0), (0, 0)].map(|(x, z)| Key::new(1, x, z).unwrap());
+    let child = Key::new(0, -1, -1).unwrap();
+    for key in parents {
+        gpu.add_tile(key, summary([16000, 32000, 48000], 0))
+            .unwrap();
+        draw(&mut gpu, &out, camera, false, 0.);
+    }
+    gpu.add_tile(child, detail(0, 1)).unwrap();
+    draw(&mut gpu, &out, camera, false, 0.);
+    let previous = unit_cut([child, parents[3]]);
+    let next = unit_cut([parents[0], parents[3]]);
+    gpu.set_transition(previous.clone(), next.clone(), 0.5)
+        .unwrap();
+    draw(&mut gpu, &out, camera, false, 0.);
+    gpu.remove_tile(parents[1]);
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    let view = gpu.view.unwrap();
+    let error = gpu.validate_visible_sources(view).unwrap_err().to_string();
+    assert!(
+        error.contains("parent/gutter") && error.contains("x: 0, z: -1"),
+        "{error}"
+    );
+    assert!(
+        gpu.render(
+            &out.create_view(&Default::default()),
+            camera[0],
+            camera[1],
+            camera[2],
+            out.width(),
+            out.height(),
+            false,
+            false,
+            45.,
+            90.,
+            0.55,
+            false,
+            0.,
+            0.25
+        )
+        .is_err()
+    );
+    assert_eq!(gpu.height_status()[0] & 8, 8);
+    gpu.set_transition(previous.clone(), next.clone(), 1.)
+        .unwrap();
+    draw(&mut gpu, &out, camera, false, 0.);
+    gpu.remove_tile(child);
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    gpu.set_transition(previous, next, 0.5).unwrap();
+    let error = gpu.validate_visible_sources(view).unwrap_err().to_string();
+    assert!(error.contains("active LOD transition tile"), "{error}");
+    gpu.set_cut(unit_cut([parents[0]])).unwrap();
+    assert!(gpu.transition.is_none());
+    assert!(gpu.cuts[1].entries.is_empty());
+    draw(&mut gpu, &out, camera, false, 0.);
+}
+
+#[test]
+fn required_sources_plans_offview_gutters_without_residency_or_gpu_allocations() {
+    let mut gpu = setup();
+    let initial = gpu.gpu_bytes();
+    for p in [0, -1000, 8_000_000] {
+        let ox = p as f64 * 256.;
+        let oz = -ox;
+        gpu.set_world(
+            [
+                (ox - 256.) as i32,
+                (oz - 256.) as i32,
+                (ox + 256.) as i32,
+                (oz + 256.) as i32,
+            ],
+            0,
+        )
+        .unwrap();
+        let parents =
+            [(-1, -1), (0, -1), (-1, 0), (0, 0)].map(|(x, z)| Key::new(1, p + x, -p + z).unwrap());
+        let child = Key::new(0, p * 2 - 1, -p * 2 - 1).unwrap();
+        let cut = unit_cut([child, parents[3]]);
+        let sources = gpu
+            .required_sources(cut.clone(), ox - 0.5, oz - 0.5, 128., 64, 64)
+            .unwrap();
+        assert_eq!(
+            sources,
+            parents
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+        assert!(sources.iter().all(|key| !gpu.has_tile(*key)));
+        assert_eq!(
+            gpu.required_sources(cut.clone(), ox - 64., oz - 64., 128., 64, 64)
+                .unwrap(),
+            vec![parents[0]],
+            "interior-only view retains the binding parent, not offscreen gutter sources"
+        );
+        assert_eq!(
+            gpu.required_sources(cut.clone(), ox, oz, 1., 0, 0).unwrap(),
+            vec![parents[0]]
+        );
+        gpu.set_world(
+            [(ox - 256.) as i32, (oz - 256.) as i32, ox as i32, oz as i32],
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            gpu.required_sources(cut.clone(), ox - 0.5, oz - 0.5, 128., 64, 64)
+                .unwrap(),
+            vec![parents[0]],
+            "known outside-world gutters do not become missing resident pages"
+        );
+        assert!(gpu.required_sources(cut, ox, oz, f64::NAN, 64, 64).is_err());
+        assert_eq!(gpu.gpu_bytes(), initial);
+        assert!(gpu.cuts[0].entries.is_empty());
     }
 }

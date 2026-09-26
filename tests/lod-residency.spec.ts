@@ -101,16 +101,19 @@ function bounded(value: State) {
   }
 }
 
-async function settled(page: Page, level: number) {
+async function settled(page: Page, level: number, emptyCut = false) {
   await page.waitForFunction(
-    (level) => {
+    ({ level, emptyCut }) => {
       const value = window.__map?.state(),
         lod = value?.lod;
       return Boolean(
         window.__map?.ready &&
         lod &&
         lod.firstVisible !== null &&
-        lod.level === level &&
+        // An off-map empty cut has no presented sample level; its camera target still applies.
+        (emptyCut
+          ? lod.cut.length === 0
+          : lod.cut.length > 0 && lod.level === level) &&
         lod.targetLevel === level &&
         value.pending === 0 &&
         lod.pending === 0 &&
@@ -125,7 +128,7 @@ async function settled(page: Page, level: number) {
         ),
       );
     },
-    level,
+    { level, emptyCut },
     { timeout: 60_000 },
   );
   const value = await state(page);
@@ -184,6 +187,23 @@ function footprint(value: State) {
       .map(({ id, totalBytes }) => ({ id, totalBytes }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   };
+}
+
+function retainedParents(value: State) {
+  const lod = value.lod!;
+  const resident = new Set(lod.memory.entries.map((entry) => entry.id));
+  for (const id of [...lod.cut, ...lod.previousCut]) {
+    let [level, x, z] = id.split("/").map(Number);
+    while (level < maxLevel) {
+      level++;
+      x = Math.floor(x / 2);
+      z = Math.floor(z / 2);
+      expect(
+        resident.has(`pick:${level}/${x}/${z}`),
+        `Displayed or fading tile ${id} must retain parent ${level}/${x}/${z}`,
+      ).toBe(true);
+    }
+  }
 }
 
 function westDetail() {
@@ -321,28 +341,30 @@ test.describe("LOD bounded residency over repeated navigation", () => {
     await openCoarse(page);
     const sun = camera(await state(page));
     const positions = [
-      west,
-      east,
-      { x: west.x, z: east.z },
-      { x: east.x, z: west.z },
-      { x: 8192, z: -8192 },
-      { x: -8192, z: 8192 },
-      { x: 64, z: 64 },
+      { ...west, emptyCut: false },
+      { ...east, emptyCut: false },
+      { x: west.x, z: east.z, emptyCut: false },
+      { x: east.x, z: west.z, emptyCut: false },
+      { x: 8192, z: -8192, emptyCut: true },
+      { x: -8192, z: 8192, emptyCut: true },
+      { x: 64, z: 64, emptyCut: false },
     ];
     let prior: ReturnType<typeof footprint> | undefined;
     let priorBytes: number | undefined;
     for (let cycle = 0; cycle < 3; cycle++) {
-      for (const position of positions) {
-        await aim(page, position);
-        const value = await settled(page, 0);
-        expect(camera(value)).toEqual({
-          cx: position.x,
-          cz: position.z,
-          scale: 6,
-          elevation: sun.elevation,
-          azimuth: sun.azimuth,
+      for (const { emptyCut, ...position } of positions) {
+        await test.step(`Cycle ${cycle + 1}: pan to ${position.x}, ${position.z}`, async () => {
+          await aim(page, position);
+          const value = await settled(page, 0, emptyCut);
+          expect(camera(value)).toEqual({
+            cx: position.x,
+            cz: position.z,
+            scale: 6,
+            elevation: sun.elevation,
+            azimuth: sun.azimuth,
+          });
+          if (emptyCut) expect(value.lod!.cut).toEqual([]);
         });
-        if (Math.abs(position.x) > 512) expect(value.lod!.cut).toEqual([]);
       }
       const end = await quiet(page, await state(page));
       expect(
@@ -357,6 +379,125 @@ test.describe("LOD bounded residency over repeated navigation", () => {
       prior = footprint(end);
       priorBytes = end.lod!.memory.totalBytes;
     }
+  });
+
+  test("coarse inspection follows the displayed cut while old exact picking data is still resident", async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await openCoarse(page);
+    await aim(page, { x: 64, z: 64 });
+    const fine = await settled(page, 0);
+    expect(fine.lod!.cut).toContain("0/0/0");
+    const observed = await page.evaluate(async () => {
+      const canvas = document.querySelector<HTMLCanvasElement>("#map")!;
+      const before = window.__map.state();
+      window.__map.zoom(0.12 / before.scale);
+      const deadline = performance.now() + 10_000;
+      while (performance.now() < deadline) {
+        await new Promise(requestAnimationFrame);
+        const value = window.__map.state(),
+          lod = value.lod!;
+        const key = lod.cut
+          .map((id) => id.split("/").map(Number))
+          .find(([level, x, z]) => {
+            const span = 128 * 2 ** level;
+            return (
+              value.cx >= x * span &&
+              value.cx < (x + 1) * span &&
+              value.cz >= z * span &&
+              value.cz < (z + 1) * span
+            );
+          });
+        if (!key || key[0] === 0 || value.draws <= before.draws) continue;
+        // Inspect in the same frame as coarsening, before the fading exact tile is evicted.
+        const rect = canvas.getBoundingClientRect();
+        canvas.dispatchEvent(
+          new PointerEvent("pointermove", {
+            clientX: rect.x + rect.width / 2,
+            clientY: rect.y + rect.height / 2,
+            pointerType: "mouse",
+            bubbles: true,
+          }),
+        );
+        return {
+          value,
+          level: key[0],
+          visible: !document.querySelector<HTMLElement>("#inspect")!.hidden,
+          name: document.querySelector("#block-name")!.textContent,
+          detail: document.querySelector("#block-detail")!.textContent,
+        };
+      }
+      throw Error("Displayed cut did not coarsen after zooming out");
+    });
+    expect(
+      observed.value.lod!.memory.entries.some(
+        (entry) => entry.id === "pick:0/0/0",
+      ),
+      "The regression requires old exact data to still be cached",
+    ).toBe(true);
+    expect(observed.value.lod!.previousCut).toContain("0/0/0");
+    expect(observed.visible).toBe(true);
+    expect(observed.name).toBe("Surface summary");
+    expect(observed.detail).toContain("Approximate / height");
+    expect(observed.detail).toContain(
+      `${2 ** observed.level} blocks per sample`,
+    );
+    bounded(observed.value);
+    retainedParents(observed.value);
+    await quiet(page, await settled(page, maxLevel));
+  });
+
+  test("rapid zoom-out from mixed cuts retains displayed and fading parent caches", async ({
+    page,
+  }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    const coarse = await openCoarse(page);
+    for (let cycle = 0; cycle < 3; cycle++) {
+      const observed = await page.evaluate(async () => {
+        window.__map.zoom(6 / window.__map.state().scale);
+        const deadline = performance.now() + 30_000;
+        while (performance.now() < deadline) {
+          await new Promise(requestAnimationFrame);
+          const value = window.__map.state();
+          const levels = new Set(
+            value.lod!.cut.map((id) => Number(id.split("/")[0])),
+          );
+          if (levels.size < 2) continue;
+          const samples = [value];
+          window.__map.zoom(0.12 / value.scale);
+          const until = performance.now() + 300;
+          do {
+            await new Promise(requestAnimationFrame);
+            const sample = window.__map.state();
+            if (samples.length === 128)
+              throw Error("Unexpectedly many frames in the transition window");
+            samples.push(sample);
+          } while (performance.now() < until);
+          return samples;
+        }
+        throw Error("Fixture never presented a mixed cut during refinement");
+      });
+      expect(observed.some((value) => value.lod!.previousCut.length > 0)).toBe(
+        true,
+      );
+      for (const value of observed) {
+        bounded(value);
+        retainedParents(value);
+        expect(value.cx).toBe(coarse.cx);
+        expect(value.cz).toBe(coarse.cz);
+      }
+      const returned = await settled(page, maxLevel);
+      expect(camera(returned)).toEqual(camera(coarse));
+      retainedParents(returned);
+      await quiet(page, returned);
+    }
+    expect(errors).toEqual([]);
   });
 
   for (const transition of [

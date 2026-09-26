@@ -10,7 +10,7 @@ import {
   type Bounds,
 } from "./selection";
 import { LodDecoder } from "./decoder";
-import { balancedCut } from "./cut";
+import { balancedCut, coveringTile, cutAncestors } from "./cut";
 import type { DecodeResult } from "./decoder.worker";
 import {
   localAsset,
@@ -20,7 +20,6 @@ import {
   parseNode,
   tileBounds,
   tileId,
-  span,
   type LodManifest,
   type LodNode,
   type NodeRef,
@@ -83,6 +82,8 @@ export class LodView {
   private readonly gpuCatalogPages = new Set<number>();
   private readonly pendingCatalog = new Set<number>();
   private readonly demands = new Map<string, Demand>();
+  private readonly edgeRequirements = new Map<string, TileKey>();
+  private readonly edgeCache = new WeakMap<readonly TileKey[], TileKey[]>();
   private readonly failed = new Map<
     string,
     { until: number; count: number; reason: string }
@@ -254,6 +255,7 @@ export class LodView {
       tileUploads: this.tileUploads,
       cancellations: this.cancellations,
       cut: this.cut.map(tileId),
+      previousCut: this.previousCut.map(tileId),
       retiringBytes: this.renderer.retiring_bytes(),
       gpuPending: this.renderer.pending_submissions(),
       preparations: this.renderer.pending_preparations(),
@@ -427,6 +429,10 @@ export class LodView {
         for (const child of stored.node.children) visit(child);
     };
     for (const root of this.root.roots) visit(root, true);
+    this.demandEdgeSources();
+    this.evict();
+    this.updateCut();
+    this.demandEdgeSources();
     if (
       this.active &&
       this.demands.get(this.active.id)?.ref.sha256 !==
@@ -435,8 +441,6 @@ export class LodView {
       this.active.abort.abort();
       this.cancellations++;
     }
-    this.evict();
-    this.updateCut();
     for (const id of this.failed.keys())
       if (!this.demands.has(id)) this.failed.delete(id);
     void this.loadNext();
@@ -732,6 +736,72 @@ export class LodView {
       heights.every((height) => this.heights.has(tileId(height)))
     );
   }
+  private edgeSources(cut: readonly TileKey[]): TileKey[] {
+    if (!cut.length) return [];
+    const cached = this.edgeCache.get(cut);
+    if (cached) return cached;
+    const boxes = cut.map(tileBounds);
+    const left = Math.min(...boxes.map((box) => box[0]));
+    const top = Math.min(...boxes.map((box) => box[1]));
+    const right = Math.max(...boxes.map((box) => box[2]));
+    const bottom = Math.max(...boxes.map((box) => box[3]));
+    // Cover complete cut tiles so small pans cannot reveal an unrequested edge
+    // between cached cut-selection updates. The virtual query canvas is bounded.
+    const values = this.renderer.required_sources(
+      new Float32Array(cut.flatMap((key) => [key.level, key.x, key.z])),
+      (left + right) / 2,
+      (top + bottom) / 2,
+      128 / Math.max(right - left, bottom - top),
+      128,
+      128,
+    );
+    const result: TileKey[] = [];
+    for (let i = 0; i < values.length; i += 3)
+      result.push({ level: values[i], x: values[i + 1], z: values[i + 2] });
+    this.edgeCache.set(cut, result);
+    return result;
+  }
+  private demandEdgeSources() {
+    const add = (key: TileKey, ref: ObjectRef, kind: Demand["kind"]) => {
+      const id = `${kind}:${tileId(key)}`;
+      const existing = this.demands.get(id);
+      this.demands.set(id, {
+        key,
+        ref,
+        kind,
+        priority: Math.min(
+          existing?.priority ?? Infinity,
+          kind === "index" ? 3 : 8,
+        ),
+      });
+    };
+    const visit = (
+      ref: NodeRef,
+      level: number,
+      area: Bounds,
+      height: boolean,
+    ) => {
+      if (!intersects(tileBounds(ref.key), area)) return;
+      add(ref.key, ref.index, "index");
+      const stored = this.nodes.get(tileId(ref.key));
+      if (!stored || stored.hash !== ref.index.sha256) return;
+      if (ref.key.level === level || !stored.node.children.length) {
+        if (height) add(ref.key, stored.node.height, "height");
+        else if (ref.key.level === level)
+          add(ref.key, stored.node.data, ref.key.level ? "summary" : "detail");
+        return;
+      }
+      for (const child of stored.node.children)
+        visit(child, level, area, height);
+    };
+    for (const key of this.edgeRequirements.values()) {
+      const box = tileBounds(key);
+      for (const root of this.root.roots) {
+        visit(root, key.level, box, false);
+        visit(root, key.level, this.shadowArea(key.level, box), true);
+      }
+    }
+  }
   private updateCut() {
     if (!this.camera) return;
     const area = this.bounds();
@@ -761,7 +831,18 @@ export class LodView {
     )
       return;
     this.cutStamp = stamp;
+    this.edgeRequirements.clear();
     const ready = new Map<string, boolean>();
+    const isReady = (key: TileKey) => {
+      const id = tileId(key);
+      if (!ready.has(id)) ready.set(id, this.renderReady(key));
+      return ready.get(id)!;
+    };
+    const sourcesReady = (cut: readonly TileKey[]) => {
+      const sources = this.edgeSources(cut);
+      for (const key of sources) this.edgeRequirements.set(tileId(key), key);
+      return sources.every(isReady);
+    };
     const next = balancedCut({
       roots,
       bounds: area,
@@ -770,18 +851,15 @@ export class LodView {
       shouldRefine: (key) => key.level > this.target,
       children: (key) =>
         this.nodes.get(tileId(key))?.node.children.map((ref) => ref.key),
-      admit: (_parent, children) =>
-        children.every((key) => {
-          const id = tileId(key);
-          if (!ready.has(id)) ready.set(id, this.renderReady(key));
-          return ready.get(id)!;
-        }),
+      admit: (_parent, children, replacement) =>
+        children.every(isReady) && sourcesReady(replacement),
     });
     const signature = (cut: TileKey[]) => cut.map(tileId).sort().join(",");
+    sourcesReady(next);
     if (signature(next) === signature(this.cut)) return;
     // A new camera/light footprint can invalidate fine shadows. Blend only
     // when the previous level's full dependency set is still available.
-    this.previousCut = currentReady ? this.cut : [];
+    this.previousCut = currentReady && sourcesReady(this.cut) ? this.cut : [];
     this.cut = next;
     this.level = Math.min(
       this.root.roots[0].key.level,
@@ -791,13 +869,24 @@ export class LodView {
     this.requestFrame();
   }
   private evict(aggressive = false) {
-    const protectedIds = new Set(
-      [
-        ...this.cut,
-        ...this.previousCut,
-        ...this.root.roots.map((r) => r.key),
-      ].map(tileId),
-    );
+    // Fading tiles still sample their parent caches even when new camera demand
+    // no longer visits those ancestors.
+    const displayed = [
+      ...this.cut,
+      ...this.previousCut,
+      ...this.edgeSources(this.cut),
+      ...this.edgeSources(this.previousCut),
+      ...this.root.roots.map((r) => r.key),
+    ];
+    const protectedIds = cutAncestors(displayed, this.root.roots[0].key.level);
+    const protectedHeights = new Set(protectedIds);
+    for (const key of displayed) {
+      const required = this.referenceCut(
+        key.level,
+        this.shadowArea(key.level, tileBounds(key)),
+      );
+      for (const height of required ?? []) protectedHeights.add(tileId(height));
+    }
     for (const [id, resident] of this.tiles) {
       if (
         protectedIds.has(id) ||
@@ -814,7 +903,8 @@ export class LodView {
       this.ledger.release(`pick:${id}`);
     }
     for (const [id, height] of this.heights) {
-      if (protectedIds.has(id) || this.demands.has(`height:${id}`)) continue;
+      if (protectedHeights.has(id) || this.demands.has(`height:${id}`))
+        continue;
       this.renderer.remove_height(height.key.level, height.key.x, height.key.z);
       this.heights.delete(id);
       this.residencyRevision++;
@@ -846,26 +936,26 @@ export class LodView {
       matchMedia("(prefers-reduced-motion: reduce)").matches
         ? 1
         : Math.min(1, (performance.now() - this.transitionStart) / 200);
-    const weighted = new Map<string, { key: TileKey; opacity: number }>();
-    const append = (key: TileKey, opacity: number) => {
-      const id = tileId(key);
-      if (opacity > 0 && this.tiles.has(id))
-        weighted.set(id, {
-          key,
-          opacity: Math.min(1, (weighted.get(id)?.opacity ?? 0) + opacity),
-        });
-    };
-    if (!this.cut.length) for (const ref of this.root.roots) append(ref.key, 1);
-    if (progress < 1)
-      for (const key of this.previousCut) append(key, 1 - progress);
-    for (const key of this.cut) append(key, progress);
-    const entries = [...weighted.values()].flatMap(({ key, opacity }) => [
-      key.level,
-      key.x,
-      key.z,
-      opacity,
-    ]);
-    this.renderer.set_cut(new Float32Array(entries));
+    if (progress < 1) {
+      // Boundaries belong to a topology, not to the union of fading cuts. Shared
+      // tiles may have different edge lighting in the two contributions.
+      const entries = (cut: readonly TileKey[]) =>
+        new Float32Array(cut.flatMap((key) => [key.level, key.x, key.z]));
+      this.renderer.set_transition(
+        entries(this.previousCut),
+        entries(this.cut),
+        progress,
+      );
+    } else {
+      const cut = this.cut.length
+        ? this.cut
+        : this.root.roots
+            .map((ref) => ref.key)
+            .filter((key) => this.tiles.has(tileId(key)));
+      this.renderer.set_cut(
+        new Float32Array(cut.flatMap((key) => [key.level, key.x, key.z, 1])),
+      );
+    }
     const width = Math.round(camera.width * camera.dpr);
     const height = Math.round(camera.height * camera.dpr);
     const resizeBytes = this.renderer.resize_bytes(width, height);
@@ -926,11 +1016,11 @@ export class LodView {
     x: number,
     z: number,
   ): { name: string; height: number; detail: string; present: boolean } | null {
-    for (let level = 0; level <= this.root.roots[0].key.level; level++) {
-      const size = 128 * 2 ** level,
-        key = { level, x: Math.floor(x / size), z: Math.floor(z / size) };
+    const key = coveringTile(this.cut, x, z);
+    if (key) {
+      const level = key.level;
       const item = this.tiles.get(tileId(key));
-      if (!item) continue;
+      if (!item) return null;
       const box = tileBounds(key),
         i =
           Math.floor((z - box[1]) / 2 ** level) * 128 +

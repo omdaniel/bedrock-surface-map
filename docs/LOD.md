@@ -59,23 +59,28 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
 - Height pages use a fixed GPU arena with no CPU world-height pyramid. Empty
   slots remain charged as allocated capacity.
 - Shadow coverage includes each rendered tile's full shaded area and its gutter,
-  including coarse fallback levels. A finer cut waits for its required pages.
+  including coarse fallback levels. A finer cut waits for its required pages and
+  mixed-edge parent/gutter sources, including sources outside the visible area.
 - Upload reservations survive native queuing. Retired GPU resources remain
   charged until asynchronous queue completion, without blocking navigation.
 - Coarse coverage remains available while detail loads. Refinement is debounced;
   a 200 ms transition keeps both cuts resident until completion. Reduced motion
-  uses atomic replacement.
+  uses atomic replacement. Each cut's edge lighting is evaluated separately;
+  fading weights apply to the complete contributions, not their topology.
 - Available sibling groups refine independently. Adjacent tiles, including
   corner neighbors, differ by at most one level. Failed detail keeps its
   covering parent without preventing healthy neighboring groups from refining.
 - Mixed-resolution edges blend through resident parent caches. Camera movement
   within the same tile footprint reuses the selected cut rather than rebuilding
-  it every frame.
+  it every frame. Active and fading cuts retain their parent caches until those
+  edges are no longer displayed. Their required height pages remain resident
+  through the fade, then become eligible for eviction.
 
 This ledger is not browser RSS. Browser networking, JavaScript engine overhead,
 compositor swapchains and driver allocations require separate process-level
-measurement. Coarse inspection reports approximate heights and ranges, not an
-exact material. Download failures retain available coverage and retry with
+measurement. Inspection follows the displayed cut, not finer cached records.
+Coarse inspection reports approximate heights and ranges, not an exact material.
+Download failures retain available coverage and retry with
 bounded backoff. Hidden documents suspend new loading and resume when visible.
 Device loss cancels pending work and triggers one coarse-first reconstruction,
 preserving the camera, lighting and independent player layer. A second loss or a
