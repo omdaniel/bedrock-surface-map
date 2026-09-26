@@ -103,10 +103,12 @@ pub fn compose(config: &Config, lock: &Lock) -> Result<Vec<u8>> {
 }
 
 pub fn viewer(config: &Config, lock: &Lock, dataset: &ActiveDataset) -> Value {
-    let mut viewer = json!({"map":format!("maps/{}/manifest.json",dataset.dataset_id)});
+    let mut viewer = json!({"map":format!("maps/{}/manifest.json",dataset.dataset_id),
+        "lod_url":format!("maps/{}/lod.json",dataset.dataset_id)});
     if config.features.terrain {
         viewer["terrain"] = json!({"world_id":lock.world_id,"generation":lock.generation,
         "url":format!("/api/v1/worlds/{}/terrain/manifest.json",lock.world_id)});
+        viewer["lod_url"] = format!("/api/v1/worlds/{}/terrain/lod.json", lock.world_id).into();
     }
     if config.features.players {
         viewer["players"] = json!({"world_id":lock.world_id,"source_sha256":dataset.source_sha256,
@@ -173,7 +175,7 @@ pub fn gateway(
             format!("path /api/v1/worlds/{}/players", lock.world_id)
         } else {
             format!(
-                "path_regexp terrain ^/api/v1/worlds/{}/terrain/(manifest\\.json|status|objects/[a-f0-9]{{64}}\\.(zst|json|png|txt))$",
+                "path_regexp terrain ^/api/v1/worlds/{}/terrain/(manifest\\.json|lod\\.json|status|objects/[a-f0-9]{{64}}\\.(zst|json|png|txt))$",
                 lock.world_id
             )
         };

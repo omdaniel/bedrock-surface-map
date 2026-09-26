@@ -50,6 +50,21 @@ recorded as user-supplied, not as verified Mojang content. Imports accept
 archives only, never a live LevelDB directory. A failed import leaves the
 previous selected map unchanged.
 
+`demo` and `import` prepare memory-bounded LOD before selecting the new snapshot.
+The viewer selects this hierarchy automatically; no extra browser parameter is
+needed. To convert an already registered surface snapshot without accessing its
+raw world, run:
+
+```sh
+./bedrock-map prepare-lod --state ./map-data --replace-active
+```
+
+Conversion registers a new immutable dataset and preserves the original. Its
+default generated-object budget is 2 GiB; `--max-output-bytes` sets an explicit
+budget for this command. A failed conversion leaves the selected dataset intact.
+An existing validated hierarchy is reused. [LOD](LOD.md) explains approximation,
+client memory accounting, and scale validation.
+
 Use these non-mutating checks to inspect the selected dataset and packaged
 resources:
 

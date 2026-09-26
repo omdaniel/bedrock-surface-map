@@ -1,11 +1,19 @@
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fs, io::Read, path::Path};
 use surface_core::{
     CELLS, MAX_DECOMPRESSED, MISSING_HEIGHT, MapManifest, SIDE, VERSION, decode_region, decompress,
 };
 
 use crate::resources::safe_relative;
+
+mod inventory;
+mod lod;
+pub use inventory::validate_inventory;
+pub use lod::{ValidatedLod, validate_lod};
+
+#[cfg(test)]
+mod tests;
 
 const MAX_MANIFEST: u64 = 16 * 1024 * 1024;
 const MAX_REGION: u64 = 16 * 1024 * 1024;
@@ -19,7 +27,15 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         "E_RESOURCE_MISMATCH: missing, unsafe, or oversized dataset object: {}",
         path.display()
     );
-    Ok(fs::read(path)?)
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "E_RESOURCE_MISMATCH: dataset object grew beyond limit"
+    );
+    Ok(bytes)
 }
 
 fn object(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
@@ -29,6 +45,11 @@ fn object(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
         path.parent().is_some_and(|parent| parent != root),
         "E_RESOURCE_MISMATCH: object must be in a dataset subdirectory"
     );
+    read_relative(root, reference, limit)
+}
+
+fn read_relative(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
+    let relative = safe_relative(reference)?;
     // Reject symlinks in every path component, not just the final file.
     let mut current = root.to_path_buf();
     for component in relative.components() {
@@ -39,7 +60,7 @@ fn object(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
             "E_RESOURCE_MISMATCH: dataset symlink"
         );
     }
-    read_bounded(&path, limit)
+    read_bounded(&root.join(relative), limit)
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -47,6 +68,14 @@ fn digest(bytes: &[u8]) -> String {
 }
 
 pub fn validate(root: &Path) -> Result<MapManifest> {
+    let manifest = validate_legacy(root)?;
+    if let Some(lod) = validate_lod(root)? {
+        inventory::match_snapshot(root, &manifest, &lod)?;
+    }
+    Ok(manifest)
+}
+
+fn validate_legacy(root: &Path) -> Result<MapManifest> {
     let manifest: MapManifest =
         serde_json::from_slice(&read_bounded(&root.join("manifest.json"), MAX_MANIFEST)?)
             .context("E_RESOURCE_MISMATCH: invalid dataset manifest")?;
@@ -112,26 +141,7 @@ pub fn validate(root: &Path) -> Result<MapManifest> {
         "E_RESOURCE_MISMATCH: too many regions"
     );
     let atlas = object(root, &manifest.atlas, MAX_ATLAS)?;
-    ensure!(
-        atlas.len() >= 24 && atlas[..8] == [137, 80, 78, 71, 13, 10, 26, 10],
-        "E_RESOURCE_MISMATCH: atlas is not a PNG"
-    );
-    let atlas_width = u32::from_be_bytes(atlas[16..20].try_into()?);
-    let atlas_height = u32::from_be_bytes(atlas[20..24].try_into()?);
-    ensure!(
-        atlas_width > 0
-            && atlas_height > 0
-            && atlas_width <= 8192
-            && atlas_height <= 8192
-            && u64::from(atlas_width) * u64::from(atlas_height) <= 8 * 1024 * 1024,
-        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
-    );
-    let image = image::load_from_memory_with_format(&atlas, image::ImageFormat::Png)
-        .context("E_RESOURCE_MISMATCH: atlas is not a valid PNG")?;
-    ensure!(
-        image.width() == atlas_width && image.height() == atlas_height,
-        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
-    );
+    validate_atlas(&atlas)?;
     let packed_heights = object(root, &manifest.heights, MAX_HEIGHTS as u64)?;
     ensure!(
         digest(&packed_heights) == manifest.heights_sha256,
@@ -220,4 +230,28 @@ pub fn validate(root: &Path) -> Result<MapManifest> {
         "E_RESOURCE_MISMATCH: region and height field disagree"
     );
     Ok(manifest)
+}
+
+fn validate_atlas(atlas: &[u8]) -> Result<()> {
+    ensure!(
+        atlas.len() >= 24 && atlas[..8] == [137, 80, 78, 71, 13, 10, 26, 10],
+        "E_RESOURCE_MISMATCH: atlas is not a PNG"
+    );
+    let atlas_width = u32::from_be_bytes(atlas[16..20].try_into()?);
+    let atlas_height = u32::from_be_bytes(atlas[20..24].try_into()?);
+    ensure!(
+        atlas_width > 0
+            && atlas_height > 0
+            && atlas_width <= 8192
+            && atlas_height <= 8192
+            && u64::from(atlas_width) * u64::from(atlas_height) <= 8 * 1024 * 1024,
+        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
+    );
+    let image = image::load_from_memory_with_format(atlas, image::ImageFormat::Png)
+        .context("E_RESOURCE_MISMATCH: atlas is not a valid PNG")?;
+    ensure!(
+        image.width() == atlas_width && image.height() == atlas_height,
+        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
+    );
+    Ok(())
 }

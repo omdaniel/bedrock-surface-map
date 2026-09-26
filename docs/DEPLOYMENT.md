@@ -60,6 +60,12 @@ Alternatively supply a compatible local asset ZIP with `import --assets`; use
 that same archive for `deploy prepare --assets`. The bundled synthetic demo is
 not a substitute for an imported Bedrock seed. See [snapshot installation](INSTALL.md).
 
+Preparation derives LOD from the selected surface snapshot when necessary and
+publishes the live seed's initial hierarchy before sealing its file inventories.
+The generated viewer uses this hierarchy automatically, with the same world and
+generation binding as the terrain feed. Only the private staged copy is changed;
+registered source snapshots stay immutable.
+
 Create `deployment.toml` with your actual addresses and hostname:
 
 ```toml

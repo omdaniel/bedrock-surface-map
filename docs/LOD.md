@@ -7,8 +7,8 @@ Lighting stays interactive, and no rendered map images are downloaded.
 
 The browser supports static prepared maps and explicitly bound live hierarchies
 published by `surface-sync`.
-The packaged deployment workflow and public-demo playback retain their existing
-interfaces.
+Native snapshot preparation and generated live deployments select LOD explicitly.
+Public-demo playback retains its separate packet and timeline interfaces.
 The declared large-world scale and sustained-performance acceptance require
 separate validation; successful small-fixture tests are not those guarantees.
 
@@ -17,6 +17,13 @@ separate validation; successful small-fixture tests are not those guarantees.
 Preparation reads an existing derived surface manifest, not a raw world or live
 database. It accepts offline v1 and current-state v2 surface manifests and verifies
 source hashes before publishing immutable objects and `lod.json`.
+
+The packaged `bedrock-map demo` and `import` commands derive LOD in private staging
+before immutable registration. `bedrock-map prepare-lod --state ./map-data
+--replace-active` converts an existing selected snapshot into a new registration;
+the original stays unchanged. This command's `--max-output-bytes` controls its
+2 GiB default conversion budget. The source-level converter below also supports
+`--max-output-bytes` and a non-writing `--estimate` mode.
 
 ```sh
 cargo run --release --locked -p surface-cli -- prepare-lod \
@@ -99,9 +106,12 @@ reconstruction without retaining incompatible terrain resources.
 
 The root revision in diagnostics is the adopted publication, not a claim that
 every resident tile has finished updating. Detail failures retain last-known
-coverage and retry. Packaged proxy integration and automatic LOD preparation in
-distribution workflows remain incomplete; the legacy live manifest remains
-available.
+coverage and retry. The local preview proxy and generated gateway expose only the
+explicit LOD GET/HEAD read route, preserving world and method restrictions.
+`deploy prepare` derives static LOD and finishes the seed's first live publication
+before sealing inventories. Generated live bindings use that publication rather
+than the offline hierarchy. The legacy live manifest remains available. Public
+demo playback and release-wide acceptance are separate integration requirements.
 
 ```sh
 cargo test --locked -p surface-sync

@@ -108,6 +108,7 @@ pub fn prepare(
     let copied = output.join("public/maps").join(&dataset.dataset_id);
     files::copy_inventory(&input, &copied, &inventory)?;
     dataset::validate(&copied)?;
+    crate::preparation::ensure_lod(&copied, crate::preparation::DEFAULT_LOD_MAX_BYTES)?;
     if let Some(asset) = asset {
         let library = staging.path().join("library");
         files::mkdir(&library)?;
@@ -125,7 +126,16 @@ pub fn prepare(
             2 * 1024 * 1024 * 1024,
         )?;
         store.seed(&copied, Some(&library), None)?;
-        drop(store);
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(store));
+        let mut publisher = surface_sync::lod_publish::Publisher::open(shared.clone())?;
+        while publisher.step()? != surface_sync::lod_publish::Step::Idle {}
+        shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terrain preparation lock"))?
+            .lod_manifest()?
+            .validate()?;
+        drop(publisher);
+        drop(shared);
     }
     generate::write_projection(&output, root, &config, &lock, &dataset, resources)?;
     // Source selection and release inputs must still match after all long work.

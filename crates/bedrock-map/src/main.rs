@@ -55,6 +55,13 @@ enum Command {
         #[arg(long)]
         replace_active: bool,
     },
+    /// Derive LOD from the selected surface snapshot, without raw-world access.
+    PrepareLod {
+        #[arg(long)]
+        replace_active: bool,
+        #[arg(long, default_value_t = bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES)]
+        max_output_bytes: u64,
+    },
     Serve {
         #[arg(long)]
         bind: Option<String>,
@@ -233,6 +240,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Init => "init",
         Command::Demo { .. } => "demo",
         Command::Import { .. } => "import",
+        Command::PrepareLod { .. } => "prepare-lod",
         Command::Serve { .. } => "serve",
         Command::Status => "status",
         Command::Doctor { .. } => "doctor",
@@ -383,6 +391,10 @@ async fn run(args: Args) -> Result<u8> {
                 let public = operation.join("public");
                 copy_tree(&fixture, &public)?;
                 let source = hash_file(&public.join("manifest.json"))?;
+                bedrock_map::preparation::ensure_lod(
+                    &public,
+                    bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+                )?;
                 state.register_staged_dataset(&public, source, *replace_active)
             })?;
             print(
@@ -439,6 +451,10 @@ async fn run(args: Args) -> Result<u8> {
                 if private_report.exists() {
                     fs::rename(&private_report, operation.join("import-report.json"))?;
                 }
+                bedrock_map::preparation::ensure_lod(
+                    &public,
+                    bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+                )?;
                 let active = state.register_staged_dataset(&public, source, *replace_active)?;
                 Ok((active, report))
             })?;
@@ -446,6 +462,35 @@ async fn run(args: Args) -> Result<u8> {
                 result(
                     "import",
                     json!({"dataset":active.dataset_id,"report":report}),
+                )?,
+                args.json,
+            );
+        }
+        Command::PrepareLod {
+            replace_active,
+            max_output_bytes,
+        } => {
+            let _lock = state.lock_mutation()?;
+            let selected = state
+                .active_validated()?
+                .context("E_NO_DATASET: select a snapshot first")?;
+            let input = state
+                .registered(&selected.dataset_id)?
+                .context("E_NO_DATASET: snapshot unavailable")?;
+            let active = with_operation(&state, "prepare-lod", |operation| {
+                let public = operation.join("public");
+                copy_tree(&input, &public)?;
+                bedrock_map::preparation::ensure_lod(&public, *max_output_bytes)?;
+                state.register_staged_dataset(
+                    &public,
+                    selected.source_sha256.clone(),
+                    *replace_active,
+                )
+            })?;
+            print(
+                result(
+                    "prepare-lod",
+                    json!({"dataset":active.dataset_id,"source_dataset":selected.dataset_id}),
                 )?,
                 args.json,
             );
@@ -599,6 +644,7 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         "E_STATE_UNSAFE",
         "E_STATE_BUSY",
         "E_PREPARE_SYNC",
+        "E_PREPARE_LOD",
         "E_PREPARED_DURABILITY",
         "E_RESOURCE_MISMATCH",
         "E_NO_DATASET",

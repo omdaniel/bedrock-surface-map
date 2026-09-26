@@ -526,6 +526,40 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         .unwrap();
         assert_eq!(config.get("terrain").is_some(), terrain);
         assert_eq!(config.get("players").is_some(), players);
+        let static_lod = format!("maps/{}/lod.json", p.dataset_id);
+        assert!(f.root.join("prepared/public").join(&static_lod).is_file());
+        assert!(
+            p.immutable_files
+                .contains_key(&format!("public/{static_lod}"))
+        );
+        if terrain {
+            assert_eq!(
+                config["lod_url"],
+                format!("/api/v1/worlds/{}/terrain/lod.json", p.world_id)
+            );
+            let db = rusqlite::Connection::open_with_flags(
+                f.root.join("prepared/terrain/current.sqlite3"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let encoded: String = db
+                .query_row(
+                    "SELECT value FROM meta WHERE key='lod_manifest'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let lod: surface_core::lod::LodManifest = serde_json::from_str(&encoded).unwrap();
+            lod.validate().unwrap();
+            assert_eq!(lod.world_id.as_deref(), Some(p.world_id.as_str()));
+            assert_eq!(Some(lod.generation), p.generation);
+            assert!(p.seed_files.contains_key("current.sqlite3"));
+            for root in lod.roots {
+                assert_eq!(p.seed_files.get(&root.index.url), Some(&root.index.sha256));
+            }
+        } else {
+            assert_eq!(config["lod_url"], static_lod);
+        }
         if players {
             assert_eq!(config["players"]["source_sha256"], p.source_sha256);
             assert_eq!(config["players"]["poll_interval_ms"], 100);
@@ -536,6 +570,7 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         assert_eq!(compose["services"].get("players").is_some(), players);
         let caddy = fs::read_to_string(f.root.join("prepared/gateway/Caddyfile")).unwrap();
         assert_eq!(caddy.contains("terrain:8111"), terrain);
+        assert_eq!(caddy.contains("manifest\\.json|lod\\.json|status"), terrain);
         assert_eq!(caddy.contains("players:8110"), players);
         assert!(!caddy.contains("8081") && !caddy.contains("8082") && !caddy.contains("ingest"));
         for service in compose["services"].as_object().unwrap().values() {

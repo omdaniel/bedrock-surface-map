@@ -128,11 +128,16 @@ fn viewer_config(app: &App, request: &Request) -> Result<Response> {
         .state
         .active_validated()?
         .context("E_NO_DATASET: no selected dataset")?;
-    json_response_with_request(
-        serde_json::json!({"map": format!("maps/{}/manifest.json", active.dataset_id)}),
-        request.headers(),
-        "no-store",
-    )
+    let mut config =
+        serde_json::json!({"map": format!("maps/{}/manifest.json", active.dataset_id)});
+    let inventory = app
+        .state
+        .registered_inventory(&active.dataset_id)?
+        .context("registered dataset is unavailable")?;
+    if inventory.contains_key(std::path::Path::new("lod.json")) {
+        config["lod_url"] = format!("maps/{}/lod.json", active.dataset_id).into();
+    }
+    json_response_with_request(config, request.headers(), "no-store")
 }
 
 fn resolve_child(root: &Path, relative: &str) -> Result<PathBuf> {
@@ -432,6 +437,7 @@ mod tests {
         let viewer: serde_json::Value =
             serde_json::from_str(&config.text().await.unwrap()).unwrap();
         assert!(viewer["map"].as_str().unwrap().starts_with("maps/"));
+        assert!(viewer.get("lod_url").is_none());
         let old_url = format!(
             "http://{address}/map/maps/{}/manifest.json",
             first.dataset_id
@@ -446,6 +452,8 @@ mod tests {
             &replacement,
         );
         fs::write(replacement.join("assets/NOTICE.txt"), "replacement fixture").unwrap();
+        crate::preparation::ensure_lod(&replacement, crate::preparation::DEFAULT_LOD_MAX_BYTES)
+            .unwrap();
         let second = state
             .register_staged_dataset(&replacement, "d".repeat(64), true)
             .unwrap();
@@ -470,6 +478,33 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains(&second.dataset_id)
+        );
+        let lod_path = current["lod_url"].as_str().unwrap();
+        assert_eq!(lod_path, format!("maps/{}/lod.json", second.dataset_id));
+        let descriptor = client
+            .get(format!("http://{address}/map/{lod_path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(descriptor.status(), StatusCode::OK);
+        assert_eq!(
+            descriptor.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        let lod: surface_core::lod::LodManifest =
+            serde_json::from_str(&descriptor.text().await.unwrap()).unwrap();
+        let object = client
+            .get(format!(
+                "http://{address}/map/maps/{}/{}",
+                second.dataset_id, lod.roots[0].index.url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(object.status(), StatusCode::OK);
+        assert_eq!(
+            object.bytes().await.unwrap().len(),
+            lod.roots[0].index.bytes
         );
         let notice = format!(
             "http://{address}/map/maps/{}/assets/NOTICE.txt",

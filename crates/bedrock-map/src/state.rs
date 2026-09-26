@@ -7,9 +7,9 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -82,7 +82,7 @@ impl State {
     }
     pub fn operation(&self, prefix: &str) -> Result<tempfile::TempDir> {
         ensure!(
-            matches!(prefix, "demo" | "import"),
+            matches!(prefix, "demo" | "import" | "prepare-lod"),
             "E_STATE_UNSAFE: invalid operation kind"
         );
         let root = self.staging();
@@ -339,31 +339,7 @@ fn valid_hash(value: &str) -> bool {
 }
 
 fn validate_public_tree(root: &Path) -> Result<()> {
-    ensure!(
-        root.join("manifest.json").is_file(),
-        "E_RESOURCE_MISMATCH: dataset has no manifest"
-    );
-    let manifest = dataset::validate(root)?;
-    let mut expected = HashSet::from([
-        PathBuf::from("manifest.json"),
-        PathBuf::from(&manifest.atlas),
-        PathBuf::from(&manifest.heights),
-    ]);
-    expected.extend(
-        manifest
-            .regions
-            .iter()
-            .map(|region| PathBuf::from(&region.url)),
-    );
-    for notice in ["assets/NOTICE.txt", "assets/MOJANG-LICENSE.md"] {
-        if root.join(notice).exists() {
-            ensure!(
-                fs::metadata(root.join(notice))?.len() <= 1024 * 1024,
-                "E_RESOURCE_MISMATCH: oversized asset notice"
-            );
-            expected.insert(PathBuf::from(notice));
-        }
-    }
+    let mut expected = dataset::validate_inventory(root)?;
     walk(root, &mut |path| {
         ensure!(
             expected.remove(path.strip_prefix(root)?),
@@ -388,8 +364,17 @@ fn tree_inventory(root: &Path) -> Result<(String, HashMap<PathBuf, String>)> {
     let mut files = HashMap::new();
     walk(root, &mut |path| {
         let relative = path.strip_prefix(root).context("tree escaped root")?;
-        let bytes = fs::read(path)?;
-        let digest = Sha256::digest(&bytes);
+        let mut file = File::open(path)?;
+        let mut hash = Sha256::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            hash.update(&buffer[..read]);
+        }
+        let digest = hash.finalize();
         files.insert(relative.to_path_buf(), format!("{digest:x}"));
         records.push((relative.to_string_lossy().replace('\\', "/"), digest));
         Ok(())
