@@ -39,6 +39,46 @@ fn pin_count(db: &Connection) -> usize {
 }
 
 #[test]
+fn metadata_only_batch_has_a_durable_boundary_and_preserves_later_edits() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("metadata.sqlite");
+    let mut db = Connection::open(&path).unwrap();
+    install(&mut db);
+    let tx = db.transaction().unwrap();
+    assert!(queue::freeze(&tx, 7, "{}", 100).unwrap().is_none());
+    let batch = queue::freeze_metadata(&tx, 7, r#"{"catalog":"frozen"}"#, 100)
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.source_observation_revision, 7);
+    assert!(
+        queue::leaf_page(&tx, batch.id, None, 64)
+            .unwrap()
+            .is_empty()
+    );
+    queue::enqueue(&tx, &change(-1, 0, 8, 101)).unwrap();
+    assert_eq!(
+        queue::freeze_metadata(&tx, 8, "{}", 102).unwrap(),
+        Some(batch.clone())
+    );
+    tx.commit().unwrap();
+    drop(db);
+    let mut db = Connection::open(&path).unwrap();
+    install(&mut db);
+    assert_eq!(queue::active_batch(&db).unwrap(), Some(batch.clone()));
+    let tx = db.transaction().unwrap();
+    queue::complete(&tx, batch.id).unwrap();
+    let next = queue::freeze(&tx, 8, "{}", 103).unwrap().unwrap();
+    assert_eq!(next.id, batch.id + 1);
+    assert_eq!(
+        queue::changed_refs(&tx, next.id, TileKey::new(0, -1, 0).unwrap())
+            .unwrap()
+            .len(),
+        1
+    );
+    tx.commit().unwrap();
+}
+
+#[test]
 fn schema_and_observation_enqueue_roll_back_with_the_caller_transaction() {
     let mut db = Connection::open_in_memory().unwrap();
     {

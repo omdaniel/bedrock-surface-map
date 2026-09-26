@@ -5,9 +5,10 @@ retain unlit color summaries and height ranges; close-up tiles retain the exact
 surface fields. Zooming out releases exact tile buffers and picking records.
 Lighting stays interactive, and no rendered map images are downloaded.
 
-This interface currently supports static prepared maps. Live hierarchy
-publication, the packaged deployment workflow and public-demo playback do not
-consume it. Existing offline and live viewers retain their existing interfaces.
+The browser currently supports static prepared maps. `surface-sync` also builds
+and serves a live hierarchy, but the browser does not yet adopt its revisions.
+The packaged deployment workflow and public-demo playback retain their existing
+interfaces.
 The declared large-world scale and sustained-performance acceptance require
 separate validation; successful small-fixture tests are not those guarantees.
 
@@ -55,11 +56,28 @@ retained exact fields and rejects missing intersecting children instead of
 inventing empty terrain. Repair ordering is separate from the per-chunk backup
 fence, so unchanged newer live observations still take precedence over a repair.
 
-These components do not yet run a background publisher or expose a live
-`lod.json` endpoint. The legacy live manifest remains the served interface.
-Frozen-context/derived-object pinning, coherent root publication and browser
-adoption require the publisher integration; calling the queue completion API
-alone does not publish a map.
+The `serve` command runs one background publisher per state directory, protected
+by an exclusive process lease. It bootstraps existing chunk references, resumes
+unfinished batches after restart, and stages nodes in SQLite. Catalog and source
+metadata share the batch's frozen observation boundary. Node decoding and
+aggregation happen outside the ingestion mutex; bounded object installation and
+metadata transactions use the store's writer lock. Legacy region publication
+still runs during ingestion.
+
+`GET` and `HEAD /api/v1/worlds/{world}/terrain/lod.json` return the last complete
+hierarchy with ETag revalidation. Until its first publication the endpoint returns 503. The ingest listener does not expose this route. Immutable tile, height,
+index and catalog objects are installed and verified before one transaction
+exposes their root. Failures retain the previous root; newer observations collect
+in the next batch. Garbage collection preserves current and staged references.
+
+The terrain status response includes a separate `lod` object with publication
+revision, source revision lag, pending age and the last publication time. Pending
+work older than 30 seconds or a publication error reports degraded LOD status.
+This does not substitute for the existing gameplay-scan freshness status.
+
+Browser revision adoption and packaged proxy integration remain incomplete; the
+legacy live manifest remains available. Directly opening `lod.json` in the LOD
+viewer reads a snapshot of that publication, not a continuously updating feed.
 
 ```sh
 cargo test --locked -p surface-sync

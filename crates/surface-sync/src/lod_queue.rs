@@ -258,6 +258,27 @@ pub fn freeze(
     context_json: &str,
     now_ms: u64,
 ) -> Result<Option<FrozenBatch>> {
+    freeze_inner(tx, source_observation_revision, context_json, now_ms, false)
+}
+
+/// Also permit a metadata-only publication (for example updated provenance).
+/// Like a changed-chunk batch, it has an immutable boundary and rotates queue IDs.
+pub fn freeze_metadata(
+    tx: &Transaction<'_>,
+    source_observation_revision: u64,
+    context_json: &str,
+    now_ms: u64,
+) -> Result<Option<FrozenBatch>> {
+    freeze_inner(tx, source_observation_revision, context_json, now_ms, true)
+}
+
+fn freeze_inner(
+    tx: &Transaction<'_>,
+    source_observation_revision: u64,
+    context_json: &str,
+    now_ms: u64,
+    allow_empty: bool,
+) -> Result<Option<FrozenBatch>> {
     if let Some(batch) = active_batch(tx)? {
         return Ok(Some(batch));
     }
@@ -268,9 +289,10 @@ pub fn freeze(
         [],
         |row| Ok((row.get(0)?, optional_nonnegative(row, 1)?)),
     )?;
-    let Some(max_revision) = max_revision else {
+    if max_revision.is_none() && !allow_empty {
         return Ok(None);
-    };
+    }
+    let max_revision = max_revision.unwrap_or(0);
     ensure!(pending_id < i64::MAX, "queue ID exhausted");
     ensure!(
         source_observation_revision >= max_revision,

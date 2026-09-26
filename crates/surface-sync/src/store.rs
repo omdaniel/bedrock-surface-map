@@ -63,14 +63,14 @@ pub struct Store {
     pub connection: Connection,
     pub root: PathBuf,
     pub limit: u64,
-    used: Cell<u64>,
-    data_version: Cell<i64>,
+    pub(crate) used: Cell<u64>,
+    pub(crate) data_version: Cell<i64>,
 }
 
-struct Objects<'a> {
-    root: &'a Path,
-    used: &'a Cell<u64>,
-    limit: u64,
+pub(crate) struct Objects<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) used: &'a Cell<u64>,
+    pub(crate) limit: u64,
 }
 impl std::ops::Deref for Objects<'_> {
     type Target = Path;
@@ -79,7 +79,7 @@ impl std::ops::Deref for Objects<'_> {
     }
 }
 impl Objects<'_> {
-    fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
+    pub(crate) fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
         let version = db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))?;
         if version != previous.get() {
             let used = fs::read_dir(self.root.join("objects"))?
@@ -97,15 +97,15 @@ impl Objects<'_> {
     }
 }
 
-fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
+pub(crate) fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
     let value: String = db.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))?;
     Ok(serde_json::from_str(&value)?)
 }
-fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
+pub(crate) fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
     db.execute("INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(value)?])?;
     Ok(())
 }
-fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
+pub(crate) fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
     let sha256 = hash(bytes);
     let name = format!("{sha256}.{extension}");
     let path = root.join("objects").join(&name);
@@ -693,6 +693,11 @@ impl Store {
     pub fn manifest(&self) -> Result<Value> {
         meta(&self.connection, "manifest")
     }
+    pub fn lod_manifest(&self) -> Result<surface_core::lod::LodManifest> {
+        let manifest: surface_core::lod::LodManifest = meta(&self.connection, "lod_manifest")?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
     /// Correct descriptors atomically while retaining every published ID and
     /// chunk hash. Existing clients adopt the new catalog on their next poll.
     pub fn refresh_catalog(&mut self) -> Result<usize> {
@@ -754,7 +759,7 @@ impl Store {
             "live"
         };
         Ok(
-            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2"}),
+            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2","lod":crate::lod_publish::health(&self.connection,now)?}),
         )
     }
     pub fn disable(&self, disabled: bool, reason: &str) -> Result<()> {
@@ -810,6 +815,10 @@ impl Store {
         drop(s);
         lod_queue::visit_references(&tx, |_, reference| {
             reachable.insert(format!("{}.zst", reference.sha256));
+            Ok(())
+        })?;
+        crate::lod_publish::visit_pins(&tx, |value| {
+            collect(value, &mut reachable);
             Ok(())
         })?;
         let mut removed = 0;
