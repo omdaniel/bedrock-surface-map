@@ -19,6 +19,7 @@ const COARSE_BYTES: u64 = 130 * 130 * 8 * 2;
 const SHADED_BYTES: u64 = 130 * 130 * 8;
 const CACHE_STATUS_BYTES: u64 = 9 * 4;
 const MAX_QUEUE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_UPDATE_BYTES: u64 = 1024 * 1024;
 const MAX_GPU_BYTES: u64 = 200_000_000;
 
 pub const TERRAIN: &str = concat!(
@@ -495,11 +496,27 @@ impl Retirement {
 enum Kind {
     Tile,
     Height,
+    Surface,
+}
+impl Kind {
+    fn tile(self) -> bool {
+        self != Self::Height
+    }
+    fn height(self) -> bool {
+        self != Self::Tile
+    }
 }
 struct Pending {
     key: Key,
     kind: Kind,
     words: Vec<u32>,
+    height_words: Vec<u32>,
+    chunks: Vec<[i32; 2]>,
+}
+impl Pending {
+    fn cpu_bytes(&self) -> usize {
+        (self.words.capacity() + self.height_words.capacity()) * 4 + self.chunks.capacity() * 8
+    }
 }
 
 struct Target {
@@ -682,7 +699,9 @@ impl GpuLod {
             &device,
             "LOD materials",
             bytemuck::cast_slice(materials),
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         );
         let atlas_view = atlas.create_view(&Default::default());
         let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -1028,10 +1047,7 @@ impl GpuLod {
                         + r.slots.capacity() * std::mem::size_of::<usize>()
                 })
                 .sum::<usize>();
-        self.pending
-            .iter()
-            .map(|p| p.words.capacity() * 4)
-            .sum::<usize>()
+        self.pending.iter().map(Pending::cpu_bytes).sum::<usize>()
             + self.pending.capacity() * std::mem::size_of::<Pending>()
             + self.cuts.iter().map(Topology::cpu_bytes).sum::<usize>()
             + self.tiles.len() * (std::mem::size_of::<(Key, Tile)>() + 128)
@@ -1166,15 +1182,11 @@ impl GpuLod {
             return 0;
         }
         self.reap();
-        let queued = self
-            .pending
-            .iter()
-            .filter(|p| p.kind == Kind::Height)
-            .count();
+        let queued = self.pending.iter().filter(|p| p.kind.height()).count();
         let new_pages = self
             .pending
             .iter()
-            .filter(|p| p.kind == Kind::Height && !self.heights.contains_key(&p.key))
+            .filter(|p| p.kind.height() && !self.heights.contains_key(&p.key))
             .count();
         let free = self.free_slots.len() + self.retirement.lock().unwrap().free_slots.len();
         free.saturating_sub(queued + 1).min(
@@ -1215,6 +1227,211 @@ impl GpuLod {
     pub fn height_bytes(&self, level: u32) -> u64 {
         SAMPLES as u64 * if level == 0 { 4 } else { 8 } + 8 * 16 + (TABLE_ENTRIES * 16) as u64
     }
+    /// Additional GPU bytes while old resources remain charged. Zero patches
+    /// means a full replacement; 1..64 means complete chunks of an exact tile.
+    /// Height slots already belong to the fixed arena and are not charged twice.
+    pub fn surface_update_bytes(&self, level: u32, patch_count: u32) -> Result<u64> {
+        ensure!(level <= MAX_LEVEL, "LOD level must be 0..16");
+        ensure!(
+            patch_count <= 64 && (patch_count == 0 || level == 0),
+            "LOD patches require 1..64 exact chunks"
+        );
+        let bytes = self.height_bytes(level)
+            + if patch_count == 0 {
+                self.tile_bytes(level)
+            } else {
+                u64::from(patch_count) * 256 * 32
+            };
+        ensure!(bytes <= MAX_UPDATE_BYTES, "LOD surface job exceeds 1 MiB");
+        Ok(bytes)
+    }
+    fn pending_bytes(&self, next: &Pending) -> u64 {
+        match next.kind {
+            Kind::Tile => self.tile_bytes(next.key.level),
+            Kind::Height => self.height_bytes(next.key.level),
+            Kind::Surface => self
+                .surface_update_bytes(next.key.level, next.chunks.len() as u32)
+                .expect("validated surface job"),
+        }
+    }
+    fn validate_update_key(key: Key) -> Result<()> {
+        Key::new(key.level, key.x, key.z)?;
+        surface_core::lod::TileKey::new(key.level as u8, key.x, key.z)?;
+        Ok(())
+    }
+    fn validate_detail_columns(&self, words: &[u32]) -> Result<()> {
+        for c in words.chunks_exact(8) {
+            ensure!(
+                c[1] < self.material_count as u32
+                    && c[3] < self.material_count as u32
+                    && c[5] < self.material_count as u32,
+                "LOD material ID outside catalog"
+            );
+            ensure!(
+                c[7] <= 3
+                    && i16::try_from(c[0] as i32).is_ok()
+                    && i16::try_from(c[6] as i32).is_ok()
+                    && (c[7] != 1 || c[0] as i32 != i16::MIN as i32)
+                    && c[2] <= 0xffffff
+                    && c[4] <= 384,
+                "invalid detail height, coverage or attributes"
+            );
+        }
+        Ok(())
+    }
+    fn detail_height(c: &[u32]) -> u32 {
+        use surface_core::lod::{EMPTY, OUTSIDE, PRESENT, UNKNOWN_FLAG, WATER};
+        let flags = match c[7] {
+            1 => PRESENT | if c[4] > 0 { WATER } else { 0 },
+            2 => EMPTY,
+            3 => OUTSIDE,
+            _ => UNKNOWN_FLAG,
+        };
+        let height = if c[7] == 1 {
+            c[0] as u16
+        } else {
+            i16::MIN as u16
+        };
+        u32::from(height) | (u32::from(flags) << 16)
+    }
+    fn validate_update_heights(key: Key, words: &[u32]) -> Result<()> {
+        use surface_core::lod::{ALL_FLAGS, PRESENT, WATER};
+        let stride = if key.level == 0 { 1 } else { 2 };
+        ensure!(
+            words.len() == SAMPLES * stride,
+            "LOD height word count mismatch"
+        );
+        for s in words.chunks_exact(stride) {
+            let flags = (s[0] >> 16) as u16;
+            let mean = s[0] as i16;
+            let (min, max) = if stride == 1 {
+                (mean, mean)
+            } else {
+                (s[1] as i16, (s[1] >> 16) as i16)
+            };
+            ensure!(
+                flags != 0
+                    && flags & !ALL_FLAGS == 0
+                    && (flags & WATER == 0 || flags & PRESENT != 0)
+                    && (stride == 2 || (flags & !WATER).count_ones() == 1),
+                "invalid LOD height coverage"
+            );
+            ensure!(
+                if flags & PRESENT != 0 {
+                    min != i16::MIN && min <= mean && mean <= max
+                } else {
+                    [mean, min, max] == [i16::MIN; 3]
+                },
+                "invalid LOD height extrema"
+            );
+        }
+        Ok(())
+    }
+    /// Queues one indivisible surface/height job, superseding older queued work
+    /// for this key. Existing resources remain visible until its frame executes.
+    pub fn replace_surface(
+        &mut self,
+        key: Key,
+        words: Vec<u32>,
+        height_words: Vec<u32>,
+    ) -> Result<()> {
+        self.ensure_active()?;
+        Self::validate_update_key(key)?;
+        self.validate_words(key, Kind::Tile, &words)?;
+        Self::validate_update_heights(key, &height_words)?;
+        if key.level == 0 {
+            self.validate_detail_columns(&words)?;
+            for (c, h) in words.chunks_exact(8).zip(&height_words) {
+                ensure!(Self::detail_height(c) == *h, "surface/height mismatch");
+            }
+        } else {
+            for (c, h) in words.chunks_exact(6).zip(height_words.chunks_exact(2)) {
+                surface_core::lod::SummarySample {
+                    original: [c[0] as u16, (c[0] >> 16) as u16, c[1] as u16],
+                    vivid: [(c[1] >> 16) as u16, c[2] as u16, (c[2] >> 16) as u16],
+                    mean_height: c[3] as i16,
+                    min_height: (c[3] >> 16) as i16,
+                    max_height: c[4] as i16,
+                    present_fraction: (c[4] >> 16) as u8,
+                    empty_fraction: (c[4] >> 24) as u8,
+                    unknown_fraction: c[5] as u8,
+                    water_fraction: (c[5] >> 8) as u8,
+                    flags: (c[5] >> 16) as u16,
+                }
+                .validate()?;
+                ensure!(
+                    h[0] == (c[3] & 0xffff) | (c[5] & 0xffff0000)
+                        && h[1] == (c[3] >> 16) | (c[4] << 16),
+                    "surface/height mismatch"
+                );
+            }
+        }
+        self.enqueue_pending(Pending {
+            key,
+            kind: Kind::Surface,
+            words,
+            height_words,
+            chunks: vec![],
+        })
+    }
+    /// Absolute chunk coordinates, in the same order as 256*8-word payloads.
+    /// The caller supplies the complete current height page; changed columns
+    /// must match it. Other height samples are validated but remain caller-owned.
+    pub fn patch_chunks(
+        &mut self,
+        key: Key,
+        chunks: Vec<[i32; 2]>,
+        words: Vec<u32>,
+        height_words: Vec<u32>,
+    ) -> Result<()> {
+        self.ensure_active()?;
+        Self::validate_update_key(key)?;
+        ensure!(
+            key.level == 0 && self.has_tile(key),
+            "LOD patch requires a resident exact tile"
+        );
+        ensure!(
+            (1..=64).contains(&chunks.len()),
+            "LOD patches require 1..64 chunks"
+        );
+        ensure!(
+            words.len() == chunks.len() * 256 * 8,
+            "LOD chunk word count mismatch"
+        );
+        let mut seen = 0u64;
+        for [cx, cz] in &chunks {
+            ensure!(
+                cx.div_euclid(8) == key.x && cz.div_euclid(8) == key.z,
+                "chunk outside exact tile"
+            );
+            let bit = 1 << (cz.rem_euclid(8) * 8 + cx.rem_euclid(8));
+            ensure!(seen & bit == 0, "duplicate LOD chunk patch");
+            seen |= bit;
+        }
+        self.validate_detail_columns(&words)?;
+        Self::validate_update_heights(key, &height_words)?;
+        for ([cx, cz], chunk) in chunks.iter().zip(words.chunks_exact(256 * 8)) {
+            let x = cx.rem_euclid(8) as usize * 16;
+            let z = cz.rem_euclid(8) as usize * 16;
+            for (i, c) in chunk.chunks_exact(8).enumerate() {
+                ensure!(
+                    Self::detail_height(c) == height_words[(z + i / 16) * SIDE + x + i % 16],
+                    "patched surface/height mismatch"
+                );
+            }
+        }
+        ensure!(
+            !self.pending.iter().any(|p| p.key == key),
+            "LOD patch key already queued; drain or replace it"
+        );
+        self.enqueue_pending(Pending {
+            key,
+            kind: Kind::Surface,
+            words,
+            height_words,
+            chunks,
+        })
+    }
     fn validate_words(&self, key: Key, kind: Kind, words: &[u32]) -> Result<()> {
         let stride = match (kind, key.level) {
             (Kind::Tile, 0) => 8,
@@ -1246,58 +1463,65 @@ impl GpuLod {
     }
     fn enqueue(&mut self, key: Key, kind: Kind, words: Vec<u32>) -> Result<()> {
         self.ensure_active()?;
+        Key::new(key.level, key.x, key.z)?;
         self.validate_words(key, kind, &words)?;
-        let replaced = self
-            .pending
-            .iter()
-            .find(|p| p.key == key && p.kind == kind)
-            .map_or(0, |p| p.words.len() * 4);
-        let queued: usize = self.pending.iter().map(|p| p.words.len() * 4).sum();
         ensure!(
-            queued - replaced + words.len() * 4 <= MAX_QUEUE_BYTES,
+            !self
+                .pending
+                .iter()
+                .any(|p| p.key == key && p.kind == Kind::Surface),
+            "cannot split a queued surface update"
+        );
+        self.enqueue_pending(Pending {
+            key,
+            kind,
+            words,
+            height_words: vec![],
+            chunks: vec![],
+        })
+    }
+    fn enqueue_pending(&mut self, next: Pending) -> Result<()> {
+        let key = next.key;
+        let replaced =
+            |p: &Pending| p.key == key && (next.kind == Kind::Surface || p.kind == next.kind);
+        let kept = || self.pending.iter().filter(|p| !replaced(p));
+        let queued: usize = kept().map(Pending::cpu_bytes).sum();
+        ensure!(
+            queued + next.cpu_bytes() <= MAX_QUEUE_BYTES,
             "LOD upload queue full"
         );
-        if kind == Kind::Tile {
-            let additions = self
-                .pending
-                .iter()
-                .filter(|p| p.kind == kind && !self.tiles.contains_key(&p.key))
+        if next.kind.tile() {
+            let additions = kept()
+                .filter(|p| p.kind.tile() && !self.tiles.contains_key(&p.key))
                 .count();
             ensure!(
-                self.tiles.contains_key(&key)
-                    || replaced != 0
-                    || self.tiles.len() + additions < MAX_TILES,
+                self.tiles.contains_key(&key) || self.tiles.len() + additions < MAX_TILES,
                 "LOD tile slots full"
             );
-        } else {
-            let additions = self
-                .pending
-                .iter()
-                .filter(|p| p.kind == kind && !self.heights.contains_key(&p.key))
+        }
+        if next.kind.height() {
+            let additions = kept()
+                .filter(|p| p.kind.height() && !self.heights.contains_key(&p.key))
                 .count();
             // One slot remains available to prepare a replacement atomically.
             ensure!(
                 self.heights.contains_key(&key)
-                    || replaced != 0
                     || self.heights.len() + additions < self.capacity - 1,
                 "LOD height slots full"
             );
             self.reap();
             let free = self.free_slots.len() + self.retirement.lock().unwrap().free_slots.len();
-            let queued = self
-                .pending
-                .iter()
-                .filter(|p| p.kind == Kind::Height)
-                .count();
+            let queued = kept().filter(|p| p.kind.height()).count();
             let reserve = usize::from(!self.heights.contains_key(&key));
-            ensure!(
-                replaced != 0 || free > queued + reserve,
-                "LOD height slots await retirement"
-            );
+            ensure!(free > queued + reserve, "LOD height slots await retirement");
         }
-        self.upload_peak = self.upload_peak.max(self.cpu_bytes() + words.len() * 4);
-        self.pending.retain(|p| p.key != key || p.kind != kind);
-        self.pending.push_back(Pending { key, kind, words });
+        ensure!(
+            self.gpu_bytes() + self.pending_bytes(&next) <= MAX_GPU_BYTES,
+            "LOD upload exceeds GPU budget"
+        );
+        self.upload_peak = self.upload_peak.max(self.cpu_bytes() + next.cpu_bytes());
+        self.pending.retain(|p| !replaced(p));
+        self.pending.push_back(next);
         Ok(())
     }
     pub fn add_tile(&mut self, key: Key, words: Vec<u32>) -> Result<()> {
@@ -1415,7 +1639,9 @@ impl GpuLod {
             &self.device,
             "updated LOD materials",
             bytemuck::cast_slice(values),
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         );
         let old = std::mem::replace(&mut self.material_buffer, new);
         self.material_count = values.len() / 12;
@@ -1425,6 +1651,46 @@ impl GpuLod {
         // No tile regeneration: fine appearance reads the catalog dynamically;
         // coarse summaries are versioned/replaced by the caller with the catalog.
         self.submit(self.device.create_command_encoder(&Default::default()));
+        Ok(())
+    }
+    /// Append zero-initialized material slots without a CPU catalog copy. Fill
+    /// them using update_materials before introducing surfaces with the new IDs.
+    pub fn grow_materials(&mut self, count: u32) -> Result<()> {
+        self.ensure_active()?;
+        ensure!(
+            (self.material_count..=65536).contains(&(count as usize)),
+            "material growth must preserve IDs and stay within 65536 entries"
+        );
+        if count as usize == self.material_count {
+            return Ok(());
+        }
+        let bytes = u64::from(count) * 48;
+        ensure!(
+            self.gpu_bytes() + bytes <= MAX_GPU_BYTES,
+            "LOD material growth exceeds GPU budget"
+        );
+        let new = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("grown LOD materials"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        encoder.copy_buffer_to_buffer(
+            &self.material_buffer,
+            0,
+            &new,
+            0,
+            self.material_buffer.size(),
+        );
+        let old = std::mem::replace(&mut self.material_buffer, new);
+        self.material_count = count as usize;
+        self.rebind();
+        self.retire(vec![Resource::Buffer(old)], vec![]);
+        self.feedback_revision += 1;
+        self.submit(encoder);
         Ok(())
     }
     pub fn update_materials(&mut self, start: u32, values: &[f32]) -> Result<()> {
@@ -1463,8 +1729,7 @@ impl GpuLod {
         if self.is_disposed() {
             return;
         }
-        self.pending
-            .retain(|p| p.kind != Kind::Tile || p.key != key);
+        self.pending.retain(|p| !p.kind.tile() || p.key != key);
         if let Some(tile) = self.tiles.remove(&key) {
             self.feedback_revision += 1;
             if self.transition.is_none() {
@@ -1481,8 +1746,7 @@ impl GpuLod {
         if self.is_disposed() {
             return;
         }
-        self.pending
-            .retain(|p| p.kind != Kind::Height || p.key != key);
+        self.pending.retain(|p| !p.kind.height() || p.key != key);
         if let Some(slot) = self.heights.remove(&key) {
             self.feedback_revision += 1;
             self.retire(vec![], vec![slot]);
@@ -1562,7 +1826,9 @@ impl GpuLod {
             &self.device,
             "one LOD tile payload",
             bytemuck::cast_slice(words),
-            wgpu::BufferUsages::STORAGE,
+            wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
         );
         let origin = buffer(
             &self.device,
@@ -1740,24 +2006,63 @@ impl GpuLod {
         let Some(next) = self.pending.front() else {
             return Ok(None);
         };
-        if next.kind == Kind::Height && self.free_slots.is_empty() {
+        if next.kind.height() && self.free_slots.is_empty() {
             return Ok(None);
         }
-        let reservation = if next.kind == Kind::Height {
-            self.height_bytes(next.key.level)
-        } else {
-            self.tile_bytes(next.key.level)
-        };
+        let reservation = self.pending_bytes(next);
         ensure!(
             self.gpu_bytes() + reservation <= MAX_GPU_BYTES,
             "LOD GPU preparation exceeds 200 MB budget"
         );
         let next = self.pending.pop_front().unwrap();
+        // The queue no longer owns these inputs, but they remain allocated
+        // throughout preparation, including its bounded table scratch space.
+        self.upload_peak = self
+            .upload_peak
+            .max(self.cpu_bytes() + next.cpu_bytes() + TABLE_ENTRIES * 16);
         match next.kind {
             Kind::Tile => self.prepare_tile(next.key, &next.words, encoder),
             Kind::Height => self.prepare_height(next.key, &next.words, encoder),
+            Kind::Surface => {
+                self.prepare_height(next.key, &next.height_words, encoder);
+                if next.chunks.is_empty() {
+                    self.prepare_tile(next.key, &next.words, encoder);
+                } else {
+                    self.prepare_chunks(next.key, &next.chunks, &next.words, encoder);
+                }
+                self.dirty_coarse();
+            }
         }
         Ok(Some((next.kind, next.key)))
+    }
+    fn prepare_chunks(
+        &mut self,
+        key: Key,
+        chunks: &[[i32; 2]],
+        words: &[u32],
+        encoder: &mut wgpu::CommandEncoder,
+    ) {
+        let staging = buffer(
+            &self.device,
+            "LOD complete chunk rows",
+            bytemuck::cast_slice(words),
+            wgpu::BufferUsages::COPY_SRC,
+        );
+        let tile = &self.tiles[&key];
+        for (i, [cx, cz]) in chunks.iter().enumerate() {
+            let x = cx.rem_euclid(8) as u64 * 16;
+            let z = cz.rem_euclid(8) as u64 * 16;
+            for row in 0..16 {
+                encoder.copy_buffer_to_buffer(
+                    &staging,
+                    i as u64 * 8192 + row * 512,
+                    &tile.data,
+                    ((z + row) * 128 + x) * 32,
+                    512,
+                );
+            }
+        }
+        self.retire(vec![Resource::Buffer(staging)], vec![]);
     }
     fn dirty_coarse(&mut self) {
         for tile in self.tiles.values_mut() {
@@ -2198,13 +2503,10 @@ impl GpuLod {
             })
             .sum();
         let upload_bytes = 80 + (draw_count as u64 + 1) * DRAW_BYTES;
-        let prepare_bytes = self.pending.front().map_or(0, |next| {
-            if next.kind == Kind::Height {
-                self.height_bytes(next.key.level)
-            } else {
-                self.tile_bytes(next.key.level)
-            }
-        });
+        let prepare_bytes = self
+            .pending
+            .front()
+            .map_or(0, |next| self.pending_bytes(next));
         ensure!(
             self.gpu_bytes() + self.resize_bytes(width, height) + prepare_bytes + upload_bytes
                 <= MAX_GPU_BYTES,
@@ -2214,7 +2516,7 @@ impl GpuLod {
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let prepared = self.prepare_one(&mut encoder)?;
         let shade_key = match prepared {
-            Some((Kind::Tile, key)) if key.level > 0 => Some(key),
+            Some((Kind::Tile | Kind::Surface, key)) if key.level > 0 => Some(key),
             Some(_) => None,
             None => self.preparation_keys().first().copied(),
         };

@@ -5,8 +5,8 @@ retain unlit color summaries and height ranges; close-up tiles retain the exact
 surface fields. Zooming out releases exact tile buffers and picking records.
 Lighting stays interactive, and no rendered map images are downloaded.
 
-The browser currently supports static prepared maps. `surface-sync` also builds
-and serves a live hierarchy, but the browser does not yet adopt its revisions.
+The browser supports static prepared maps and explicitly bound live hierarchies
+published by `surface-sync`.
 The packaged deployment workflow and public-demo playback retain their existing
 interfaces.
 The declared large-world scale and sustained-performance acceptance require
@@ -29,7 +29,10 @@ Open `http://127.0.0.1:5173/?lod=/maps/prepared-lod/lod.json&players=off`.
 For a configured viewer, set `lod_url` relative to the application base path.
 An explicitly selected `map` URL retains the non-LOD reader. A prepared map
 carrying a live world identity requires a matching viewer binding; preparation
-alone does not enable live updates.
+alone does not create a publishing service. Configure `lod_url` to the same-origin
+`api/v1/worlds/{world}/terrain/lod.json` route and match `terrain.world_id` and
+`terrain.generation` to the dataset. `terrain.url` retains the corresponding
+legacy manifest route. `?terrain=off` disables LOD polling for that view.
 
 The synthetic fixture requires no Minecraft assets or private data:
 
@@ -75,12 +78,31 @@ revision, source revision lag, pending age and the last publication time. Pendin
 work older than 30 seconds or a publication error reports degraded LOD status.
 This does not substitute for the existing gameplay-scan freshness status.
 
-Browser revision adoption and packaged proxy integration remain incomplete; the
-legacy live manifest remains available. Directly opening `lod.json` in the LOD
-viewer reads a snapshot of that publication, not a continuously updating feed.
+The browser revalidates a bound live root every two seconds while visible, with
+one root read in flight, bounded backoff and an explicit delayed status. Unchanged
+roots do not redraw terrain. Wrong-world, older-revision and generation-mismatch
+responses retain the last valid map. A generation change requires an updated
+explicit viewer binding and reopening the map; unrelated generations never blend.
+
+Changed indexes retain displayed detail while replacement metadata loads.
+Resident exact tiles compare compact chunk hashes and fetch changed chunks plus
+their height page; missing baselines and removed chunk references require a full
+tile. Coarse views fetch changed summaries. Surface and height changes share a
+GPU submission, and picking updates in the same main-thread turn. Camera,
+lighting and independent player state remain intact. Compatible catalog appends
+preserve existing IDs; changed descriptors or atlases trigger a coarse-first
+reconstruction without retaining incompatible terrain resources.
+
+The root revision in diagnostics is the adopted publication, not a claim that
+every resident tile has finished updating. Detail failures retain last-known
+coverage and retry. Packaged proxy integration and automatic LOD preparation in
+distribution workflows remain incomplete; the legacy live manifest remains
+available.
 
 ```sh
 cargo test --locked -p surface-sync
+node scripts/terrain-fixture.mjs --small-only
+npx playwright test tests/lod-live.spec.ts
 ```
 
 ## Memory and Scheduling

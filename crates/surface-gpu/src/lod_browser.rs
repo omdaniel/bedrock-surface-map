@@ -195,6 +195,54 @@ impl LodRenderer {
         }
         self.gpu.add_height(key, words.to_vec()).map_err(js_error)
     }
+    pub fn replace_surface(
+        &mut self,
+        level: u32,
+        x: i32,
+        z: i32,
+        words: js_sys::Uint32Array,
+        height_words: js_sys::Uint32Array,
+    ) -> Result<(), JsValue> {
+        self.ensure_active()?;
+        let key = Key::new(level, x, z).map_err(js_error)?;
+        let (surface_stride, height_stride) = if level == 0 { (8, 1) } else { (6, 2) };
+        if words.length() != 128 * 128 * surface_stride
+            || height_words.length() != 128 * 128 * height_stride
+        {
+            return Err(js_error("LOD surface update word count mismatch"));
+        }
+        self.gpu
+            .replace_surface(key, words.to_vec(), height_words.to_vec())
+            .map_err(js_error)
+    }
+    pub fn patch_chunks(
+        &mut self,
+        x: i32,
+        z: i32,
+        coordinates: js_sys::Int32Array,
+        words: js_sys::Uint32Array,
+        height_words: js_sys::Uint32Array,
+    ) -> Result<(), JsValue> {
+        self.ensure_active()?;
+        let key = Key::new(0, x, z).map_err(js_error)?;
+        if coordinates.length() < 2
+            || coordinates.length() > 128
+            || !coordinates.length().is_multiple_of(2)
+            || words.length() != coordinates.length() / 2 * 256 * 8
+            || height_words.length() != 128 * 128
+        {
+            return Err(js_error("LOD chunk update word count mismatch"));
+        }
+        let mut values = [0i32; 128];
+        coordinates.copy_to(&mut values[..coordinates.length() as usize]);
+        let chunks = values[..coordinates.length() as usize]
+            .chunks_exact(2)
+            .map(|c| [c[0], c[1]])
+            .collect();
+        self.gpu
+            .patch_chunks(key, chunks, words.to_vec(), height_words.to_vec())
+            .map_err(js_error)
+    }
     pub fn remove_tile(&mut self, level: u32, x: i32, z: i32) -> Result<(), JsValue> {
         self.gpu
             .remove_tile(Key::new(level, x, z).map_err(js_error)?);
@@ -277,6 +325,10 @@ impl LodRenderer {
         }
         self.gpu.set_materials(&values.to_vec()).map_err(js_error)
     }
+    pub fn grow_materials(&mut self, count: u32) -> Result<(), JsValue> {
+        self.ensure_active()?;
+        self.gpu.grow_materials(count).map_err(js_error)
+    }
     pub fn update_materials(
         &mut self,
         start: u32,
@@ -343,6 +395,12 @@ impl LodRenderer {
     }
     pub fn height_bytes(&self, level: u32) -> f64 {
         self.gpu.height_bytes(level) as f64
+    }
+    pub fn surface_update_bytes(&self, level: u32, patch_count: u32) -> Result<f64, JsValue> {
+        self.gpu
+            .surface_update_bytes(level, patch_count)
+            .map(|bytes| bytes as f64)
+            .map_err(js_error)
     }
     pub fn resize_bytes(&self, width: u32, height: u32) -> f64 {
         self.gpu.resize_bytes(width, height) as f64

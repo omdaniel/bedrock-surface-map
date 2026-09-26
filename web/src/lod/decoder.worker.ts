@@ -1,9 +1,16 @@
 import init, {
+  decode_chunk_words,
   decode_lod_absence,
   decode_lod_words,
 } from "../../pkg/surface_gpu.js";
 import type { TileKey } from "./protocol";
 import type { ObjectRef } from "../types";
+import {
+  decodeChunkPatch,
+  surfacePicking,
+  type UpdatePlan,
+} from "./decoder-data.ts";
+import { DecoderDownloads } from "./decoder-transport.ts";
 
 export interface DecodeJob {
   type: "load";
@@ -15,21 +22,31 @@ export interface DecodeJob {
   materials: number;
   absenceSource?: TileKey;
 }
+export interface DecodeUpdateJob extends UpdatePlan {
+  type: "update";
+  id: number;
+}
 export interface DecodeResult {
   id: number;
   words?: Uint32Array;
   pick?: Int32Array;
   materialMask?: Uint32Array;
+  updateKind?: "surface" | "chunks";
+  coordinates?: Int32Array;
+  heightWords?: Uint32Array;
   wasmBytes: number;
   decodeMs: number;
   error?: string;
 }
 const ready = init();
 const controllers = new Map<number, AbortController>();
+const downloads = new DecoderDownloads();
 let queue = Promise.resolve();
 const scope = self as unknown as {
   onmessage: (
-    event: MessageEvent<DecodeJob | { type: "cancel"; id: number }>,
+    event: MessageEvent<
+      DecodeJob | DecodeUpdateJob | { type: "cancel"; id: number }
+    >,
   ) => void;
   postMessage: (reply: DecodeResult, transfer?: Transferable[]) => void;
 };
@@ -40,8 +57,15 @@ scope.onmessage = ({ data }) => {
   }
   const controller = new AbortController();
   controllers.set(data.id, controller);
-  // Fetches may overlap, but native decoding has exactly one owner.
-  const fetched = bytes(data, controller.signal);
+  const objects =
+    data.type === "load"
+      ? [data]
+      : [
+          ...(data.updateKind === "surface" ? [data.surface!] : data.chunks!),
+          data.height,
+        ];
+  // Downloads share a global two-object limit; native decoding has one owner.
+  const fetched = downloads.readAll(objects, controller);
   void fetched.catch(() => {});
   queue = queue.then(async () => {
     let wasmBytes = 0;
@@ -53,72 +77,101 @@ scope.onmessage = ({ data }) => {
       wasmBytes = module.memory.buffer.byteLength;
       const input = await fetched;
       controller.signal.throwIfAborted();
+      const native = (decode: () => Uint32Array) => {
+        controller.signal.throwIfAborted();
+        const started = performance.now();
+        let words: Uint32Array;
+        try {
+          words = decode();
+        } finally {
+          decodeMs += performance.now() - started;
+          wasmBytes = module.memory.buffer.byteLength;
+        }
+        if (wasmBytes > 16 * 1024 * 1024)
+          throw Error("LOD decoder exceeds its WASM memory allowance");
+        controller.signal.throwIfAborted();
+        return words;
+      };
       const { key } = data;
-      const started = performance.now();
-      if (data.absenceSource && data.kind !== "summary")
-        throw Error("Only coarse edge sources support absence projection");
-      const words = data.absenceSource
-        ? decode_lod_absence(
-            input,
-            data.absenceSource.level,
-            data.absenceSource.x,
-            data.absenceSource.z,
-            key.level,
-            key.x,
-            key.z,
-          )
-        : decode_lod_words(
-            input,
-            data.kind,
+      const lod = (bytes: Uint8Array, kind: DecodeJob["kind"]) =>
+        native(() =>
+          decode_lod_words(
+            bytes,
+            kind,
             key.level,
             key.x,
             key.z,
             data.materials,
+          ),
+        );
+      const result: DecodeResult = { id: data.id, wasmBytes, decodeMs };
+      if (data.type === "load") {
+        if (data.absenceSource && data.kind !== "summary")
+          throw Error("Only coarse edge sources support absence projection");
+        const source = data.absenceSource;
+        result.words = source
+          ? native(() =>
+              decode_lod_absence(
+                input[0],
+                source.level,
+                source.x,
+                source.z,
+                key.level,
+                key.x,
+                key.z,
+              ),
+            )
+          : lod(input[0], data.kind);
+        if (data.kind !== "height")
+          Object.assign(
+            result,
+            surfacePicking(result.words, data.kind, data.materials),
           );
-      decodeMs = performance.now() - started;
-      wasmBytes = module.memory.buffer.byteLength;
-      if (wasmBytes > 16 * 1024 * 1024)
-        throw Error("LOD decoder exceeds its WASM memory allowance");
-      controller.signal.throwIfAborted();
-      let pick: Int32Array | undefined;
-      const materialMask =
-        data.kind === "detail"
-          ? new Uint32Array(Math.ceil(data.materials / 32))
-          : undefined;
-      if (data.kind !== "height") {
-        pick = new Int32Array(128 * 128 * 2);
-        for (let i = 0; i < 128 * 128; i++) {
-          if (data.kind === "detail") {
-            pick[i * 2] = words[i * 8 + 7] === 1 ? words[i * 8] : -32768;
-            pick[i * 2 + 1] = words[i * 8 + 1];
-            for (const offset of [1, 3, 5]) {
-              const id = words[i * 8 + offset];
-              materialMask![id >>> 5] |= 1 << (id & 31);
-            }
-          } else {
-            pick[i * 2] = words[i * 6 + 3];
-            pick[i * 2 + 1] =
-              (words[i * 6 + 4] & 0xffff) | (words[i * 6 + 5] & 0xffff0000);
-          }
+      } else {
+        result.updateKind = data.updateKind;
+        if (data.updateKind === "chunks") {
+          const chunks = data.chunks!;
+          Object.assign(
+            result,
+            decodeChunkPatch(chunks, data.materials, (i) =>
+              native(() =>
+                decode_chunk_words(
+                  input[i],
+                  chunks[i].cx,
+                  chunks[i].cz,
+                  data.materials,
+                ),
+              ),
+            ),
+          );
+        } else {
+          const kind = key.level === 0 ? "detail" : "summary";
+          result.words = lod(input[0], kind);
+          Object.assign(
+            result,
+            surfacePicking(result.words, kind, data.materials),
+          );
         }
+        result.heightWords = lod(input[input.length - 1], "height");
       }
+      controller.signal.throwIfAborted();
+      result.wasmBytes = wasmBytes;
+      result.decodeMs = decodeMs;
+      const arrays = [
+        result.words,
+        result.pick,
+        result.materialMask,
+        result.coordinates,
+        result.heightWords,
+      ];
       scope.postMessage(
-        {
-          id: data.id,
-          words,
-          pick,
-          materialMask,
-          wasmBytes,
-          decodeMs,
-        },
-        [
-          words.buffer as ArrayBuffer,
-          ...(pick ? [pick.buffer as ArrayBuffer] : []),
-          ...(materialMask ? [materialMask.buffer as ArrayBuffer] : []),
-        ],
+        result,
+        arrays.flatMap((array) => (array ? [array.buffer as ArrayBuffer] : [])),
       );
     } catch (error) {
       controller.abort();
+      // Initialization/decode failures must not acknowledge still-owned transfers.
+      await fetched.catch(() => {});
       scope.postMessage({
         id: data.id,
         wasmBytes: memory?.buffer.byteLength ?? wasmBytes,
@@ -130,39 +183,3 @@ scope.onmessage = ({ data }) => {
     }
   });
 };
-
-async function bytes(job: DecodeJob, signal: AbortSignal) {
-  if (job.ref.bytes < 1 || job.ref.bytes > 2 * 1024 * 1024)
-    throw Error("LOD payload size limit");
-  const response = await fetch(job.url, {
-    signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
-    redirect: "error",
-  });
-  if (!response.ok || !response.body)
-    throw Error(`LOD data HTTP ${response.status}`);
-  const declared = response.headers.get("content-length");
-  if (declared !== null && Number(declared) !== job.ref.bytes)
-    throw Error("LOD response length mismatch");
-  const output = new Uint8Array(job.ref.bytes);
-  const reader = response.body.getReader();
-  let offset = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (offset + value.byteLength > output.byteLength)
-        throw Error("LOD response exceeds declared size");
-      output.set(value, offset);
-      offset += value.byteLength;
-    }
-    if (offset !== output.length) throw Error("Truncated LOD payload");
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  const hash = Array.from(
-    new Uint8Array(await crypto.subtle.digest("SHA-256", output.buffer)),
-    (byte) => byte.toString(16).padStart(2, "0"),
-  ).join("");
-  if (hash !== job.ref.sha256) throw Error("LOD payload checksum mismatch");
-  return output;
-}

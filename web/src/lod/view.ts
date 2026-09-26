@@ -13,6 +13,14 @@ import { LodDecoder } from "./decoder";
 import { residentCut, coveringTile, cutAncestors } from "./cut";
 import type { DecodeResult } from "./decoder.worker";
 import {
+  catalogAppendPages,
+  changedChunks,
+  chunkStamp,
+  patchPicking,
+  type ChunkRef,
+} from "./live";
+import { LodRootSource, ROOT_POLL_BYTES, readBytes } from "./root-source";
+import {
   localAsset,
   catalogPagesForMask,
   parseCatalog,
@@ -45,6 +53,7 @@ interface Resident {
   pick: Int32Array;
   last: number;
   catalog: number[];
+  chunks: Int32Array;
   absenceSource?: TileKey;
 }
 interface Demand {
@@ -58,6 +67,7 @@ interface PendingUpload {
   demand: Demand;
   result: DecodeResult;
   catalog: number[];
+  node?: LodNode;
   resolve: () => void;
   reject: (error: Error) => void;
 }
@@ -70,7 +80,7 @@ export class LodView {
   readonly ledger: MemoryLedger;
   readonly decoder = new LodDecoder();
   readonly base: URL;
-  readonly root: LodManifest;
+  root: LodManifest;
   readonly renderer: LodRenderer;
   private readonly requestFrame: () => void;
   private readonly notify: (status: string) => void;
@@ -82,6 +92,7 @@ export class LodView {
   private readonly heights = new Map<string, { key: TileKey; hash: string }>();
   private readonly materials = new Map<number, Material>();
   private readonly catalogPages = new Set<number>();
+  private readonly catalogHashes = new Map<number, string>();
   private readonly gpuCatalogPages = new Set<number>();
   private readonly pendingCatalog = new Set<number>();
   private readonly demands = new Map<string, Demand>();
@@ -118,6 +129,16 @@ export class LodView {
   private readonly started = performance.now();
   private tileUploads = 0;
   private cancellations = 0;
+  private live: LodRootSource | null = null;
+  private rootChanged: (() => void) | null = null;
+  private rebuildAppearance: (() => Promise<void>) | null = null;
+  private adoptingRoot = false;
+  private changingTree = false;
+  private pendingRoot: {
+    root: LodManifest;
+    resolve: () => void;
+    reject: (error: Error) => void;
+  } | null = null;
   private readonly onRetired = () => {
     if (this.disposed) return;
     this.accountGpu();
@@ -238,11 +259,145 @@ export class LodView {
     };
   }
   get busy() {
-    return this.active !== null || this.upload !== null;
+    return this.active !== null || this.upload !== null || this.adoptingRoot;
+  }
+  startLive(
+    url: URL,
+    changed: () => void,
+    rebuild: () => Promise<void>,
+    status: (state: "live" | "delayed") => void,
+  ) {
+    if (
+      !this.root.world_id ||
+      url.origin !== this.base.origin ||
+      new URL(".", url).href !== this.base.href
+    )
+      throw Error("Invalid live LOD source");
+    this.live?.destroy();
+    this.rootChanged = changed;
+    this.rebuildAppearance = rebuild;
+    this.live = new LodRootSource(
+      url,
+      this.root,
+      (root) =>
+        new Promise<void>((resolve, reject) => {
+          if (this.disposed) return reject(Error("LOD viewer stopped"));
+          this.pendingRoot = { root, resolve, reject };
+          // A submitted atomic replacement finishes before the root changes. A
+          // canceled decoder retains its reservation until the worker acknowledges.
+          if (this.active && !this.submittedUpload) this.active.abort.abort();
+          void this.applyPendingRoot();
+        }),
+      () => this.ledger.tryReserve("root-poll", "transit", ROOT_POLL_BYTES),
+      () => this.ledger.release("root-poll"),
+      status,
+    );
+    this.live.visibility(!document.hidden);
+  }
+  private async applyPendingRoot() {
+    if (!this.pendingRoot || this.active || this.adoptingRoot || this.disposed)
+      return;
+    const pending = this.pendingRoot;
+    this.pendingRoot = null;
+    this.adoptingRoot = true;
+    try {
+      const next = pending.root;
+      const compare = catalogAppendPages(this.root, next);
+      let compatible = compare !== null;
+      if (compare?.length) {
+        if (
+          !this.ledger.tryReserve(
+            "catalog-compare",
+            "transit",
+            MAX_INDEX_BYTES * 12,
+          )
+        )
+          throw Error("LOD catalog validation awaits memory headroom");
+        try {
+          for (const { before, after } of compare) {
+            const read = async (ref: typeof before) =>
+              parseCatalog(
+                JSON.parse(
+                  new TextDecoder().decode(await readObject(ref, this.base)),
+                ),
+                ref.count,
+              );
+            const old = await read(before),
+              newer = await read(after);
+            if (
+              old.some(
+                (material, i) =>
+                  JSON.stringify(material) !== JSON.stringify(newer[i]),
+              )
+            )
+              compatible = false;
+          }
+        } finally {
+          this.ledger.release("catalog-compare");
+        }
+      }
+      if (this.disposed) throw Error("LOD viewer stopped");
+      if (!compatible) {
+        // Never shade old summaries with a changed descriptor or atlas. The
+        // application releases this view before a coarse-first reconstruction.
+        if (!this.rebuildAppearance)
+          throw Error("LOD appearance requires reconstruction");
+        await this.rebuildAppearance();
+      } else {
+        if (next.material_count > this.root.material_count) {
+          if (
+            !this.ledger.tryReserve(
+              "catalog-grow",
+              "retirement",
+              next.material_count * 48,
+            )
+          )
+            throw Error("LOD material growth awaits memory headroom");
+          try {
+            this.renderer.grow_materials(next.material_count);
+          } finally {
+            this.ledger.release("catalog-grow");
+          }
+        }
+        for (const page of this.root.catalog) {
+          if (
+            next.catalog.find((p) => p.start === page.start)?.sha256 ===
+            page.sha256
+          )
+            continue;
+          // Prefix-compatible append keeps existing picking descriptors alive.
+          // The page hash forces a reload before any new IDs use this page.
+          this.gpuCatalogPages.delete(page.start);
+        }
+        this.root = next;
+        this.changingTree = true;
+        this.renderer.set_world(
+          new Int32Array(next.bounds),
+          next.height_range[1],
+        );
+        this.failed.clear();
+        this.residencyRevision++;
+        this.accountGpu();
+        this.rootChanged?.();
+      }
+      pending.resolve();
+    } catch (error) {
+      pending.reject(error instanceof Error ? error : Error(String(error)));
+    } finally {
+      this.adoptingRoot = false;
+      if (!this.disposed) this.plan();
+    }
   }
   get stats() {
     return {
       memory: this.ledger.snapshot(),
+      live: this.live
+        ? {
+            state: this.live.state,
+            error: this.live.error,
+            revision: this.root.revision,
+          }
+        : null,
       targetLevel: this.target,
       level: this.level,
       tiles: this.tiles.size,
@@ -355,7 +510,7 @@ export class LodView {
     const reclaimableTiles =
       (this.ledger.peek("gpu:surface")?.totalBytes ?? 0) +
       [...this.tiles.values()].reduce(
-        (sum, tile) => sum + tile.pick.byteLength,
+        (sum, tile) => sum + tile.pick.byteLength + tile.chunks.byteLength,
         0,
       );
     // Forecast a replacement, not a second copy of the job already reserved.
@@ -505,8 +660,10 @@ export class LodView {
     this.evict();
     this.updateCut();
     this.demandEdgeSources();
+    this.pairResidentUpdates();
     if (
       this.active &&
+      !this.submittedUpload &&
       this.demands.get(this.active.id)?.ref.sha256 !==
         this.active.demand.ref.sha256
     ) {
@@ -516,6 +673,32 @@ export class LodView {
     for (const id of this.failed.keys())
       if (!this.demands.has(id)) this.failed.delete(id);
     void this.loadNext();
+  }
+  private pairResidentUpdates() {
+    for (const [id, demand] of this.demands) {
+      if (demand.kind !== "height") continue;
+      const key = tileId(demand.key),
+        resident = this.tiles.get(key);
+      const node = this.nodes.get(key)?.node;
+      if (
+        !resident ||
+        resident.absenceSource ||
+        !node ||
+        resident.hash === node.data.sha256
+      )
+        continue;
+      // A displayed surface and its height page advance in one GPU submission.
+      const kind = demand.key.level ? "summary" : "detail";
+      const surfaceId = `${kind}:${key}`;
+      const surface = this.demands.get(surfaceId);
+      this.demands.set(surfaceId, {
+        key: demand.key,
+        kind,
+        ref: node.data,
+        priority: Math.min(demand.priority, surface?.priority ?? Infinity),
+      });
+      this.demands.delete(id);
+    }
   }
   private schedulePlan() {
     if (this.planTimer !== undefined || this.disposed) return;
@@ -535,7 +718,12 @@ export class LodView {
     return record?.hash === demand.ref.sha256;
   }
   private async loadNext() {
-    if (this.disposed || document.hidden || this.active) return;
+    if (this.disposed || document.hidden || this.active || this.adoptingRoot)
+      return;
+    if (this.pendingRoot) {
+      void this.applyPendingRoot();
+      return;
+    }
     const wanted = [...this.demands.entries()]
       .filter(
         ([id, d]) =>
@@ -546,8 +734,19 @@ export class LodView {
     const job = wanted[0];
     if (!job) return;
     const [id, demand] = job;
+    const resident = this.tiles.get(tileId(demand.key));
+    const updateNode =
+      resident &&
+      !demand.absenceSource &&
+      (demand.kind === "detail" || demand.kind === "summary")
+        ? this.nodes.get(tileId(demand.key))?.node
+        : undefined;
+    const chunks: ChunkRef[] | null =
+      updateNode && resident
+        ? changedChunks(resident.chunks, updateNode)
+        : null;
     if (
-      demand.kind === "height" &&
+      (demand.kind === "height" || updateNode) &&
       this.renderer.available_height_slots() === 0
     ) {
       this.evict(true);
@@ -556,8 +755,19 @@ export class LodView {
         return;
       }
     }
-    const reserve =
-      demand.kind === "index"
+    const reserve = updateNode
+      ? ((chunks
+          ? chunks.reduce((sum, chunk) => sum + chunk.bytes, 0)
+          : updateNode.data.bytes) +
+          updateNode.height.bytes) *
+          2 +
+        2 * 1024 * 1024 +
+        this.renderer.surface_update_bytes(
+          demand.key.level,
+          chunks?.length ?? 0,
+        ) +
+        131072
+      : demand.kind === "index"
         ? demand.ref.bytes * 8 + 8192
         : demand.ref.bytes * 2 +
           1024 * 1024 +
@@ -595,15 +805,23 @@ export class LodView {
         });
         this.residencyRevision++;
       } else {
-        const result = await this.decoder.load(
-          demand.ref,
-          demand.key,
-          demand.kind,
-          this.base,
-          this.root.material_count,
-          abort.signal,
-          demand.absenceSource,
-        );
+        const result = updateNode
+          ? await this.decoder.update(
+              updateNode,
+              chunks,
+              this.base,
+              this.root.material_count,
+              abort.signal,
+            )
+          : await this.decoder.load(
+              demand.ref,
+              demand.key,
+              demand.kind,
+              this.base,
+              this.root.material_count,
+              abort.signal,
+              demand.absenceSource,
+            );
         abort.signal.throwIfAborted();
         const catalog =
           demand.kind === "detail"
@@ -611,7 +829,14 @@ export class LodView {
             : [];
         abort.signal.throwIfAborted();
         await new Promise<void>((resolve, reject) => {
-          this.upload = { demand, result, catalog, resolve, reject };
+          this.upload = {
+            demand,
+            result,
+            catalog,
+            node: this.nodes.get(tileId(demand.key))?.node,
+            resolve,
+            reject,
+          };
           this.requestFrame();
         });
       }
@@ -626,6 +851,7 @@ export class LodView {
             performance.now() + Math.min(30000, 1000 * 2 ** Math.min(count, 5)),
         });
         this.notify("Terrain detail delayed; retaining available coverage");
+        if (/HTTP (404|410)/.test(String(error))) this.live?.refresh();
         clearTimeout(this.retryTimer);
         this.retryTimer = setTimeout(() => this.plan(), 2000);
       }
@@ -635,7 +861,8 @@ export class LodView {
       this.active = null;
       if (!this.disposed) {
         this.accountGpu();
-        this.plan();
+        if (this.pendingRoot) void this.applyPendingRoot();
+        else this.plan();
         this.requestFrame();
       }
     }
@@ -647,7 +874,11 @@ export class LodView {
     this.evictCatalog();
     for (const index of required) {
       const page = pages[index];
-      if (this.catalogPages.has(page.start)) continue;
+      if (
+        this.catalogPages.has(page.start) &&
+        this.catalogHashes.get(page.start) === page.sha256
+      )
+        continue;
       const capacity = page.bytes * 4 + page.count * 48;
       if (
         !this.ledger.tryReserve(
@@ -689,6 +920,7 @@ export class LodView {
         for (let i = 0; i < materials.length; i++)
           this.materials.set(page.start + i, materials[i]);
         this.catalogPages.add(page.start);
+        this.catalogHashes.set(page.start, page.sha256);
       } finally {
         this.ledger.release("catalog-job");
       }
@@ -705,6 +937,7 @@ export class LodView {
       for (let i = page.start; i < page.start + page.count; i++)
         this.materials.delete(i);
       this.catalogPages.delete(page.start);
+      this.catalogHashes.delete(page.start);
       this.ledger.release(`catalog:${page.start}`);
     }
   }
@@ -716,7 +949,23 @@ export class LodView {
       this.active?.abort.signal.throwIfAborted();
       const { demand, result } = upload,
         key = demand.key;
-      if (demand.kind === "height") {
+      if (result.updateKind === "chunks") {
+        this.renderer.patch_chunks(
+          key.x,
+          key.z,
+          result.coordinates!,
+          result.words!,
+          result.heightWords!,
+        );
+      } else if (result.updateKind === "surface") {
+        this.renderer.replace_surface(
+          key.level,
+          key.x,
+          key.z,
+          result.words!,
+          result.heightWords!,
+        );
+      } else if (demand.kind === "height") {
         this.renderer.add_height(key.level, key.x, key.z, result.words!);
       } else {
         this.renderer.add_tile(key.level, key.x, key.z, result.words!);
@@ -749,14 +998,39 @@ export class LodView {
       } else {
         if (!this.renderer.has_tile(key.level, key.x, key.z))
           throw Error("LOD tile upload was not prepared");
-        if (!this.ledger.set(`pick:${id}`, "cpu", result.pick!.byteLength))
+        const previous = this.tiles.get(id);
+        const pick =
+          result.updateKind === "chunks" ? previous?.pick : result.pick;
+        if (!pick) throw Error("LOD picking baseline missing");
+        const chunks = chunkStamp(key.level ? [] : upload.node?.chunks);
+        if (
+          !this.ledger.set(
+            `pick:${id}`,
+            "cpu",
+            pick.byteLength + chunks.byteLength,
+          )
+        )
           throw Error("LOD picking admission failed");
+        if (result.updateKind === "chunks")
+          patchPicking(pick, key, result.coordinates!, result.pick!);
+        if (result.updateKind) {
+          if (
+            !upload.node ||
+            !this.renderer.has_height(key.level, key.x, key.z)
+          )
+            throw Error("LOD replacement height was not prepared");
+          this.heights.set(id, { key, hash: upload.node.height.sha256 });
+        }
         this.tiles.set(id, {
           key,
           hash: demand.ref.sha256,
-          pick: result.pick!,
+          pick,
           last: this.clock,
-          catalog: upload.catalog,
+          catalog:
+            result.updateKind === "chunks"
+              ? [...new Set([...(previous?.catalog ?? []), ...upload.catalog])]
+              : upload.catalog,
+          chunks,
           absenceSource: demand.absenceSource,
         });
         this.tileUploads++;
@@ -896,6 +1170,23 @@ export class LodView {
   private updateCut() {
     if (!this.camera) return;
     const area = this.bounds();
+    if (this.changingTree) {
+      // A new index hash is not a loss of the resident terrain. Keep the
+      // displayed cut while its replacement metadata arrives, so an exact
+      // tile remains available for a chunk patch instead of being reloaded.
+      if (
+        this.cut.some(
+          (key) =>
+            intersects(tileBounds(key), area) &&
+            this.referenceCut(
+              key.level,
+              this.shadowArea(key.level, tileBounds(key)),
+            ) === null,
+        )
+      )
+        return;
+      this.changingTree = false;
+    }
     const stamp = [
       Math.floor(area[0] / 128),
       Math.floor(area[1] / 128),
@@ -988,11 +1279,18 @@ export class LodView {
     const protectedIds = new Set(displayed.map(tileId));
     const protectedHeights = new Set(protectedIds);
     for (const key of displayed) {
-      const required = this.referenceCut(
-        key.level,
-        this.shadowArea(key.level, tileBounds(key)),
-      );
+      const shadow = this.shadowArea(key.level, tileBounds(key));
+      const required = this.referenceCut(key.level, shadow);
       for (const height of required ?? []) protectedHeights.add(tileId(height));
+      // While indexes change, the displayed last-known cut still needs its old
+      // shadow pages. Geometric protection does not retain a second index tree.
+      if (required === null)
+        for (const [id, height] of this.heights)
+          if (
+            height.key.level >= key.level &&
+            intersects(tileBounds(height.key), shadow)
+          )
+            protectedHeights.add(id);
     }
     for (const [id, resident] of this.tiles) {
       if (
@@ -1169,15 +1467,21 @@ export class LodView {
   }
   retry() {
     this.failed.clear();
+    this.live?.refresh();
     this.plan();
   }
   visibility() {
     clearTimeout(this.retryTimer);
-    if (document.hidden) this.active?.abort.abort();
-    else this.plan();
+    this.live?.visibility(!document.hidden);
+    if (document.hidden) {
+      if (!this.submittedUpload) this.active?.abort.abort();
+    } else this.plan();
   }
   destroy() {
     this.disposed = true;
+    this.live?.destroy();
+    this.pendingRoot?.reject(Error("LOD viewer stopped"));
+    this.pendingRoot = null;
     this.active?.abort.abort();
     this.upload?.reject(Error("LOD viewer stopped"));
     this.upload = null;
@@ -1212,35 +1516,6 @@ function atlasDimensions(bytes: Uint8Array): [number, number] {
   return [width, height];
 }
 
-async function readBytes(
-  response: Response,
-  maximum: number,
-  exact?: number,
-): Promise<Uint8Array> {
-  if (!response.ok || !response.body)
-    throw Error(`LOD HTTP ${response.status}`);
-  const length = Number(response.headers.get("content-length"));
-  if (length > maximum || (exact !== undefined && length && length !== exact))
-    throw Error("LOD response length limit");
-  const buffer = new Uint8Array(exact ?? maximum);
-  const reader = response.body.getReader();
-  let offset = 0;
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (offset + value.length > buffer.length)
-        throw Error("LOD response exceeds its reservation");
-      buffer.set(value, offset);
-      offset += value.length;
-    }
-    if (exact !== undefined && offset !== exact)
-      throw Error("Truncated LOD response");
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  return buffer.subarray(0, offset);
-}
 async function readObject(ref: ObjectRef, base: URL, signal?: AbortSignal) {
   const response = await fetch(localAsset(ref.url, base), {
     signal: AbortSignal.any([

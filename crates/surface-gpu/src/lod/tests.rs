@@ -1810,3 +1810,572 @@ fn required_sources_plans_offview_gutters_without_residency_or_gpu_allocations()
         assert!(gpu.cuts[0].entries.is_empty());
     }
 }
+
+fn live_heights(level: u32, words: &[u32]) -> Vec<u32> {
+    if level == 0 {
+        words.chunks_exact(8).map(GpuLod::detail_height).collect()
+    } else {
+        words
+            .chunks_exact(6)
+            .flat_map(|c| {
+                [
+                    (c[3] & 0xffff) | (c[5] & 0xffff0000),
+                    (c[3] >> 16) | (c[4] << 16),
+                ]
+            })
+            .collect()
+    }
+}
+
+fn assert_live_height(gpu: &GpuLod, key: Key, expected: &[u32]) {
+    let snapshot = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("bounded live height readback"),
+        size: SAMPLES as u64 * 8,
+        usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    encoder.copy_buffer_to_buffer(
+        &gpu.nodes,
+        gpu.heights[&key] as u64 * HEIGHT_PAGE_BYTES,
+        &snapshot,
+        0,
+        snapshot.size(),
+    );
+    gpu.queue.submit([encoder.finish()]);
+    let bytes = read(gpu, &snapshot);
+    let actual: &[u32] = bytemuck::cast_slice(&bytes);
+    if key.level == 0 {
+        for (pair, word) in actual.chunks_exact(2).zip(expected) {
+            assert_eq!(pair, &[*word, (word & 0xffff) * 65537]);
+        }
+    } else {
+        assert_eq!(actual, expected);
+    }
+}
+
+fn live_chunk(words: &[u32], cx: i32, cz: i32) -> Vec<u32> {
+    let x = cx.rem_euclid(8) as usize * 16;
+    let z = cz.rem_euclid(8) as usize * 16;
+    (0..16)
+        .flat_map(|row| {
+            words[((z + row) * 128 + x) * 8..((z + row) * 128 + x + 16) * 8]
+                .iter()
+                .copied()
+        })
+        .collect()
+}
+
+#[test]
+fn live_full_surface_and_height_replace_in_one_frame_with_retirement() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    for level in [0, 1] {
+        gpu.set_cut(vec![]).unwrap();
+        let key = Key::new(level, -1, 0).unwrap();
+        let old = if level == 0 {
+            detail(-16, 1)
+        } else {
+            summary([12000, 25000, 40000], -16)
+        };
+        gpu.replace_surface(key, old.clone(), live_heights(level, &old))
+            .unwrap();
+        draw(&mut gpu, &out, [-64., 64., 1.], false, 0.);
+        gpu.set_cut(unit_cut([key])).unwrap();
+        draw(&mut gpu, &out, [-64., 64., 1.], false, 0.);
+        let before_pixels = pixels(&gpu, &out);
+        let before_bytes = gpu.gpu_bytes();
+        let slot = gpu.heights[&key];
+        let new = if level == 0 {
+            detail(48, 0)
+        } else {
+            summary([60000, 1000, 1000], 48)
+        };
+        let heights = live_heights(level, &new);
+        gpu.replace_surface(key, new.clone(), heights.clone())
+            .unwrap();
+        assert_eq!(gpu.pending_uploads(), 1);
+        assert_eq!(gpu.heights[&key], slot);
+        assert_eq!(
+            read(&gpu, &gpu.tiles[&key].data),
+            bytemuck::cast_slice::<u32, u8>(&old)
+        );
+        assert_live_height(&gpu, key, &live_heights(level, &old));
+        assert!(
+            gpu.render(
+                &out.create_view(&Default::default()),
+                -64.,
+                64.,
+                1.,
+                64,
+                64,
+                false,
+                false,
+                45.,
+                90.,
+                0.55,
+                false,
+                0.,
+                0.25,
+            )
+            .unwrap()
+        );
+        assert_eq!(gpu.pending_uploads(), 0);
+        assert_ne!(gpu.heights[&key], slot);
+        assert!(
+            gpu.has_tile(key),
+            "updated coarse tile is shaded in its update frame"
+        );
+        assert!(
+            gpu.retirement
+                .lock()
+                .unwrap()
+                .entries
+                .iter()
+                .any(|r| r.slots.contains(&slot))
+        );
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+        assert_eq!(
+            read(&gpu, &gpu.tiles[&key].data),
+            bytemuck::cast_slice::<u32, u8>(&new)
+        );
+        assert_live_height(&gpu, key, &heights);
+        assert_ne!(pixels(&gpu, &out), before_pixels);
+        assert_eq!(gpu.gpu_bytes(), before_bytes);
+    }
+}
+
+#[test]
+fn live_chunk_rows_preserve_untouched_negative_chunks_and_full_patch_is_bounded() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let key = Key::new(0, -1, -1).unwrap();
+    let original = detail(16, 1);
+    gpu.replace_surface(key, original.clone(), live_heights(0, &original))
+        .unwrap();
+    draw(&mut gpu, &out, [-64., -64., 1.], false, 0.);
+    gpu.set_cut(unit_cut([key])).unwrap();
+    draw(&mut gpu, &out, [-120., -120., 4.], false, 0.);
+    let old_pixels = pixels(&gpu, &out);
+    let data = gpu.tiles[&key].data.clone();
+    let base = gpu.gpu_bytes();
+    let mut expected = original.clone();
+    let coordinates: Vec<[i32; 2]> = vec![[-8, -8], [-1, -1]];
+    for [cx, cz] in &coordinates {
+        let x = cx.rem_euclid(8) as usize * 16;
+        let z = cz.rem_euclid(8) as usize * 16;
+        for row in 0..16 {
+            for column in 0..16 {
+                let cell = &mut expected[((z + row) * 128 + x + column) * 8..][..8];
+                cell[0] = (-32i32) as u32;
+                cell[7] = if *cx == -8 { 0 } else { 1 };
+                cell[4] = if *cx == -8 { 0 } else { 8 };
+            }
+        }
+    }
+    let patch: Vec<u32> = coordinates
+        .iter()
+        .flat_map(|[cx, cz]| live_chunk(&expected, *cx, *cz))
+        .collect();
+    let heights = live_heights(0, &expected);
+    gpu.patch_chunks(key, coordinates, patch, heights.clone())
+        .unwrap();
+    assert_eq!(gpu.pending_uploads(), 1);
+    assert_eq!(
+        read(&gpu, &data),
+        bytemuck::cast_slice::<u32, u8>(&original)
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.prepare_one(&mut encoder).unwrap();
+    assert_eq!(
+        gpu.tiles[&key].data, data,
+        "patches reuse the resident surface buffer"
+    );
+    assert_eq!(
+        gpu.gpu_bytes(),
+        base + gpu.surface_update_bytes(0, 2).unwrap()
+    );
+    gpu.submit(encoder);
+    draw(&mut gpu, &out, [-120., -120., 4.], false, 0.);
+    assert_ne!(pixels(&gpu, &out), old_pixels);
+    assert_eq!(
+        read(&gpu, &data),
+        bytemuck::cast_slice::<u32, u8>(&expected)
+    );
+    assert_live_height(&gpu, key, &heights);
+    assert_eq!(gpu.gpu_bytes(), base);
+
+    let coordinates: Vec<_> = (-8..0).flat_map(|z| (-8..0).map(move |x| [x, z])).collect();
+    let all = detail(80, 1);
+    let words = coordinates
+        .iter()
+        .flat_map(|[x, z]| live_chunk(&all, *x, *z))
+        .collect();
+    gpu.patch_chunks(key, coordinates, words, live_heights(0, &all))
+        .unwrap();
+    draw(&mut gpu, &out, [-64., -64., 1.], false, 0.);
+    assert_eq!(read(&gpu, &data), bytemuck::cast_slice::<u32, u8>(&all));
+    assert_live_height(&gpu, key, &live_heights(0, &all));
+    assert!(gpu.surface_update_bytes(0, 64).unwrap() <= MAX_UPDATE_BYTES);
+    assert!(gpu.upload_peak_bytes() < MAX_QUEUE_BYTES);
+}
+
+#[test]
+fn live_updates_validate_every_input_before_queue_or_gpu_mutation() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let key = Key::new(0, -1, -1).unwrap();
+    let valid = detail(-16, 1);
+    let heights = live_heights(0, &valid);
+    gpu.replace_surface(key, valid.clone(), heights.clone())
+        .unwrap();
+    draw(&mut gpu, &out, [-64., -64., 1.], false, 0.);
+    let base = gpu.gpu_bytes();
+    let slot = gpu.heights[&key];
+    let revision = gpu.feedback_revision;
+    for (field, bad) in [
+        (0, 32768),
+        (0, (-32768i32) as u32),
+        (1, 1),
+        (2, 0x1000000),
+        (3, 1),
+        (4, 385),
+        (5, 1),
+        (6, 32768),
+        (7, 4),
+    ] {
+        let mut words = valid.clone();
+        words[(SAMPLES - 1) * 8 + field] = bad;
+        assert!(
+            gpu.replace_surface(key, words.clone(), heights.clone())
+                .is_err()
+        );
+        assert!(
+            gpu.patch_chunks(
+                key,
+                vec![[-1, -1]],
+                live_chunk(&words, -1, -1),
+                heights.clone()
+            )
+            .is_err()
+        );
+    }
+    for bad in [
+        0,
+        3 << 16,
+        32 << 16,
+        (1 << 16) | 32768,
+        (4 << 16) | 16,
+        (17 << 16) | 16,
+    ] {
+        let mut h = heights.clone();
+        h[SAMPLES - 1] = bad;
+        assert!(gpu.replace_surface(key, valid.clone(), h.clone()).is_err());
+        assert!(
+            gpu.patch_chunks(key, vec![[-1, -1]], live_chunk(&valid, -1, -1), h)
+                .is_err()
+        );
+    }
+    for count in [0, 1, SAMPLES * 8 - 1, SAMPLES * 8 + 1] {
+        assert!(
+            gpu.replace_surface(key, vec![0; count], heights.clone())
+                .is_err()
+        );
+    }
+    assert!(
+        gpu.replace_surface(key, valid.clone(), heights[..SAMPLES - 1].to_vec())
+            .is_err()
+    );
+    for coordinates in [
+        vec![],
+        vec![[-8, -8]; 2],
+        vec![[-9, -8]],
+        vec![[0, -8]],
+        vec![[-8, i32::MIN]],
+        vec![[-8, -8]; 65],
+    ] {
+        assert!(
+            gpu.patch_chunks(
+                key,
+                coordinates.clone(),
+                vec![0; coordinates.len() * 256 * 8],
+                heights.clone()
+            )
+            .is_err()
+        );
+    }
+    assert!(
+        gpu.patch_chunks(key, vec![[-8, -8]], vec![0; 2047], heights.clone())
+            .is_err()
+    );
+    for invalid in [
+        Key {
+            level: 17,
+            x: 0,
+            z: 0,
+        },
+        Key {
+            level: 0,
+            x: 65536,
+            z: 0,
+        },
+        Key {
+            level: 0,
+            x: -65537,
+            z: 0,
+        },
+        Key {
+            level: 0,
+            x: 0,
+            z: i32::MAX,
+        },
+    ] {
+        assert!(
+            gpu.replace_surface(invalid, valid.clone(), heights.clone())
+                .is_err()
+        );
+    }
+    let coarse = Key::new(1, -1, -1).unwrap();
+    let valid_coarse = summary([20000; 3], 0);
+    for (field, value) in [
+        (3, 16 << 16),
+        (4, 0xffff),
+        (5, 0),
+        (5, (1 << 16) | 255),
+        (5, (1 << 16) | (255 << 8)),
+    ] {
+        let mut words = valid_coarse.clone();
+        words[field] = value;
+        assert!(
+            gpu.replace_surface(coarse, words.clone(), live_heights(1, &words))
+                .is_err()
+        );
+    }
+    let mut mismatch = live_heights(1, &valid_coarse);
+    mismatch[0] += 1;
+    assert!(gpu.replace_surface(coarse, valid_coarse, mismatch).is_err());
+    assert_eq!(gpu.pending_uploads(), 0);
+    assert_eq!(gpu.heights[&key], slot);
+    assert_eq!(gpu.feedback_revision, revision);
+    assert_eq!(gpu.gpu_bytes(), base);
+    assert_eq!(
+        read(&gpu, &gpu.tiles[&key].data),
+        bytemuck::cast_slice::<u32, u8>(&valid)
+    );
+    assert_live_height(&gpu, key, &heights);
+}
+
+#[test]
+fn live_queue_coalesces_full_updates_cancels_pairs_and_reserves_height_slots() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let key = Key::new(0, 0, 0).unwrap();
+    let words = detail(0, 1);
+    let heights = live_heights(0, &words);
+    gpu.add_tile(key, words.clone()).unwrap();
+    gpu.add_height(key, heights.clone()).unwrap();
+    assert_eq!(gpu.pending_uploads(), 2);
+    gpu.replace_surface(key, words.clone(), heights.clone())
+        .unwrap();
+    assert_eq!(gpu.pending_uploads(), 1);
+    assert!(gpu.add_tile(key, words.clone()).is_err());
+    assert!(gpu.add_height(key, heights.clone()).is_err());
+    for x in 1..3 {
+        gpu.replace_surface(Key::new(0, x, 0).unwrap(), words.clone(), heights.clone())
+            .unwrap();
+    }
+    assert!(
+        gpu.replace_surface(Key::new(0, 3, 0).unwrap(), words.clone(), heights.clone())
+            .is_err()
+    );
+    assert_eq!(gpu.pending_uploads(), 3);
+    assert_eq!(gpu.available_height_slots(), gpu.height_capacity() - 4);
+    assert!(gpu.cpu_bytes() < MAX_QUEUE_BYTES);
+    gpu.remove_tile(Key::new(0, 1, 0).unwrap());
+    gpu.remove_height(Key::new(0, 2, 0).unwrap());
+    assert_eq!(gpu.pending_uploads(), 1);
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let patch = live_chunk(&words, 0, 0);
+    gpu.patch_chunks(key, vec![[0, 0]], patch.clone(), heights.clone())
+        .unwrap();
+    assert!(
+        gpu.patch_chunks(key, vec![[1, 0]], patch, heights.clone())
+            .is_err()
+    );
+    let replacement = detail(32, 1);
+    gpu.replace_surface(key, replacement.clone(), live_heights(0, &replacement))
+        .unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    assert_eq!(
+        read(&gpu, &gpu.tiles[&key].data),
+        bytemuck::cast_slice::<u32, u8>(&replacement)
+    );
+    gpu.remove_height(key);
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    gpu.patch_chunks(
+        key,
+        vec![[0, 0]],
+        live_chunk(&replacement, 0, 0),
+        live_heights(0, &replacement),
+    )
+    .unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    assert_live_height(&gpu, key, &live_heights(0, &replacement));
+    gpu.reap();
+    let slots = std::mem::take(&mut gpu.free_slots);
+    gpu.retirement.lock().unwrap().free_slots.clear();
+    assert!(
+        gpu.replace_surface(key, words.clone(), heights.clone())
+            .is_err()
+    );
+    assert_eq!(gpu.pending_uploads(), 0);
+    gpu.free_slots = slots;
+    for level in 0..=16 {
+        assert!(gpu.surface_update_bytes(level, 0).unwrap() <= MAX_UPDATE_BYTES);
+    }
+    assert!(gpu.surface_update_bytes(17, 0).is_err());
+    assert!(gpu.surface_update_bytes(1, 1).is_err());
+    assert!(gpu.surface_update_bytes(0, 65).is_err());
+    gpu.dispose();
+    assert!(gpu.replace_surface(key, words, heights).is_err());
+    assert_eq!(gpu.pending_uploads(), 0);
+}
+
+#[test]
+fn live_material_growth_preserves_values_and_rebinds_without_cpu_catalog_copy() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let key = Key::new(0, 0, 0).unwrap();
+    let words = detail(0, 1);
+    gpu.replace_surface(key, words.clone(), live_heights(0, &words))
+        .unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    gpu.set_cut(unit_cut([key])).unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let before = pixels(&gpu, &out);
+    let original = read(&gpu, &gpu.material_buffer);
+    let gpu_before = gpu.gpu_bytes();
+    let cpu_before = gpu.cpu_bytes();
+    gpu.grow_materials(65536).unwrap();
+    assert_eq!(gpu.gpu_bytes(), gpu_before + 65536 * 48);
+    assert!(gpu.cpu_bytes() < cpu_before + 4096);
+    let grown = read(&gpu, &gpu.material_buffer);
+    assert_eq!(&grown[..original.len()], &original);
+    assert!(grown[original.len()..].iter().all(|v| *v == 0));
+    assert_eq!(gpu.gpu_bytes(), gpu_before + 65535 * 48);
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    assert_eq!(pixels(&gpu, &out), before);
+    let appended = [0., 0., 1., 1., 0.1, 0.8, 0.2, 1., 0., 0., 0., 0.];
+    gpu.update_materials(65535, &appended).unwrap();
+    let after = read(&gpu, &gpu.material_buffer);
+    assert_eq!(&after[..48], &original);
+    assert_eq!(
+        &after[65535 * 48..],
+        bytemuck::cast_slice::<f32, u8>(&appended)
+    );
+    let mut updated = words;
+    for c in updated.chunks_exact_mut(8) {
+        c[1] = 65535;
+    }
+    gpu.replace_surface(key, updated.clone(), live_heights(0, &updated))
+        .unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    assert_ne!(pixels(&gpu, &out), before);
+    let allocated = gpu.gpu_bytes();
+    assert!(gpu.grow_materials(65535).is_err());
+    assert!(gpu.grow_materials(65537).is_err());
+    gpu.grow_materials(65536).unwrap();
+    assert_eq!(gpu.gpu_bytes(), allocated);
+    assert_eq!(gpu.material_count, 65536);
+}
+
+#[test]
+fn live_surface_updates_dirty_coarse_shadows_and_restitch_neighbor_colors() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    let left = Key::new(1, -1, 0).unwrap();
+    let right = Key::new(1, 0, 0).unwrap();
+    let fine = Key::new(0, -1, 0).unwrap();
+    for key in [left, right] {
+        let words = summary([12000, 25000, 40000], 16);
+        gpu.replace_surface(key, words.clone(), live_heights(1, &words))
+            .unwrap();
+        draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    }
+    gpu.set_cut(unit_cut([left, right])).unwrap();
+    for _ in 0..2 {
+        draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    }
+    assert!(!gpu.tiles[&left].dirty && !gpu.tiles[&right].dirty);
+    let words = detail(16, 1);
+    gpu.replace_surface(fine, words.clone(), live_heights(0, &words))
+        .unwrap();
+    draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    assert!(gpu.tiles[&left].dirty && gpu.tiles[&right].dirty);
+    for _ in 0..2 {
+        draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    }
+    gpu.patch_chunks(
+        fine,
+        vec![[-1, 0]],
+        live_chunk(&words, -1, 0),
+        live_heights(0, &words),
+    )
+    .unwrap();
+    draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    assert!(gpu.tiles[&left].dirty && gpu.tiles[&right].dirty);
+
+    let words = summary([60000, 1000, 1000], 32);
+    gpu.replace_surface(left, words.clone(), live_heights(1, &words))
+        .unwrap();
+    draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    assert!(!gpu.tiles[&left].dirty && gpu.tiles[&right].dirty);
+    draw(&mut gpu, &out, [0., 64., 1.], false, 0.);
+    assert!(!gpu.tiles[&right].dirty);
+    let pixel = |key, x, lit| {
+        let tile = &gpu.tiles[&key];
+        let image = if lit {
+            tile.lit.as_ref().unwrap()
+        } else {
+            tile.color.as_ref().unwrap()
+        };
+        let snapshot = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("one live gutter texel"),
+            size: 256,
+            usage: wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: image,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y: 64, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &snapshot,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+        gpu.queue.submit([encoder.finish()]);
+        read(&gpu, &snapshot)[..8].to_vec()
+    };
+    for lit in [false, true] {
+        assert_eq!(pixel(left, 128, lit), pixel(right, 0, lit));
+        assert_ne!(pixel(right, 0, lit), pixel(right, 1, lit));
+    }
+}

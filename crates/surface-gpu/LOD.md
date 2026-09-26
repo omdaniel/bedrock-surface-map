@@ -12,6 +12,9 @@ const renderer = await LodRenderer.create(canvas, materials, atlasBitmap);
 renderer.set_world(new Int32Array([minX, minZ, maxX, maxZ]), maxHeight16);
 renderer.add_tile(level, x, z, words);   // Uint32Array, queued
 renderer.add_height(level, x, z, words); // Uint32Array, queued
+renderer.replace_surface(level, x, z, words, heightWords); // atomic queued pair
+renderer.patch_chunks(x, z, chunkCoordinates, words, heightWords);
+renderer.surface_update_bytes(level, patchCount); // incremental GPU reservation
 renderer.has_tile(level, x, z);         // prepared and submitted in queue order
 renderer.has_height(level, x, z);
 renderer.set_cut(new Float32Array([level, x, z, opacity /* ... */]));
@@ -24,6 +27,7 @@ renderer.render(cx, cz, physicalScale, width, height, grid, shadows,
   elevation, azimuth, strength, vivid, relief, reliefWidth);
 renderer.update_materials(startMaterialId, values); // bounded Float32Array range
 renderer.set_materials(values);                    // replace the full catalog
+renderer.grow_materials(materialCount);            // preserve existing GPU IDs
 renderer.remove_tile(level, x, z);
 renderer.remove_height(level, x, z);
 renderer.is_lost();
@@ -31,6 +35,22 @@ renderer.simulate_device_loss();
 renderer.dispose(); // idempotent explicit release, suppresses old-device events
 renderer.free(); // wasm-bindgen generated
 ```
+
+`replace_surface` queues one complete tile with its matching height page.
+`patch_chunks` replaces 1–64 complete chunks in a resident level-zero tile;
+`chunkCoordinates` is an `Int32Array` of chunk X/Z pairs, and `words` concatenates
+their 256-column render records. The height input describes the complete updated
+tile. Keys, duplicates, lengths and material bounds are validated before mutation.
+Both operations prepare surface and height work in one command encoder, with a
+maximum 1 MiB preparation job. Canceling queued work leaves resident data intact.
+The caller commits matching CPU picking after submission and does not cancel an
+already submitted patch as though it were an uninstalled tile.
+
+`surface_update_bytes(level, 0)` reserves a full replacement; a positive count
+reserves exact chunk patches. This is incremental GPU storage, not the encoded
+response, WASM or CPU picking allocation. Existing resources and retirement stay
+charged separately. Material growth copies existing GPU descriptors without a
+full CPU/WASM catalog and retires the old allocation by submission serial.
 
 Bounds are exclusive block coordinates. `maxHeight16` is a signed integer height
 in sixteenths of a block, not a block-height float. Set the world before rendering.

@@ -1042,6 +1042,41 @@ async function createLodView() {
         : "No explicit live-terrain binding for this LOD map",
     );
   }
+  if (
+    view.root.world_id &&
+    new URLSearchParams(location.search).get("terrain") !== "off"
+  ) {
+    view.startLive(
+      url,
+      () => {
+        if (lod === view) manifest = view.manifest;
+      },
+      async () => {
+        if (disposed || lod !== view) return;
+        // A new appearance cannot share old coarse colors. Release its resources
+        // before loading roots again; camera, lighting and player state stay put.
+        window.__map.ready = false;
+        view.destroy();
+        lod = null;
+        message("Loading terrain appearance...");
+        try {
+          lod = await createLodView();
+          manifest = lod.manifest;
+          window.__map.ready = true;
+          changed();
+        } catch (error) {
+          if (!disposed)
+            message(`Terrain appearance unavailable: ${String(error)}`, true);
+          throw error;
+        }
+      },
+      (state) => {
+        if (lod === view)
+          document.querySelector<HTMLElement>(".local-state")!.textContent =
+            state === "live" ? "Terrain live" : "Terrain delayed";
+      },
+    );
+  }
   return view;
 }
 
