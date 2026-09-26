@@ -215,6 +215,83 @@ fn failed_observation_rolls_back_chunk_and_queue_in_the_same_transaction() {
     assert_eq!(store.manifest().unwrap(), manifest);
     assert_eq!(current_height(&store), 16);
 }
+
+#[test]
+fn frozen_queue_builds_coherent_coarse_content_while_newer_writes_continue() {
+    use surface_core::lod::{ChunkRef, ObjectRef as LodObjectRef, PRESENT, TileKey};
+    use surface_sync::{lod_build, lod_queue};
+    let (_dir, mut store) = seeded();
+    let manifest = store.manifest().unwrap();
+    let catalog_name = manifest["catalog"]["url"]
+        .as_str()
+        .unwrap()
+        .strip_prefix("objects/")
+        .unwrap();
+    let catalog: Vec<Material> =
+        serde_json::from_slice(&store.object(catalog_name).unwrap()).unwrap();
+    let tx = store.connection.transaction().unwrap();
+    let frozen = lod_queue::freeze(&tx, 1, "{}", now_ms()).unwrap().unwrap();
+    tx.commit().unwrap();
+    let start = now_ms();
+    for sequence in 1..=4 {
+        store
+            .ingest(
+                &observation(sequence, start, 32 + sequence as i32 * 16),
+                start + sequence,
+            )
+            .unwrap();
+    }
+    let key = TileKey::new(1, -1, 0).unwrap();
+    let bounds = key.bounds().unwrap();
+    let mut built_objects = BTreeMap::<String, Vec<u8>>::new();
+    let mut children = Vec::new();
+    for leaf in key.children().unwrap() {
+        let changes: Vec<_> = lod_queue::changed_refs(&store.connection, frozen.id, leaf)
+            .unwrap()
+            .into_iter()
+            .map(|c| ChunkRef {
+                cx: c.cx,
+                cz: c.cz,
+                object: c.object_ref(),
+            })
+            .collect();
+        let built = lod_build::build_leaf(leaf, None, &changes, bounds, &catalog, &mut |r| {
+            store.object(r.url.strip_prefix("objects/").unwrap())
+        })
+        .unwrap();
+        children.push(built.reference);
+        for object in built.objects {
+            built_objects.insert(object.reference.url, object.bytes);
+        }
+    }
+    let parent =
+        lod_build::build_parent(key, &children, bounds, &catalog, &mut |r: &LodObjectRef| {
+            Ok(built_objects.get(&r.url).unwrap().clone())
+        })
+        .unwrap();
+    let heights: Vec<_> = parent
+        .summary
+        .samples
+        .iter()
+        .filter(|s| s.flags & PRESENT != 0)
+        .map(|s| s.max_height)
+        .collect();
+    assert!(!heights.is_empty());
+    assert!(
+        heights.iter().all(|h| *h == 16),
+        "batch mixed newer mutable source state into its summaries"
+    );
+    assert_eq!(current_height(&store), 96);
+    let tx = store.connection.transaction().unwrap();
+    lod_queue::complete(&tx, frozen.id).unwrap();
+    let next = lod_queue::freeze(&tx, 5, "{}", start + 5).unwrap().unwrap();
+    tx.commit().unwrap();
+    let queued =
+        lod_queue::changed_refs(&store.connection, next.id, TileKey::new(0, -1, 0).unwrap())
+            .unwrap();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].observation_revision, 5);
+}
 #[test]
 fn unchanged_content_updates_observation_without_republishing() {
     let (_dir, mut s) = seeded();
