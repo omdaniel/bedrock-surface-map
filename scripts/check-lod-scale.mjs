@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
 import { chromium } from "@playwright/test";
 import { PNG } from "pngjs";
 import { viewerUrl, aimView } from "./verification-config.mjs";
@@ -13,20 +14,22 @@ import {
   tileId,
 } from "../web/src/lod/protocol.ts";
 
-const { values } = parseArgs({
-  options: {
-    url: { type: "string", multiple: true },
-    mode: { type: "string" },
-    budget: { type: "string", default: "200000000" },
-    seconds: { type: "string", default: "30" },
-    output: { type: "string", default: ".local/lod-scale" },
-    "simulate-objects": { type: "boolean", default: false },
-    help: { type: "boolean", default: false },
-  },
-});
+let values;
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  ({ values } = parseArgs({
+    options: {
+      url: { type: "string", multiple: true },
+      mode: { type: "string" },
+      budget: { type: "string", default: "200000000" },
+      seconds: { type: "string", default: "30" },
+      output: { type: "string", default: ".local/lod-scale" },
+      "simulate-objects": { type: "boolean", default: false },
+      help: { type: "boolean", default: false },
+    },
+  }));
 
-if (values.help) {
-  console.log(`Usage: node scripts/check-lod-scale.mjs --mode headful|headless \\
+  if (values.help) {
+    console.log(`Usage: node scripts/check-lod-scale.mjs --mode headful|headless \\
   --url 'http://127.0.0.1:5195/?lod=/maps/AVAILABLE-FIXTURE/lod.json&players=off' \\
   [--url ANOTHER_LOOPBACK_LOD_URL] [--budget 200000000|128000000] \\
   [--seconds 30] [--simulate-objects] [--output .local/lod-scale]
@@ -42,9 +45,11 @@ plus their bytes at a shared 20,000,000 bit/s delivery budget. This is NOT real
 network throughput, streaming, RTT, packet loss or a physical link measurement.
 Screenshots and state polling perturb timing. No FPS/GPU timestamp claim is made.
 Only supplied, available manifests are tested; declared extent is not population.
+Keep served source/assets stable: navigation or viewer restarts invalidate the run.
 SIGINT/SIGTERM close Chrome. Each invocation writes a unique report directory.`);
-} else {
-  await main();
+  } else {
+    await main();
+  }
 }
 
 function target(raw) {
@@ -176,17 +181,103 @@ function camera(s) {
     azimuth: s.azimuth,
   };
 }
-function sameCamera(actual, expected) {
+export function sameCamera(actual, expected) {
   for (const key of Object.keys(expected))
     assert(
       Math.abs(actual[key] - expected[key]) < 1e-6,
-      `Camera/lighting changed unexpectedly: ${key}`,
+      `Camera/lighting changed unexpectedly: ${key}; expected ${expected[key]}, got ${actual[key]}`,
     );
 }
 
-async function settle(page) {
+/** A reload/reinitialization invalidates the run; never re-aim and continue across it. */
+export function createContinuityGuard(run) {
+  const evidence = (run.continuity = {
+    initialTimeOrigin: null,
+    mainFrameNavigations: 0,
+    recentNavigations: [],
+    recentObservations: [],
+    failure: null,
+  });
+  let previous;
+  const invalidate = (reason) => {
+    evidence.failure ??= { reason, progress: { ...run.progress } };
+  };
+  const check = () => {
+    assert(
+      !evidence.failure,
+      `Scale run invalidated: ${evidence.failure?.reason}`,
+    );
+  };
+  return {
+    check,
+    navigated(url) {
+      if (!evidence.mainFrameNavigations && url === "about:blank") return;
+      evidence.mainFrameNavigations++;
+      evidence.recentNavigations.push({ url, progress: { ...run.progress } });
+      if (evidence.recentNavigations.length > 8)
+        evidence.recentNavigations.shift();
+      if (evidence.mainFrameNavigations > 1)
+        invalidate(
+          "main-frame navigation after startup (reload or replacement document)",
+        );
+    },
+    observe({ timeOrigin, state }) {
+      const current = {
+        progress: { ...run.progress },
+        timeOrigin,
+        camera: camera(state),
+        counters: {
+          draws: state.draws,
+          tileUploads: state.lod?.tileUploads,
+          decodeMs: state.lod?.decodeMs,
+          peakBytes: state.lod?.memory?.peakBytes,
+        },
+      };
+      evidence.recentObservations.push(current);
+      if (evidence.recentObservations.length > 16)
+        evidence.recentObservations.shift();
+      if (Number.isFinite(current.counters.peakBytes))
+        run.peakBytes = Math.max(
+          run.peakBytes ?? 0,
+          current.counters.peakBytes,
+        );
+      assert(
+        Number.isFinite(timeOrigin),
+        "Document time origin is unavailable",
+      );
+      evidence.initialTimeOrigin ??= timeOrigin;
+      if (timeOrigin !== evidence.initialTimeOrigin)
+        invalidate(
+          `document time origin changed from ${evidence.initialTimeOrigin} to ${timeOrigin}`,
+        );
+      if (previous) {
+        const reset = Object.keys(current.counters).filter(
+          (key) => current.counters[key] < previous.counters[key],
+        );
+        if (reset.length)
+          invalidate(
+            `viewer cumulative counters regressed (${reset.join(", ")}); viewer reinitialization or counter reset`,
+          );
+      }
+      previous = current;
+      check();
+    },
+  };
+}
+
+async function readState(page, continuity) {
+  const snapshot = await page.evaluate(() => ({
+    timeOrigin: performance.timeOrigin,
+    state: window.__map.state(),
+  }));
+  continuity.observe(snapshot);
+  return snapshot.state;
+}
+
+async function settle(page, continuity) {
   // Account for the approved refinement debounce before accepting an idle snapshot.
   await delay(150);
+  continuity.check();
   await page.waitForFunction(
     () => {
       const s = window.__map?.state(),
@@ -211,7 +302,7 @@ async function settle(page) {
     undefined,
     { timeout: 90000 },
   );
-  return page.evaluate(() => window.__map.state());
+  return readState(page, continuity);
 }
 
 // Startup-only observation: stop as soon as coarse coverage or an ordering failure is seen.
@@ -380,6 +471,7 @@ async function runDataset(
   stopped,
 ) {
   const controller = new AbortController();
+  const continuity = createContinuityGuard(run);
   const context = await browser.newContext({
     viewport: { width: 1920, height: 1176 },
     deviceScaleFactor: 1,
@@ -391,6 +483,9 @@ async function runDataset(
       rootIds: root.roots.map((ref) => tileId(ref.key)),
     });
     page = await context.newPage();
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) continuity.navigated(frame.url());
+    });
     flushTransfer = await instrument(context, target, run, controller.signal);
     const error = (message) => {
       if (run.errors.length < 50) run.errors.push(String(message));
@@ -399,6 +494,7 @@ async function runDataset(
     page.on("console", (message) => {
       if (message.type() === "error") error(message.text());
     });
+    run.progress = { phase: "cold", step: "navigate" };
     await page.goto(target.url.href, {
       waitUntil: "domcontentloaded",
       timeout: 60000,
@@ -409,6 +505,10 @@ async function runDataset(
     });
     run.cold = await page.evaluate(() => window.__lodScaleCold);
     assert(!run.cold.error, run.cold.error);
+    continuity.observe({
+      timeOrigin: run.cold.timeOrigin,
+      state: run.cold.state,
+    });
     checkState(run.cold.state, root, budget);
     await flushTransfer();
     run.cold.transferAtCheckpoint = { ...run.transfer };
@@ -420,8 +520,10 @@ async function runDataset(
       run.screenshots.at(-1).nonblank,
       "Cold Fit PNG is blank or inconclusive; inspect it, no scale pass",
     );
+    run.progress = { phase: "initial-fit", step: "settle" };
+    continuity.check();
     await page.evaluate(() => window.__map.fit());
-    const fit = await settle(page);
+    const fit = await settle(page, continuity);
     checkState(fit, root, budget);
     run.environment = await page.evaluate(() => {
       const canvas = document.querySelector("#map");
@@ -464,11 +566,15 @@ async function runDataset(
     ) {
       for (const phase of phases) {
         assert(!stopped(), "Interrupted");
+        run.progress = { cycle, phase: phase.name, step: "aim" };
+        continuity.check();
         if (phase.name === "fit") await page.evaluate(() => window.__map.fit());
         else await aimView(page, { view: phase });
-        const value = await settle(page);
+        run.progress.step = "settle";
+        const value = await settle(page, continuity);
         checkState(value, root, budget);
         await flushTransfer();
+        run.progress.step = "camera-check";
         sameCamera(value, {
           cx: phase.x,
           cz: phase.z,
@@ -497,8 +603,9 @@ async function runDataset(
             `Blank/inconclusive ${phase.name} PNG; no scale pass`,
           );
         }
+        run.progress.step = "idle";
         await delay(500, undefined, { signal: controller.signal });
-        const idle = await page.evaluate(() => window.__map.state());
+        const idle = await readState(page, continuity);
         checkState(idle, root, budget);
         if (values.mode === "headful")
           assert(
@@ -520,18 +627,27 @@ async function runDataset(
       }
     }
     run.workloadElapsedMs = performance.now() - start;
-    run.final = await page.evaluate(() => window.__map.state());
-    run.peakBytes = Math.max(
-      run.cold.state.lod.memory.peakBytes,
-      run.final.lod.memory.peakBytes,
-    );
+    run.progress = { phase: "final", step: "snapshot" };
+    run.final = await readState(page, continuity);
     run.status = "passed";
   } catch (error) {
     run.status = stopped() ? "interrupted" : "failed";
-    run.errors.push(String(error));
-    run.final = await page
-      ?.evaluate(() => window.__map?.state())
+    const final = await page
+      ?.evaluate(() => ({
+        timeOrigin: performance.timeOrigin,
+        state: window.__map?.state(),
+      }))
       .catch(() => null);
+    run.final = final?.state ?? null;
+    run.finalTimeOrigin = final?.timeOrigin ?? null;
+    run.errors.push(String(error));
+    if (
+      run.continuity.failure &&
+      !String(error).includes("Scale run invalidated:")
+    )
+      run.errors.push(
+        `Scale run invalidated: ${run.continuity.failure.reason}`,
+      );
   } finally {
     controller.abort();
     await context.unrouteAll({ behavior: "ignoreErrors" }).catch(() => {});
@@ -581,7 +697,7 @@ async function main() {
         "Playwright context request.sizes across page/worker requests: encoded response body plus headers. Canceled partial transfers and Node preflight excluded; unavailable sizes counted. Simulated delivered body bytes are separate, not claimed as wire bytes. Routing disables HTTP cache",
       decode: "Native decodeMs excludes fetch/queue wait",
       workload:
-        "Fixed five-stage cycles; at least one full cycle; seconds is a minimum window excluding cold start/final teardown. Keep at most 128 full checkpoints plus final state; validate caps at every phase",
+        "Fixed five-stage cycles; at least one full cycle; seconds is a minimum window excluding cold start/final teardown. Keep at most 128 full checkpoints plus final state and 16 compact recent observations; validate caps at every phase. Document navigation or cumulative-counter resets invalidate the run; keep served source/assets stable",
       limitations:
         "No FPS, GPU timestamp, physical display, population-count or larger-unavailable-fixture claim. PNG nonblank heuristic needs human review. Harness memory is not application memory",
     },

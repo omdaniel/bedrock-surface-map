@@ -168,6 +168,9 @@ configured constrained viewer; it does not change configuration. Optional
 budget plus 50 ms per object. This is not a physical-network or FPS measurement.
 PNG nonblank checks require visual inspection, and a declared dataset extent
 does not prove its populated-region count.
+Keep served source and assets unchanged during a run. Document navigation or
+viewer-counter resets invalidate the recording; the report retains the recent
+phase/camera observations and the highest charged memory even on failure.
 
 See the [core format contract](../crates/surface-core/LOD.md) and
 [GPU ownership and API contract](../crates/surface-gpu/LOD.md).
