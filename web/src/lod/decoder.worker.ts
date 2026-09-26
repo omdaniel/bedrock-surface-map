@@ -1,4 +1,7 @@
-import init, { decode_lod_words } from "../../pkg/surface_gpu.js";
+import init, {
+  decode_lod_absence,
+  decode_lod_words,
+} from "../../pkg/surface_gpu.js";
 import type { TileKey } from "./protocol";
 import type { ObjectRef } from "../types";
 
@@ -10,6 +13,7 @@ export interface DecodeJob {
   key: TileKey;
   kind: "detail" | "summary" | "height";
   materials: number;
+  absenceSource?: TileKey;
 }
 export interface DecodeResult {
   id: number;
@@ -51,14 +55,26 @@ scope.onmessage = ({ data }) => {
       controller.signal.throwIfAborted();
       const { key } = data;
       const started = performance.now();
-      const words = decode_lod_words(
-        input,
-        data.kind,
-        key.level,
-        key.x,
-        key.z,
-        data.materials,
-      );
+      if (data.absenceSource && data.kind !== "summary")
+        throw Error("Only coarse edge sources support absence projection");
+      const words = data.absenceSource
+        ? decode_lod_absence(
+            input,
+            data.absenceSource.level,
+            data.absenceSource.x,
+            data.absenceSource.z,
+            key.level,
+            key.x,
+            key.z,
+          )
+        : decode_lod_words(
+            input,
+            data.kind,
+            key.level,
+            key.x,
+            key.z,
+            data.materials,
+          );
       decodeMs = performance.now() - started;
       wasmBytes = module.memory.buffer.byteLength;
       if (wasmBytes > 16 * 1024 * 1024)

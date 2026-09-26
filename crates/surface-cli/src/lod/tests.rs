@@ -444,6 +444,163 @@ fn lod_catalog_pages_limit_encoded_size_and_entry_count() {
 }
 
 #[test]
+fn lod_sparse_small_is_deterministic_bounded_and_has_terminal_unknown_neighbors() {
+    let a = tempfile::tempdir().unwrap();
+    let b = tempfile::tempdir().unwrap();
+    let options = LodFixtureOptions {
+        sparse_small: true,
+        ..Default::default()
+    };
+    let (manifest, diagnostics) = create_lod_fixture_with_options(a.path(), options).unwrap();
+    let (repeat, _) = create_lod_fixture_with_options(b.path(), options).unwrap();
+    assert_eq!(manifest, repeat);
+    assert_eq!(manifest.bounds, [-1024, -1024, 1024, 1024]);
+    assert_eq!(manifest.spawn, [-64, 64, -64]);
+    assert_eq!(manifest.roots.len(), 4);
+    assert!(manifest.roots.iter().all(|r| r.key.level == 3));
+    assert_eq!(diagnostics["layout"], "sparse-small");
+    assert_eq!(diagnostics["dense_size"], Value::Null);
+    assert_eq!(diagnostics["source_regions"], 4);
+    assert_eq!(diagnostics["node_count"], 52);
+    assert_eq!(diagnostics["detail_tiles"], 16);
+    assert_eq!(diagnostics["summary_tiles"], 36);
+    assert_eq!(diagnostics["referenced_objects"], 158);
+    assert!(diagnostics["referenced_bytes"]["total"].as_u64().unwrap() < 1024 * 1024);
+    let source = fs::read(a.path().join("source/manifest.json")).unwrap();
+    assert_eq!(
+        source,
+        fs::read(b.path().join("source/manifest.json")).unwrap()
+    );
+    let source: MapManifest = serde_json::from_slice(&source).unwrap();
+    assert!(source.heights.is_empty());
+    let positions: BTreeSet<_> = source.regions.iter().map(|r| (r.rx, r.rz)).collect();
+    assert_eq!(
+        positions,
+        BTreeSet::from([(-1, -1), (1, -1), (-2, 1), (0, 1)])
+    );
+    for entry in fs::read_dir(a.path().join("objects")).unwrap() {
+        let entry = entry.unwrap();
+        assert_eq!(
+            fs::read(entry.path()).unwrap(),
+            fs::read(b.path().join("objects").join(entry.file_name())).unwrap()
+        );
+    }
+    let mut stack = manifest.roots.clone();
+    let mut counts = [0; 4];
+    let mut terminals = BTreeSet::new();
+    let (mut water, mut sand) = (false, false);
+    while let Some(reference) = stack.pop() {
+        let n = node(a.path(), &reference);
+        counts[n.key.level as usize] += 1;
+        let raw = decompress_lod(&read_object(a.path(), &n.data, MAX_TILE_BYTES).unwrap()).unwrap();
+        let height = HeightTile::decode(
+            &decompress_lod(&read_object(a.path(), &n.height, MAX_TILE_BYTES).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(height.key, n.key);
+        if n.key.level == 0 {
+            let detail = DetailTile::decode(&raw).unwrap();
+            let position = (n.key.x.div_euclid(2), n.key.z.div_euclid(2));
+            assert!(positions.contains(&position));
+            assert_eq!(
+                detail,
+                DetailTile::from_region(&fixture_region(position.0, position.1), n.key).unwrap()
+            );
+            assert_eq!(height, HeightTile::from_detail(&detail).unwrap());
+            for c in &detail.columns {
+                water |= c[0] == 1 && c[7] > 0;
+                sand |= c[0] == 1 && c[2] == 3 && c[7] == 0;
+            }
+        } else {
+            let summary = SummaryTile::decode(&raw).unwrap();
+            assert_eq!(summary.key, n.key);
+            assert_eq!(height, HeightTile::from_summary(&summary).unwrap());
+            if n.children.is_empty() {
+                assert!((1..=2).contains(&n.key.level));
+                let bounds = n.key.bounds().unwrap();
+                assert!(!positions.iter().any(|(x, z)| {
+                    (bounds[0]..bounds[2]).contains(&(x * 256))
+                        && (bounds[1]..bounds[3]).contains(&(z * 256))
+                }));
+                assert_eq!(
+                    summary,
+                    SummaryTile::absent(n.key, manifest.bounds).unwrap()
+                );
+                assert!(
+                    summary
+                        .samples
+                        .iter()
+                        .all(|s| *s == SummarySample::absent(UNKNOWN_FLAG))
+                );
+                assert!(
+                    height.samples.iter().all(|s| s.flags == UNKNOWN_FLAG
+                        && s.mean_height == surface_core::MISSING_HEIGHT)
+                );
+                terminals.insert(n.key);
+            } else {
+                assert_eq!(n.children.len(), 4);
+            }
+        }
+        stack.extend(n.children);
+    }
+    assert_eq!(counts, [16, 16, 16, 4]);
+    assert_eq!(terminals.len(), 24);
+    assert_eq!(terminals.iter().filter(|key| key.level == 1).count(), 12);
+    assert_eq!(terminals.iter().filter(|key| key.level == 2).count(), 12);
+    assert!(
+        water && sand,
+        "fixture must retain both sides of the shoreline"
+    );
+    // The x=0 boundary has exact terrain on the west and terminal unknown on the east.
+    let fine = node_at(a.path(), &manifest, -1, -64, 0);
+    let unknown = node_at(a.path(), &manifest, 0, -64, 1);
+    assert!(terminals.contains(&unknown.key));
+    assert_eq!(
+        fine.key.bounds().unwrap()[2],
+        unknown.key.bounds().unwrap()[0]
+    );
+    // The x=-512 boundary requires projecting an absent L2 page down to coarse L1.
+    let fine = node_at(a.path(), &manifest, -512, 320, 0);
+    let unknown = node_at(a.path(), &manifest, -513, 320, 2);
+    assert!(terminals.contains(&unknown.key));
+    assert_eq!(
+        fine.key.bounds().unwrap()[0],
+        unknown.key.bounds().unwrap()[2]
+    );
+    let spawn = node_at(a.path(), &manifest, -64, -64, 0);
+    let spawn_detail = DetailTile::decode(
+        &decompress_lod(&read_object(a.path(), &spawn.data, MAX_TILE_BYTES).unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(spawn_detail.columns[64 * 128 + 64][0], 1);
+}
+
+#[test]
+fn lod_sparse_small_options_reject_other_layouts_before_writing() {
+    for options in [
+        LodFixtureOptions {
+            sparse_small: true,
+            sparse_extreme: true,
+            ..Default::default()
+        },
+        LodFixtureOptions {
+            sparse_small: true,
+            size: 2048,
+            ..Default::default()
+        },
+        LodFixtureOptions {
+            sparse_small: true,
+            legacy_reference: true,
+            ..Default::default()
+        },
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(create_lod_fixture_with_options(temp.path(), options).is_err());
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn lod_scale_layouts_have_bounded_coordinates_and_exact_leaf_counts() {
     let placeholder = SourceRegion {
         surface: ObjectRef {

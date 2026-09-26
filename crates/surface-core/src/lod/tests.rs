@@ -316,6 +316,254 @@ fn absent_bounds_distinguish_unknown_outside_and_tiny_overlap() {
     tile.validate().unwrap();
 }
 
+fn mixed_absence(key: TileKey) -> SummaryTile {
+    let flags = [
+        EMPTY,
+        UNKNOWN_FLAG,
+        OUTSIDE,
+        EMPTY | UNKNOWN_FLAG,
+        UNKNOWN_FLAG | OUTSIDE,
+        EMPTY | OUTSIDE,
+        EMPTY | UNKNOWN_FLAG | OUTSIDE,
+    ];
+    let samples = (0..TILE_CELLS)
+        .map(|i| {
+            let flag = flags[(i % TILE_SIDE + i / TILE_SIDE * 3) % flags.len()];
+            let mut sample = SummarySample::absent(flag);
+            if flag.count_ones() > 1 {
+                sample.empty_fraction = if flag & EMPTY != 0 {
+                    (i % 128) as u8
+                } else {
+                    0
+                };
+                sample.unknown_fraction = if flag & UNKNOWN_FLAG != 0 {
+                    (i / 128) as u8
+                } else {
+                    0
+                };
+            }
+            sample
+        })
+        .collect();
+    SummaryTile { key, samples }
+}
+
+#[test]
+fn absence_projection_integer_ancestry_all_coarse_levels_and_world_extremes() {
+    for source_level in 2..=MAX_LEVEL {
+        let limit = WORLD_LIMIT / (128 << source_level);
+        for (source_x, source_z) in [(-limit, limit - 1), (limit - 1, -limit)] {
+            let source = mixed_absence(TileKey::new(source_level, source_x, source_z).unwrap());
+            source.validate().unwrap();
+            for target_level in 1..source_level {
+                let ratio = 1i32 << (source_level - target_level);
+                for (dx, dz) in [(0, ratio - 1), (ratio - 1, 0), (ratio / 2, ratio / 2)] {
+                    let target =
+                        TileKey::new(target_level, source_x * ratio + dx, source_z * ratio + dz)
+                            .unwrap();
+                    let projected = source.project_absence(target).unwrap();
+                    assert_eq!(projected.key, target);
+                    assert_eq!(projected.samples.len(), TILE_CELLS);
+                    assert_eq!(projected.samples.capacity(), TILE_CELLS);
+                    let bounds = target.bounds().unwrap();
+                    for (i, sample) in projected.samples.iter().enumerate() {
+                        // Independent oracle: floor world coordinates to source
+                        // sample cells instead of using local tile remainders.
+                        let wx =
+                            i64::from(bounds[0]) + (i % TILE_SIDE) as i64 * (1i64 << target_level);
+                        let wz =
+                            i64::from(bounds[1]) + (i / TILE_SIDE) as i64 * (1i64 << target_level);
+                        let x = wx.div_euclid(1i64 << source_level)
+                            - i64::from(source_x) * TILE_SIDE as i64;
+                        let z = wz.div_euclid(1i64 << source_level)
+                            - i64::from(source_z) * TILE_SIDE as i64;
+                        assert_eq!(
+                            *sample,
+                            source.samples[z as usize * TILE_SIDE + x as usize],
+                            "source={:?},target={target:?},sample={i}",
+                            source.key
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn absence_projection_preserves_mixed_flags_fractions_and_normal_codec() {
+    let source = mixed_absence(TileKey::new(2, -3, 2).unwrap());
+    let packed = zstd::encode_all(source.encode().unwrap().as_slice(), 3).unwrap();
+    let decoded = SummaryTile::decode(&decompress_lod(&packed).unwrap()).unwrap();
+    assert_eq!(decoded, source);
+    let mut seen = std::collections::BTreeSet::new();
+    for target in source.key.children().unwrap() {
+        let projected = decoded.project_absence(target).unwrap();
+        projected.validate().unwrap();
+        let raw = projected.encode().unwrap();
+        assert_eq!(raw.len(), 16 + TILE_CELLS * 24);
+        assert_eq!(SummaryTile::decode(&raw).unwrap(), projected);
+        let words = projected.gpu_words();
+        assert_eq!(words.len(), TILE_CELLS * 6);
+        for (sample, words) in projected.samples.iter().zip(words.chunks_exact(6)) {
+            seen.insert(sample.flags);
+            assert_eq!(sample.flags & (PRESENT | WATER), 0);
+            assert_eq!(
+                [sample.mean_height, sample.min_height, sample.max_height],
+                [MISSING_HEIGHT; 3]
+            );
+            assert_eq!([sample.present_fraction, sample.water_fraction], [0; 2]);
+            assert_eq!(words[5] >> 16, u32::from(sample.flags));
+            assert_eq!(words[5] as u8, sample.unknown_fraction);
+            assert_eq!((words[4] >> 24) as u8, sample.empty_fraction);
+        }
+    }
+    assert_eq!(
+        seen,
+        [
+            EMPTY,
+            UNKNOWN_FLAG,
+            OUTSIDE,
+            EMPTY | UNKNOWN_FLAG,
+            UNKNOWN_FLAG | OUTSIDE,
+            EMPTY | OUTSIDE,
+            EMPTY | UNKNOWN_FLAG | OUTSIDE
+        ]
+        .into_iter()
+        .collect()
+    );
+    let sparse = SummaryTile::absent(TileKey::new(16, 0, 0).unwrap(), [0, 0, 1, 1]).unwrap();
+    let projected = sparse
+        .project_absence(TileKey::new(1, 0, 0).unwrap())
+        .unwrap();
+    assert!(
+        projected
+            .samples
+            .iter()
+            .all(|s| s.flags == UNKNOWN_FLAG | OUTSIDE && s.unknown_fraction == 0),
+        "unknown flags must survive even when their fraction rounded to zero"
+    );
+}
+
+#[test]
+fn absence_projection_rejects_any_present_flag_inside_or_outside_target() {
+    let mut source = mixed_absence(TileKey::new(8, -1, 0).unwrap());
+    let target = TileKey::new(1, -128, 0).unwrap();
+    for index in [0, TILE_CELLS - 1] {
+        let saved = source.samples[index];
+        for flags in [
+            PRESENT,
+            PRESENT | WATER,
+            PRESENT | EMPTY | UNKNOWN_FLAG | OUTSIDE,
+        ] {
+            source.samples[index] = SummarySample {
+                original: [100, 200, 300],
+                vivid: [200, 300, 400],
+                mean_height: 0,
+                min_height: -1,
+                max_height: 1,
+                present_fraction: 0,
+                empty_fraction: 0,
+                unknown_fraction: 0,
+                water_fraction: 0,
+                flags,
+            };
+            source.validate().unwrap();
+            assert_eq!(
+                source.project_absence(target).unwrap_err().to_string(),
+                "absence projection source contains present coverage"
+            );
+        }
+        source.samples[index] = saved;
+    }
+    assert!(source.project_absence(target).is_ok());
+}
+
+#[test]
+fn absence_projection_rejects_invalid_levels_ancestry_and_source_samples() {
+    let source = mixed_absence(TileKey::new(4, -1, 0).unwrap());
+    for target in [
+        TileKey::new(0, -16, 0).unwrap(),
+        source.key,
+        source.key.parent().unwrap(),
+        TileKey::new(3, 0, 0).unwrap(),
+        TileKey::new(3, -2, 2).unwrap(),
+        TileKey::new(16, -1, 0).unwrap(),
+        TileKey {
+            level: 17,
+            x: 0,
+            z: 0,
+        },
+        TileKey {
+            level: 1,
+            x: i32::MIN,
+            z: i32::MAX,
+        },
+    ] {
+        assert!(source.project_absence(target).is_err(), "{target:?}");
+    }
+    let level_one = mixed_absence(TileKey::new(1, 0, 0).unwrap());
+    for level in 0..=MAX_LEVEL {
+        assert!(
+            level_one
+                .project_absence(TileKey::new(level, 0, 0).unwrap())
+                .is_err()
+        );
+    }
+    let target = TileKey::new(1, -8, 0).unwrap();
+    let mut bad = source.clone();
+    bad.samples.pop();
+    assert!(bad.project_absence(target).is_err());
+    bad = source.clone();
+    bad.key.level = MAX_LEVEL + 1;
+    assert!(bad.project_absence(target).is_err());
+    for sample in [
+        SummarySample {
+            flags: 0,
+            ..SummarySample::absent(OUTSIDE)
+        },
+        SummarySample {
+            flags: 32,
+            ..SummarySample::absent(OUTSIDE)
+        },
+        SummarySample {
+            mean_height: 1,
+            ..SummarySample::absent(EMPTY)
+        },
+        SummarySample {
+            present_fraction: 1,
+            ..SummarySample::absent(UNKNOWN_FLAG)
+        },
+        SummarySample::absent(EMPTY | UNKNOWN_FLAG),
+    ] {
+        bad = source.clone();
+        bad.samples[TILE_CELLS - 1] = sample;
+        assert!(
+            bad.project_absence(target).is_err(),
+            "validate even outside the target footprint"
+        );
+    }
+}
+
+#[test]
+fn absence_projection_direct_and_chained_descendants_agree() {
+    let source = mixed_absence(TileKey::new(16, -1, -1).unwrap());
+    let target = TileKey::new(1, -12345, -23456).unwrap();
+    let direct = source.project_absence(target).unwrap();
+    let mut chained = source;
+    for level in (target.level..MAX_LEVEL).rev() {
+        let ratio = 1 << (level - target.level);
+        let key = TileKey::new(
+            level,
+            target.x.div_euclid(ratio),
+            target.z.div_euclid(ratio),
+        )
+        .unwrap();
+        chained = chained.project_absence(key).unwrap();
+    }
+    assert_eq!(chained, direct);
+}
+
 fn near(a: [f32; 3], b: [f32; 3]) {
     for i in 0..3 {
         assert!((a[i] - b[i]).abs() < 2e-6, "{a:?} != {b:?}");

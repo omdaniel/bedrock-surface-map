@@ -24,10 +24,12 @@ const FIXTURE_HEIGHT_BYTES: usize = FIXTURE_SIDE * FIXTURE_SIDE * 2;
 #[derive(Clone, Copy, Debug)]
 pub struct LodFixtureOptions {
     pub legacy_reference: bool,
-    /// Dense square side, in blocks. Ignored by the sparse-extreme layout.
+    /// Dense square side, in blocks. Sparse layouts disallow a size override.
     pub size: u32,
     /// Generate 4096 populated regions spread across all four L16 roots.
     pub sparse_extreme: bool,
+    /// Four populated regions inside a fixed 2048-square map, with unknown gaps.
+    pub sparse_small: bool,
 }
 
 impl Default for LodFixtureOptions {
@@ -36,6 +38,7 @@ impl Default for LodFixtureOptions {
             legacy_reference: false,
             size: 1024,
             sparse_extreme: false,
+            sparse_small: false,
         }
     }
 }
@@ -857,10 +860,14 @@ pub fn create_lod_fixture_with_options(
         bounds,
         spawn: if options.sparse_extreme {
             [-WORLD_LIMIT + 64, 64, -WORLD_LIMIT + 64]
+        } else if options.sparse_small {
+            [-64, 64, -64]
         } else {
             [64, 64, 64]
         },
-        source_sha256: if options.size == 1024 && !options.sparse_extreme {
+        source_sha256: if options.sparse_small {
+            hash(b"surface-lod-synthetic-coastline-sparse-small-2048-v1")
+        } else if options.size == 1024 && !options.sparse_extreme {
             hash(b"surface-lod-synthetic-coastline-v1")
         } else {
             hash(
@@ -907,10 +914,12 @@ pub fn create_lod_fixture_with_options(
     diagnostics["source_regions"] = json!(manifest.regions.len());
     diagnostics["layout"] = json!(if options.sparse_extreme {
         "sparse-extreme-4096"
+    } else if options.sparse_small {
+        "sparse-small"
     } else {
         "dense"
     });
-    diagnostics["dense_size"] = if options.sparse_extreme {
+    diagnostics["dense_size"] = if options.sparse_extreme || options.sparse_small {
         Value::Null
     } else {
         json!(options.size)
@@ -947,6 +956,10 @@ type FixtureLayout = ([i32; 4], Vec<(i32, i32)>);
 
 fn fixture_layout(options: LodFixtureOptions) -> Result<FixtureLayout> {
     ensure!(
+        !(options.sparse_small && options.sparse_extreme),
+        "--sparse-small cannot be combined with --sparse-extreme"
+    );
+    ensure!(
         [1024, 2048, 4096, 8192, 16384].contains(&options.size),
         "fixture size must be 1024, 2048, 4096, 8192 or 16384"
     );
@@ -955,10 +968,20 @@ fn fixture_layout(options: LodFixtureOptions) -> Result<FixtureLayout> {
         "--sparse-extreme cannot be combined with a non-default --size"
     );
     ensure!(
-        !options.legacy_reference || (options.size == 1024 && !options.sparse_extreme),
+        !options.sparse_small || options.size == 1024,
+        "--sparse-small uses a fixed 2048-square layout and disallows --size"
+    );
+    ensure!(
+        !options.legacy_reference
+            || (options.size == 1024 && !options.sparse_extreme && !options.sparse_small),
         "--legacy-reference is restricted to the dense 1024 synthetic fixture"
     );
-    if options.sparse_extreme {
+    if options.sparse_small {
+        Ok((
+            [-1024, -1024, 1024, 1024],
+            vec![(-1, -1), (1, -1), (-2, 1), (0, 1)],
+        ))
+    } else if options.sparse_extreme {
         // Include both extreme regions exactly. Only these 4096 regions exist.
         let axis = (0..64).map(|i| -32768 + i * 65535 / 63).collect::<Vec<_>>();
         let coordinates = axis

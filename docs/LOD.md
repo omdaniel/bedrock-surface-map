@@ -81,6 +81,10 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
   only pinned roots, displayed/fading tiles, pending refinement and actual edge
   dependencies retain surface buffers. Missing sibling coverage falls back to
   a ready ancestor while unrelated branches remain eligible for refinement.
+- A terminal sparse summary can supply finer mixed-edge gutters only when the
+  shared decoder verifies that every source sample lacks present terrain.
+  Projection retains unknown/empty/outside flags and conservative mixed coverage;
+  missing or corrupt objects never become absence certificates.
 
 This ledger is not browser RSS. Browser networking, JavaScript engine overhead,
 compositor swapchains and driver allocations require separate process-level
@@ -96,14 +100,18 @@ failed reconstruction requires an explicit Retry.
 
 ```sh
 npm run lod:test
+npm run lod:sparse-fixture
 cargo test --locked -p surface-core -p surface-cli lod
 cargo test --locked -p surface-gpu
-npx playwright test tests/lod.spec.ts tests/lod-failure.spec.ts
+npx playwright test tests/lod.spec.ts tests/lod-failure.spec.ts tests/lod-residency.spec.ts tests/lod-sparse.spec.ts
 ```
 
 Native GPU tests require a wgpu adapter. Synthetic browser tests check rendering,
 retirement, constrained admission, malformed responses and navigation recovery.
 Their results do not establish reference-device performance.
+The sparse browser fixture contains four populated regions in a 2,048-square
+extent, with terminal unknown areas between them; it is not the 4,096-region
+sparse scale workload.
 
 With the synthetic viewer already running on loopback port 5195:
 

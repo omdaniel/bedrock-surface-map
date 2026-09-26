@@ -51,6 +51,7 @@ jobs:
       - run: npm run lod:test
       - run: cargo run --locked -p surface-cli -- fixture
       - run: cargo run --locked -p surface-cli -- lod-fixture --output web/public/maps/lod-fixture
+      - run: cargo run --locked -p surface-cli -- lod-fixture --sparse-small --output web/public/maps/lod-sparse-small
       - run: node scripts/terrain-fixture.mjs
       - run: npx playwright install --with-deps chromium
       - run: xvfb-run -a -s '-screen 0 1280x900x24' npm test

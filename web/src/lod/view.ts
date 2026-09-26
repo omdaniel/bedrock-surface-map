@@ -45,12 +45,14 @@ interface Resident {
   pick: Int32Array;
   last: number;
   catalog: number[];
+  absenceSource?: TileKey;
 }
 interface Demand {
   key: TileKey;
   ref: ObjectRef;
   kind: "index" | "detail" | "summary" | "height";
   priority: number;
+  absenceSource?: TileKey;
 }
 interface PendingUpload {
   demand: Demand;
@@ -246,6 +248,12 @@ export class LodView {
       tiles: this.tiles.size,
       heights: this.heights.size,
       heightKeys: [...this.heights.keys()],
+      projectedTiles: [...this.tiles.values()]
+        .filter((tile) => tile.absenceSource)
+        .map((tile) => ({
+          key: tileId(tile.key),
+          source: tileId(tile.absenceSource!),
+        })),
       indexes: this.nodes.size,
       catalogPages: this.catalogPages.size,
       materialDescriptors: this.materials.size,
@@ -594,6 +602,7 @@ export class LodView {
           this.base,
           this.root.material_count,
           abort.signal,
+          demand.absenceSource,
         );
         abort.signal.throwIfAborted();
         const catalog =
@@ -748,6 +757,7 @@ export class LodView {
           pick: result.pick!,
           last: this.clock,
           catalog: upload.catalog,
+          absenceSource: demand.absenceSource,
         });
         this.tileUploads++;
       }
@@ -833,13 +843,19 @@ export class LodView {
     return result;
   }
   private demandEdgeSources() {
-    const add = (key: TileKey, ref: ObjectRef, kind: Demand["kind"]) => {
+    const add = (
+      key: TileKey,
+      ref: ObjectRef,
+      kind: Demand["kind"],
+      absenceSource?: TileKey,
+    ) => {
       const id = `${kind}:${tileId(key)}`;
       const existing = this.demands.get(id);
       this.demands.set(id, {
         key,
         ref,
         kind,
+        absenceSource,
         priority: Math.min(
           existing?.priority ?? Infinity,
           kind === "index" ? 3 : 8,
@@ -848,7 +864,7 @@ export class LodView {
     };
     const visit = (
       ref: NodeRef,
-      level: number,
+      target: TileKey,
       area: Bounds,
       height: boolean,
     ) => {
@@ -856,20 +872,24 @@ export class LodView {
       add(ref.key, ref.index, "index");
       const stored = this.nodes.get(tileId(ref.key));
       if (!stored || stored.hash !== ref.index.sha256) return;
-      if (ref.key.level === level || !stored.node.children.length) {
+      if (ref.key.level === target.level || !stored.node.children.length) {
         if (height) add(ref.key, stored.node.height, "height");
-        else if (ref.key.level === level)
+        else if (ref.key.level === target.level)
           add(ref.key, stored.node.data, ref.key.level ? "summary" : "detail");
+        else if (target.level > 0 && ref.key.level > target.level)
+          // Terminal sparse summaries can certify absence at finer gutters.
+          // The shared decoder rejects any present source cell before projection.
+          add(target, stored.node.data, "summary", ref.key);
         return;
       }
       for (const child of stored.node.children)
-        visit(child, level, area, height);
+        visit(child, target, area, height);
     };
     for (const key of this.edgeRequirements.values()) {
       const box = tileBounds(key);
       for (const root of this.root.roots) {
-        visit(root, key.level, box, false);
-        visit(root, key.level, this.shadowArea(key.level, box), true);
+        visit(root, key, box, false);
+        visit(root, key, this.shadowArea(key.level, box), true);
       }
     }
   }

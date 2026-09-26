@@ -541,6 +541,46 @@ impl SummaryTile {
         }
         Ok(Self { key, samples })
     }
+    /// Project certified absence into a strictly finer coarse descendant.
+    /// Mixed coverage flags and quantized fractions remain ancestor evidence,
+    /// not newly observed subcell coverage. Any present source sample forbids
+    /// projection, even outside the requested descendant or with zero fraction.
+    pub fn project_absence(&self, target: TileKey) -> Result<Self> {
+        self.validate()?;
+        target.validate()?;
+        ensure!(
+            target.level >= 1 && target.level < self.key.level,
+            "absence projection requires a strictly finer coarse target"
+        );
+        ensure!(
+            self.samples
+                .iter()
+                .all(|sample| sample.flags & PRESENT == 0),
+            "absence projection source contains present coverage"
+        );
+        let ratio = 1i64 << (self.key.level - target.level);
+        ensure!(
+            i64::from(target.x).div_euclid(ratio) == i64::from(self.key.x)
+                && i64::from(target.z).div_euclid(ratio) == i64::from(self.key.z),
+            "absence projection target is not a source descendant"
+        );
+        // Express the target origin in finer samples relative to the source.
+        // Euclidean remainders preserve ancestry across negative coordinates.
+        let offset_x = i64::from(target.x).rem_euclid(ratio) * TILE_SIDE as i64;
+        let offset_z = i64::from(target.z).rem_euclid(ratio) * TILE_SIDE as i64;
+        let mut samples = Vec::with_capacity(TILE_CELLS);
+        for z in 0..TILE_SIDE {
+            let source_z = (offset_z + z as i64) / ratio;
+            for x in 0..TILE_SIDE {
+                let source_x = (offset_x + x as i64) / ratio;
+                samples.push(self.samples[source_z as usize * TILE_SIDE + source_x as usize]);
+            }
+        }
+        Ok(Self {
+            key: target,
+            samples,
+        })
+    }
     pub fn validate(&self) -> Result<()> {
         self.key.validate()?;
         ensure!(self.samples.len() == TILE_CELLS, "summary tile shape");

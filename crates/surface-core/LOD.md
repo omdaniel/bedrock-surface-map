@@ -68,6 +68,34 @@ not apply lighting or an additional sRGB transfer. Appearance version is `"1"`.
 `SummaryTile::from_detail` makes an L0 intermediate for native reduction; only
 coarse summaries can be encoded. `from_children` validates four ordered child keys.
 
+`SummaryTile::project_absence(target: TileKey) -> Result<SummaryTile>` projects a
+certified-absent summary into one strictly descendant coarse tile (target L1 or
+higher, source at a strictly higher level). It validates the entire source and
+rejects any `PRESENT` flag, including outside the requested footprint or with a
+zero quantized present fraction. Target keys must be valid and contained by the
+source. Integer floor ancestry selects one source cell per output sample, including
+negative coordinates and level-16 roots. There is no interpolation or present
+terrain resampling.
+
+The result has the target key and exactly 128 by 128 samples, accepted by the
+normal summary codec and GPU-word layout. Source absence samples are copied
+unchanged: unknown, verified-empty and outside flags and quantized fractions are
+retained, as are conservative mixed flags. Those fractions remain ancestor
+estimates, not newly verified descendant coverage. Heights stay missing and
+present/water fractions stay zero. Projection allocates one 393,216-byte sample
+buffer, not an expanded subtree; successive projections agree with direct ancestry.
+
+The WASM wrapper is
+`decode_lod_absence(bytes: Uint8Array, sourceLevel, sourceX, sourceZ, targetLevel, targetX, targetZ): Uint32Array`.
+It uses bounded LOD decompression, decodes a coarse summary, verifies its encoded
+key against the supplied source identity, projects absence, and returns 98,304
+GPU words. Invalid input throws a decoder error. Raw decompressed bytes are
+released before projection, and source samples before GPU-word conversion. The
+caller must verify the stored object's hash and that its hierarchy node is
+terminal (`children: []`); this wrapper does not validate hierarchy metadata or
+cryptographic hashes. It does not generate detail or height pages and does not
+establish complete fine-shadow coverage for sparse regions.
+
 L0 height pages use one word per sample: height i16 low, flags u16 high. Coarse
 height pages use two: mean i16 low and flags u16 high, then min i16 low and max
 i16 high. The raw payload is identical to the GPU words after the header.

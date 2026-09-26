@@ -44,6 +44,7 @@ export class LodDecoder {
     base: URL,
     materials: number,
     signal: AbortSignal,
+    absenceSource?: TileKey,
   ) {
     signal.throwIfAborted();
     if (this.pending.size >= 2) throw Error("LOD decode concurrency limit");
@@ -67,6 +68,7 @@ export class LodDecoder {
         key,
         kind,
         materials,
+        absenceSource,
       } satisfies DecodeJob);
     });
   }

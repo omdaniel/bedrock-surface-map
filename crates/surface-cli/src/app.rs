@@ -44,6 +44,9 @@ enum Command {
         /// Populate 4096 regions across the full supported coordinate extent.
         #[arg(long)]
         sparse_extreme: bool,
+        /// Four populated regions and terminal unknown gaps in a fixed 2048 square.
+        #[arg(long, conflicts_with_all = ["sparse_extreme", "size", "legacy_reference"])]
+        sparse_small: bool,
     },
     Sample {
         #[arg(long)]
@@ -584,6 +587,7 @@ fn run() -> Result<()> {
             legacy_reference,
             size,
             sparse_extreme,
+            sparse_small,
         } => {
             let (manifest, diagnostics) = crate::lod::create_lod_fixture_with_options(
                 &output,
@@ -591,6 +595,7 @@ fn run() -> Result<()> {
                     legacy_reference,
                     size,
                     sparse_extreme,
+                    sparse_small,
                 },
             )?;
             println!(
@@ -884,6 +889,46 @@ mod tests {
                 "--output",
                 "/tmp/lod",
                 "--legacy-reference"
+            ])
+            .is_err()
+        );
+    }
+    #[test]
+    fn lod_sparse_small_flag_rejects_conflicting_layouts() {
+        let base = [
+            "surface-map",
+            "lod-fixture",
+            "--output",
+            "/tmp/fixture",
+            "--sparse-small",
+        ];
+        let args = Args::try_parse_from(base).unwrap();
+        assert!(matches!(
+            args.command,
+            Command::LodFixture {
+                sparse_small: true,
+                sparse_extreme: false,
+                size: 1024,
+                ..
+            }
+        ));
+        for extra in [
+            vec!["--sparse-extreme"],
+            vec!["--size", "1024"],
+            vec!["--size", "2048"],
+            vec!["--legacy-reference"],
+        ] {
+            assert!(Args::try_parse_from(base.into_iter().chain(extra)).is_err());
+        }
+        assert!(
+            Args::try_parse_from([
+                "surface-map",
+                "prepare-lod",
+                "--map",
+                "/tmp/source/manifest.json",
+                "--output",
+                "/tmp/lod",
+                "--sparse-small",
             ])
             .is_err()
         );
