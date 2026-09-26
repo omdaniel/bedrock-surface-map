@@ -89,6 +89,7 @@ async function detailAtSpawn(page: Page, baseURL: string | undefined) {
     if (node.key.level === 0)
       return {
         base,
+        manifest,
         anchor,
         ref: node.data,
         url: new URL(node.data.url, base).href,
@@ -96,6 +97,56 @@ async function detailAtSpawn(page: Page, baseURL: string | undefined) {
     current = node.children.find(contains);
   }
   throw Error("Synthetic fixture exceeds the L16 hierarchy");
+}
+
+async function visibleDetails(
+  page: Page,
+  detail: Awaited<ReturnType<typeof detailAtSpawn>>,
+) {
+  const state = await page.evaluate(() => window.__map.state());
+  const canvas = (await page.locator("#map").boundingBox())!;
+  const view = [
+    state.cx - canvas.width / 6 / 2,
+    state.cz - canvas.height / 6 / 2,
+    state.cx + canvas.width / 6 / 2,
+    state.cz + canvas.height / 6 / 2,
+  ];
+  const leaves: { url: string; anchor: { x: number; z: number } }[] = [];
+  const visit = async (ref: NodeRef) => {
+    const box = tileBounds(ref.key);
+    const intersection = [
+      Math.max(box[0], view[0]),
+      Math.max(box[1], view[1]),
+      Math.min(box[2], view[2]),
+      Math.min(box[3], view[3]),
+    ];
+    if (
+      intersection[0] >= intersection[2] ||
+      intersection[1] >= intersection[3]
+    )
+      return;
+    const bytes = await referencedBytes(page, ref.index, detail.base);
+    const node = parseNode(
+      JSON.parse(bytes.toString("utf8")),
+      ref.key,
+      detail.base,
+    );
+    if (node.key.level === 0) {
+      leaves.push({
+        url: new URL(node.data.url, detail.base).href,
+        anchor: {
+          x: (intersection[0] + intersection[2]) / 2,
+          z: (intersection[1] + intersection[3]) / 2,
+        },
+      });
+      expect(leaves.length).toBeLessThanOrEqual(64);
+      return;
+    }
+    for (const child of node.children) await visit(child);
+  };
+  for (const root of detail.manifest.roots) await visit(root);
+  expect(leaves.length).toBeGreaterThan(0);
+  return leaves;
 }
 
 async function ready(page: Page) {
@@ -239,15 +290,18 @@ async function attachCanvas(page: Page, info: TestInfo, name: string) {
   ).toBeGreaterThan(20);
 }
 
-async function delayedPayload(page: Page, url: string) {
+async function delayedPayload(page: Page, urls: string | string[]) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
   let hits = 0;
-  const matches = (value: URL) => value.href === url;
+  let firstURL: string | undefined;
+  const targets = new Set(typeof urls === "string" ? [urls] : urls);
+  const matches = (value: URL) => targets.has(value.href);
   const handler = async (route: Route) => {
     hits++;
+    firstURL ??= route.request().url();
     await gate;
     // The decoder may have canceled this request while the route was held.
     await route.continue().catch(() => {});
@@ -255,6 +309,7 @@ async function delayedPayload(page: Page, url: string) {
   await page.context().route(matches, handler);
   return {
     hits: () => hits,
+    firstURL: () => firstURL,
     release,
     async close() {
       release();
@@ -273,11 +328,19 @@ test.describe("LOD failures with real synthetic payload references", () => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const detail = await openCoarse(page, baseURL);
-    const gate = await delayedPayload(page, detail.url);
+    const visible = await visibleDetails(page, detail);
+    // Block the first visible detail regardless of traversal order. Otherwise an
+    // unrelated exact draw can consume a software GPU's request-wait deadline.
+    const gate = await delayedPayload(
+      page,
+      visible.map((tile) => tile.url),
+    );
     try {
       await fine(page);
       await expect.poll(gate.hits, { timeout: 30_000 }).toBeGreaterThan(0);
-      const state = await responsiveCoarse(page, detail.anchor);
+      const fault = visible.find((tile) => tile.url === gate.firstURL())!;
+      const state = await responsiveCoarse(page, fault.anchor);
+      expect(state.lod!.cut.every((id) => !id.startsWith("0/"))).toBe(true);
       expect(state.lod!.pending).toBe(1);
       expect(
         state.lod!.memory.entries.find((entry) => entry.id === "job")
@@ -285,9 +348,21 @@ test.describe("LOD failures with real synthetic payload references", () => {
       ).toBeGreaterThan(0);
       await attachCanvas(page, info, "slow-payload-coarse-coverage");
       gate.release();
-      await recovered(page, detail.anchor);
+      await recovered(page, fault.anchor);
       expect(errors).toEqual([]);
     } finally {
+      await info.attach("delayed-detail-state", {
+        body: Buffer.from(
+          JSON.stringify({
+            faultURL: gate.firstURL(),
+            visible,
+            gateHits: gate.hits(),
+            state: await page.evaluate(() => window.__map.state()),
+            errors,
+          }),
+        ),
+        contentType: "application/json",
+      });
       await gate.close();
     }
   });
