@@ -101,8 +101,7 @@ fn read(root: &Path, reference: &ObjectRef, limit: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn source(db: &Connection) -> Result<Source> {
-    let value: serde_json::Value = meta(db, "manifest")?;
+fn source(value: &serde_json::Value) -> Result<Source> {
     let result = Source {
         world: serde_json::from_value(value["world_id"].clone())?,
         generation: serde_json::from_value(value["generation"].clone())?,
@@ -300,14 +299,14 @@ impl Publisher {
             let tx = store
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
-            if optional_meta::<serde_json::Value>(&tx, "manifest")?.is_none() {
-                return Ok(Step::Idle);
-            }
             if let Some(batch) = lod_queue::active_batch(&tx)? {
                 let context = serde_json::from_str::<BatchContext>(&batch.context_json)?;
                 (batch, context)
             } else {
-                let current = source(&tx)?;
+                let Some(manifest) = optional_meta::<serde_json::Value>(&tx, "manifest")? else {
+                    return Ok(Step::Idle);
+                };
+                let current = source(&manifest)?;
                 let stamp = hash(&serde_json::to_vec(&current)?);
                 if optional_meta::<String>(&tx, "lod_source_stamp")?.as_ref() == Some(&stamp)
                     && lod_queue::stats(&tx, now_ms())?.pending_chunks == 0
