@@ -285,7 +285,8 @@ pub fn decompress(data: &[u8], limit: usize) -> Result<Vec<u8>> {
     decompress_with_window_limit(data, limit, 64 * 1024 * 1024)
 }
 
-fn decompress_with_window_limit(data: &[u8], limit: usize, max_window: u64) -> Result<Vec<u8>> {
+/// Decode one frame with independent bounds on output and decoder window memory.
+pub fn decompress_with_window_limit(data: &[u8], limit: usize, max_window: u64) -> Result<Vec<u8>> {
     ensure!(
         data.len() <= 64 * 1024 * 1024 && limit <= 64 * 1024 * 1024,
         "compressed payload limit"

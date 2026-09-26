@@ -115,6 +115,106 @@ fn current_height(store: &Store) -> i32 {
         .unwrap()
         .columns[0][1]
 }
+
+#[test]
+fn lod_queue_tracks_only_content_changes_and_pins_frozen_inputs_during_gc() {
+    use surface_core::lod::TileKey;
+    use surface_sync::lod_queue;
+    let (_dir, mut store) = seeded();
+    let tx = store.connection.transaction().unwrap();
+    let batch = lod_queue::freeze(&tx, 1, "{}", now_ms()).unwrap().unwrap();
+    tx.commit().unwrap();
+    let leaf = TileKey::new(0, -1, 0).unwrap();
+    let old = lod_queue::changed_refs(&store.connection, batch.id, leaf).unwrap();
+    assert_eq!(old.len(), 1);
+    let old_path = store.root.join(old[0].object_ref().url);
+    let now = now_ms();
+    assert!(!store.ingest(&observation(1, now, 16), now + 1).unwrap());
+    assert_eq!(
+        lod_queue::stats(&store.connection, now)
+            .unwrap()
+            .pending_chunks,
+        0
+    );
+    assert!(store.ingest(&observation(2, now, 48), now + 2).unwrap());
+    assert_eq!(
+        lod_queue::stats(&store.connection, now)
+            .unwrap()
+            .pending_chunks,
+        1
+    );
+    assert_eq!(
+        lod_queue::changed_refs(&store.connection, batch.id, leaf).unwrap(),
+        old
+    );
+    store.gc(now + 3_700_000).unwrap();
+    assert!(old_path.exists(), "active batch source was collected");
+    let tx = store.connection.transaction().unwrap();
+    lod_queue::complete(&tx, batch.id).unwrap();
+    tx.commit().unwrap();
+    store.gc(now + 3_700_000).unwrap();
+    assert!(
+        !old_path.exists(),
+        "released old source must become collectible"
+    );
+    assert_eq!(current_height(&store), 48);
+}
+
+#[test]
+fn repair_queue_order_is_separate_from_backup_live_observation_fence() {
+    use surface_core::lod::TileKey;
+    use surface_sync::lod_queue;
+    let (dir, mut store) = seeded();
+    let boundary = store.boundary().unwrap();
+    for height in [32, 48] {
+        fixture(&dir.path().join("map"), height);
+        store
+            .seed(&dir.path().join("map"), None, Some(&boundary))
+            .unwrap();
+    }
+    assert_eq!(current_height(&store), 48);
+    let tx = store.connection.transaction().unwrap();
+    let batch = lod_queue::freeze(&tx, 3, "{}", now_ms()).unwrap().unwrap();
+    tx.commit().unwrap();
+    let queued =
+        lod_queue::changed_refs(&store.connection, batch.id, TileKey::new(0, -1, 0).unwrap())
+            .unwrap();
+    assert_eq!(queued[0].observation_revision, 3);
+    let now = boundary.created_ms + 1;
+    assert!(!store.ingest(&observation(1, now, 48), now + 1).unwrap());
+    fixture(&dir.path().join("map"), 96);
+    let repair = store
+        .seed(&dir.path().join("map"), None, Some(&boundary))
+        .unwrap();
+    assert_eq!(repair["newer_live_preserved"], 1);
+    assert_eq!(current_height(&store), 48);
+    assert_eq!(
+        lod_queue::stats(&store.connection, now)
+            .unwrap()
+            .pending_chunks,
+        0
+    );
+}
+
+#[test]
+fn failed_observation_rolls_back_chunk_and_queue_in_the_same_transaction() {
+    use surface_sync::lod_queue;
+    let (_dir, mut store) = seeded();
+    let before = lod_queue::stats(&store.connection, 0).unwrap();
+    let manifest = store.manifest().unwrap();
+    store
+        .connection
+        .execute_batch(
+            "CREATE TRIGGER fail_publish BEFORE UPDATE ON meta
+        WHEN NEW.key='manifest' BEGIN SELECT RAISE(ABORT,'synthetic publication failure'); END;",
+        )
+        .unwrap();
+    let now = now_ms();
+    assert!(store.ingest(&observation(1, now, 48), now + 1).is_err());
+    assert_eq!(lod_queue::stats(&store.connection, 0).unwrap(), before);
+    assert_eq!(store.manifest().unwrap(), manifest);
+    assert_eq!(current_height(&store), 16);
+}
 #[test]
 fn unchanged_content_updates_observation_without_republishing() {
     let (_dir, mut s) = seeded();

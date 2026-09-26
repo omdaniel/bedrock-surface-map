@@ -1,5 +1,6 @@
+use crate::lod_queue::{self, ChangedChunk};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -231,10 +232,12 @@ fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
 }
 
 fn save_chunk(
-    db: &Connection,
+    db: &Transaction<'_>,
     root: &Objects<'_>,
     c: &SurfaceChunk,
     observed: u64,
+    queue_revision: u64,
+    queued_ms: u64,
 ) -> Result<bool> {
     c.validate(65536, false)?;
     let packed = zstd::encode_all(c.encode()?.as_slice(), 3)?;
@@ -247,7 +250,21 @@ fn save_chunk(
         )
         .optional()?;
     db.execute("INSERT INTO chunks(cx,cz,hash,bytes,observed) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(cx,cz) DO UPDATE SET hash=excluded.hash,bytes=excluded.bytes,observed=excluded.observed",params![c.cx,c.cz,reference.sha256,reference.bytes as i64,observed as i64])?;
-    Ok(old.as_deref() != Some(reference.sha256.as_str()))
+    let changed = old.as_deref() != Some(reference.sha256.as_str());
+    if changed {
+        lod_queue::enqueue(
+            db,
+            &ChangedChunk {
+                cx: c.cx,
+                cz: c.cz,
+                sha256: reference.sha256,
+                bytes: reference.bytes,
+                observation_revision: queue_revision,
+                now_ms: queued_ms,
+            },
+        )?;
+    }
+    Ok(changed)
 }
 
 fn publish_region(db: &Connection, root: &Objects<'_>, rx: i32, rz: i32) -> Result<()> {
@@ -371,7 +388,7 @@ impl Store {
             "invalid configured identity"
         );
         fs::create_dir_all(root.join("objects"))?;
-        let db = Connection::open(root.join("current.sqlite3"))?;
+        let mut db = Connection::open(root.join("current.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(10))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-8192;
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -407,6 +424,9 @@ impl Store {
                 && meta::<String>(&db, "generation")? == generation,
             "dataset identity mismatch; use a new state directory for another generation"
         );
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        lod_queue::install(&tx)?;
+        tx.commit()?;
         let used = fs::read_dir(root.join("objects"))?.try_fold(0u64, |n, e| -> Result<u64> {
             Ok(n.saturating_add(e?.metadata()?.len()))
         })?;
@@ -484,7 +504,7 @@ impl Store {
         for source in &observation.chunks {
             let mut chunk = source.clone();
             chunk.remap(&ids)?;
-            if save_chunk(&tx, &objects, &chunk, accepted)? {
+            if save_chunk(&tx, &objects, &chunk, accepted, accepted, now)? {
                 dirty.insert((chunk.cx.div_euclid(16), chunk.cz.div_euclid(16)));
             }
         }
@@ -603,6 +623,10 @@ impl Store {
         let mut changed = 0;
         let mut skipped = 0;
         let mut checked = 0;
+        let accepted = meta::<u64>(&tx, "observation")?
+            .checked_add(1)
+            .context("observation revision exhausted")?;
+        let queued_ms = now_ms();
         for reference in &manifest.regions {
             ensure!(
                 Path::new(&reference.url)
@@ -640,7 +664,14 @@ impl Store {
                         continue;
                     }
                     chunk.remap(&ids)?;
-                    if save_chunk(&tx, &objects, &chunk, boundary.map_or(0, |b| b.observation))? {
+                    if save_chunk(
+                        &tx,
+                        &objects,
+                        &chunk,
+                        boundary.map_or(0, |b| b.observation),
+                        accepted,
+                        queued_ms,
+                    )? {
                         dirty.insert((region.rx, region.rz));
                         changed += 1;
                     }
@@ -648,6 +679,9 @@ impl Store {
             }
         }
         ensure!(checked > 0, "empty repair import");
+        // Repair order is distinct from the backup observation fence stored on
+        // each chunk. Newer live observations still win over backup contents.
+        set_meta(&tx, "observation", &accepted)?;
         publish_root(&tx, &objects, &dirty, false)?;
         let mut published: Value = meta(&tx, "manifest")?;
         published["source_sha256"] = json!(manifest.source_sha256);
@@ -774,6 +808,10 @@ impl Store {
             collect(&serde_json::from_str(&index)?, &mut reachable);
         }
         drop(s);
+        lod_queue::visit_references(&tx, |_, reference| {
+            reachable.insert(format!("{}.zst", reference.sha256));
+            Ok(())
+        })?;
         let mut removed = 0;
         let mut used = 0u64;
         for entry in fs::read_dir(self.root.join("objects"))? {

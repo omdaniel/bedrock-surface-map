@@ -41,6 +41,30 @@ npm run dev
 Open `http://127.0.0.1:5173/?lod=/maps/lod-fixture/lod.json&players=off`.
 Generated objects remain outside Git.
 
+## Native Publication Components
+
+`surface-sync` records changed chunk references in a durable SQLite queue in the
+same transaction as the accepted terrain write. Repeated changes coalesce by
+chunk; unchanged observations still protect backup reconciliation but do not add
+publication work. A frozen queue retains immutable inputs while new edits enter
+the next queue. Garbage collection preserves both sets of chunk objects.
+
+The storage-independent node builder produces exact leaves, conservative parent
+summaries and height pages from hash-verified, bounded inputs. It preserves all
+retained exact fields and rejects missing intersecting children instead of
+inventing empty terrain. Repair ordering is separate from the per-chunk backup
+fence, so unchanged newer live observations still take precedence over a repair.
+
+These components do not yet run a background publisher or expose a live
+`lod.json` endpoint. The legacy live manifest remains the served interface.
+Frozen-context/derived-object pinning, coherent root publication and browser
+adoption require the publisher integration; calling the queue completion API
+alone does not publish a map.
+
+```sh
+cargo test --locked -p surface-sync
+```
+
 ## Memory and Scheduling
 
 The LOD path charges at most **200,000,000 bytes** of application-managed memory.
