@@ -72,9 +72,9 @@ try {
       box.x + box.width / 2 + 1,
       box.y + box.height / 2 + 1,
     );
-    assert.equal(
-      await page.locator("#block-pos").innerText(),
-      `-106 / ${height} / -52`,
+    assert.deepEqual(
+      (await page.locator("#block-pos").innerText()).split("/").map(Number),
+      [-106, height, -52],
     );
     assert.equal(await page.locator("#block-name").textContent(), material);
   };
@@ -108,7 +108,9 @@ try {
   await page.clock.fastForward(11000);
   await page.waitForTimeout(1000);
   await page.waitForFunction(
-    () => window.__map.state().terrain.changedChunks > 0,
+    () =>
+      window.__map.state().lod?.live?.revision > 1 &&
+      window.__map.state().pending === 0,
   );
   const built = await page.evaluate(() => window.__map.state());
   await pickSite(67, "oak planks");
@@ -125,7 +127,7 @@ try {
   await page.clock.fastForward(16000);
   await page.waitForTimeout(1000);
   const opened = await page.evaluate(() => window.__map.state());
-  assert.ok(opened.terrain.revision > built.terrain.revision);
+  assert.ok(opened.lod.live.revision > built.lod.live.revision);
   await pickSite(64, "sand");
   const openedPixels = PNG.sync.read(await page.locator("canvas").screenshot());
   assert.ok(
@@ -138,13 +140,13 @@ try {
     await page.waitForTimeout(300);
   }
   const looped = await page.evaluate(() => window.__map.state());
-  assert.ok(looped.terrain.revision >= 9, "two loops");
+  assert.ok(looped.lod.live.revision >= 9, "two loops");
   await page.getByRole("button", { name: "Restart demo", exact: true }).click();
   await page.clock.fastForward(2100);
   await page.waitForTimeout(500);
   assert.ok(
-    (await page.evaluate(() => window.__map.state())).terrain.revision >
-      looped.terrain.revision,
+    (await page.evaluate(() => window.__map.state())).lod.live.revision >
+      looped.lod.live.revision,
   );
   // Exercise keyboard playback as well as the pointer controls above.
   await page.getByRole("button", { name: "Pause demo", exact: true }).focus();

@@ -9,7 +9,7 @@ export interface ViewerConfiguration {
     world_id: string;
     generation: string;
   };
-  demo?: { scenario: string; poster: string };
+  demo?: { scenario: string; poster: string; lod_stages?: string[] };
 }
 export function configuredLodUrl(
   configuration: ViewerConfiguration,

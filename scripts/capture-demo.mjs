@@ -22,7 +22,7 @@ try {
     await page.clock.fastForward(1000);
     await page.waitForFunction(
       () =>
-        !window.__map.state().terrain.busy &&
+        !window.__map.state().renderPending &&
         window.__map.state().pending === 0,
     );
     await page.waitForTimeout(100);

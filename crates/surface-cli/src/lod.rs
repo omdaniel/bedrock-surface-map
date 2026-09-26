@@ -231,11 +231,13 @@ impl Builder<'_> {
                 index["rx"].as_i64() == Some(rx as i64) && index["rz"].as_i64() == Some(rz as i64),
                 "source index coordinate mismatch"
             );
-            let indexed_surface: ObjectRef = serde_json::from_value(index["surface"].clone())?;
-            ensure!(
-                indexed_surface == source.surface,
-                "source index surface mismatch"
-            );
+            if let Some(value) = index.get("surface") {
+                let indexed_surface: ObjectRef = serde_json::from_value(value.clone())?;
+                ensure!(
+                    indexed_surface == source.surface,
+                    "source index surface mismatch"
+                );
+            }
             if let Some(entries) = index["chunks"].as_object() {
                 ensure!(entries.len() <= 256, "too many source chunks in region");
                 for (key, value) in entries {

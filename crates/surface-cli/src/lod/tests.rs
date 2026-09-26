@@ -415,6 +415,29 @@ fn lod_prepare_v2_copies_verified_chunk_references_and_identity() {
         assert_eq!((chunk.cx, chunk.cz), (c.cx, c.cz));
         assert!(positions.insert((c.cx, c.cz)));
     }
+    let mut index_value: Value =
+        serde_json::from_slice(&read_object(&source, &index, MAX_TILE_BYTES).unwrap()).unwrap();
+    index_value.as_object_mut().unwrap().remove("surface");
+    let compact_index =
+        object(&source, "json", &serde_json::to_vec(&index_value).unwrap()).unwrap();
+    v["regions"][0]["index"] = json!(compact_index);
+    atomic_write(&path, &serde_json::to_vec(&v).unwrap()).unwrap();
+    assert_eq!(prepare_lod(&path, &output).unwrap(), manifest);
+    index_value["surface"] =
+        json!({"url":surface.url,"sha256":"0".repeat(64),"bytes":surface.bytes});
+    v["regions"][0]["index"] =
+        json!(object(&source, "json", &serde_json::to_vec(&index_value).unwrap()).unwrap());
+    atomic_write(&path, &serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(
+        prepare_lod(&path, &output)
+            .unwrap_err()
+            .to_string()
+            .contains("surface mismatch")
+    );
+    assert_eq!(
+        LodManifest::decode(&fs::read(output.join("lod.json")).unwrap()).unwrap(),
+        manifest
+    );
 }
 
 #[test]

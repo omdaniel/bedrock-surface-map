@@ -1036,9 +1036,12 @@ async function createLodView() {
   if (
     disposed ||
     (view.root.world_id &&
-      (!configuration.terrain ||
-        configuration.terrain.world_id !== view.root.world_id ||
-        configuration.terrain.generation !== view.root.generation))
+      !(demo
+        ? demo.world_id === view.root.world_id &&
+          demo.generation === view.root.generation
+        : configuration.terrain &&
+          configuration.terrain.world_id === view.root.world_id &&
+          configuration.terrain.generation === view.root.generation))
   ) {
     view.destroy();
     throw Error(
@@ -1078,12 +1081,13 @@ async function createLodView() {
       (state) => {
         if (lod !== view) return;
         const element = document.querySelector<HTMLElement>(".local-state")!;
-        element.textContent = `Terrain ${state}`;
+        element.textContent = demo ? "Simulated terrain" : `Terrain ${state}`;
         const publication = view.stats.live?.publication;
         element.title = publication
           ? `Last reported LOD revision lag: ${publication.revision_lag}; pending: ${publication.pending_age_ms === null ? "none" : `${(publication.pending_age_ms / 1000).toFixed(1)}s`}${publication.reason ? `; ${publication.reason}` : ""}`
           : "Terrain publication status unavailable";
       },
+      demo ?? undefined,
     );
   }
   return view;
@@ -1144,17 +1148,28 @@ async function boot() {
   }
   if (demoMode) {
     demo = new DemoPlayback();
-    await demo.initialize(appUrl(configuration.demo!.scenario));
+    await demo.initialize(
+      appUrl(configuration.demo!.scenario),
+      configuration.demo!.lod_stages?.map(appUrl),
+    );
   }
-  const lodUrl = configuredLodUrl(configuration, params);
-  if (lodUrl && !demo) {
+  const lodUrl = demo?.lodUrl?.href ?? configuredLodUrl(configuration, params);
+  if (lodUrl) {
     lodSource = { url: new URL(lodUrl, appUrl(".")), configuration };
     lod = await createLodView();
     manifest = lod.manifest;
     $("app").querySelector(".identity strong")!.textContent = manifest.name;
-    document.querySelector(".subtitle")!.textContent =
-      "OVERWORLD / SURFACE LOD";
+    document.querySelector(".subtitle")!.textContent = demo
+      ? "OVERWORLD / DEMO"
+      : "OVERWORLD / SURFACE LOD";
     window.__map.ready = true;
+    if (demo) {
+      [cx, cz, scale] = demo.camera;
+      demo.mount();
+      playerLayer.configureDemo(demo);
+      changed();
+      return;
+    }
     fit();
     if (params.get("players") === "off") playerLayer.disableForView();
     else

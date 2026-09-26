@@ -417,6 +417,62 @@ test("root polling revalidates, serializes admission, retains failures and suspe
   }
 });
 
+test("scripted LOD source shares validation and admission without network polling", async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw Error("scripted playback must not fetch a feed");
+  };
+  let revision = 1,
+    released = 0;
+  const accepted: number[] = [];
+  const source = new LodRootSource(
+    url,
+    root(),
+    async (next) => {
+      accepted.push(next.revision);
+    },
+    () => true,
+    () => {
+      released++;
+    },
+    () => {},
+    undefined,
+    {
+      capacityBytes: 1024,
+      read: async (signal) => {
+        signal.throwIfAborted();
+        return { ...root(), revision };
+      },
+    },
+  );
+  try {
+    source.refresh();
+    await until(() => released === 1);
+    assert.deepEqual(accepted, []);
+    revision = 2;
+    source.refresh();
+    await until(() => released === 2);
+    source.refresh();
+    await until(() => released === 3);
+    assert.deepEqual(accepted, [2]);
+    source.visibility(false);
+    revision = 3;
+    source.refresh();
+    assert.equal(released, 3);
+    source.visibility(true);
+    await until(() => released === 4);
+    assert.deepEqual(accepted, [2, 3]);
+    revision = 1;
+    source.refresh();
+    await until(() => released === 5);
+    assert.equal(source.state, "delayed");
+    assert.match(source.error!, /backwards/);
+  } finally {
+    source.destroy();
+    globalThis.fetch = original;
+  }
+});
+
 test("root 304 still polls health and changes lag/degraded status without terrain admission", async (t) => {
   let cycle = 0,
     accepted = 0,

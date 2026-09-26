@@ -8,7 +8,9 @@ Lighting stays interactive, and no rendered map images are downloaded.
 The browser supports static prepared maps and explicitly bound live hierarchies
 published by `surface-sync`.
 Native snapshot preparation and generated live deployments select LOD explicitly.
-Public-demo playback retains its separate packet and timeline interfaces.
+Public-demo preparation converts its reviewed surface packet into four LOD stages.
+The scripted timeline supplies monotonic revisions through the same terrain
+adoption path, while player playback stays independent.
 The declared large-world scale and sustained-performance acceptance require
 separate validation; successful small-fixture tests are not those guarantees.
 
@@ -111,8 +113,8 @@ coverage and retry. The local preview proxy and generated gateway expose only th
 explicit LOD GET/HEAD read route, preserving world and method restrictions.
 `deploy prepare` derives static LOD and finishes the seed's first live publication
 before sealing inventories. Generated live bindings use that publication rather
-than the offline hierarchy. The legacy live manifest remains available. Public
-demo playback and release-wide acceptance are separate integration requirements.
+than the offline hierarchy. The legacy live manifest remains available.
+Release-wide acceptance remains a separate verification requirement.
 
 ```sh
 cargo test --locked -p surface-sync

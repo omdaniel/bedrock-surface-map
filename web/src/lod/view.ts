@@ -21,6 +21,7 @@ import {
 } from "./live";
 import {
   LodRootSource,
+  type LodSnapshotSource,
   ROOT_POLL_BYTES,
   readBytes,
   type LodFeedState,
@@ -271,6 +272,7 @@ export class LodView {
     changed: () => void,
     rebuild: () => Promise<void>,
     status: (state: LodFeedState) => void,
+    source?: LodSnapshotSource,
   ) {
     if (
       !this.root.world_id ||
@@ -279,6 +281,8 @@ export class LodView {
     )
       throw Error("Invalid live LOD source");
     this.live?.destroy();
+    if (!this.ledger.set("feed-source", "cpu", source?.capacityBytes ?? 0))
+      throw Error("LOD source exceeds memory headroom");
     this.rootChanged = changed;
     this.rebuildAppearance = rebuild;
     this.live = new LodRootSource(
@@ -296,7 +300,8 @@ export class LodView {
       () => this.ledger.tryReserve("root-poll", "transit", ROOT_POLL_BYTES),
       () => this.ledger.release("root-poll"),
       status,
-      new URL("status", url),
+      source ? undefined : new URL("status", url),
+      source,
     );
     this.live.visibility(!document.hidden);
   }

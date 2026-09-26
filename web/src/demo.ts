@@ -4,6 +4,12 @@ import { validateRoot, type LiveRoot } from "./terrain";
 import { parseView, type PlayerView } from "./player-state";
 import type { PlayerSource } from "./players";
 import { boundedBytes } from "./http";
+import {
+  parseManifest,
+  MAX_INDEX_BYTES,
+  type LodManifest,
+} from "./lod/protocol";
+import type { LodSnapshotSource } from "./lod/root-source";
 import "./demo.css";
 
 interface Scenario {
@@ -16,9 +22,14 @@ interface Scenario {
   camera: number[];
   names: string[];
 }
-export class DemoPlayback implements PlayerSource {
+export class DemoPlayback implements PlayerSource, LodSnapshotSource {
   readonly clock = new DemoClock();
   private roots: LiveRoot[] = [];
+  private lodRoots: LodManifest[] = [];
+  lodUrl: URL | null = null;
+  get capacityBytes() {
+    return this.lodRoots.length * (MAX_INDEX_BYTES * 4 + 4096);
+  }
   private scenario!: Scenario;
   private timer = 0;
   private sequence = 0;
@@ -33,14 +44,17 @@ export class DemoPlayback implements PlayerSource {
   get world_id() {
     return this.scenario.world_id;
   }
+  get generation() {
+    return this.scenario.generation;
+  }
   get camera() {
     return this.scenario.camera;
   }
   get paused() {
     return !this.clock.running;
   }
-  async initialize(url: URL) {
-    const read = async (path: URL) => {
+  async initialize(url: URL, lodStages?: URL[]) {
+    const read = async (path: URL, maximum = 1024 * 1024) => {
       if (
         path.origin !== location.origin ||
         !path.pathname.startsWith(new URL(".", url).pathname)
@@ -51,7 +65,7 @@ export class DemoPlayback implements PlayerSource {
       });
       if (!response.ok) throw Error("Public demo data unavailable");
       return JSON.parse(
-        new TextDecoder().decode(await boundedBytes(response, 1024 * 1024)),
+        new TextDecoder().decode(await boundedBytes(response, maximum)),
       );
     };
     this.scenario = await read(url);
@@ -66,16 +80,35 @@ export class DemoPlayback implements PlayerSource {
       ![...s.site, ...s.camera].every(Number.isFinite)
     )
       throw Error("Invalid demo scenario");
-    for (const stage of s.stages) {
-      const root = await read(new URL(stage, url));
-      validateRoot(root);
-      if (root.world_id !== s.world_id || root.generation !== s.generation)
-        throw Error("Demo dataset mismatch");
-      this.roots.push(root);
-    }
+    if (lodStages) {
+      if (lodStages.length !== 4) throw Error("Invalid demo LOD stages");
+      this.lodUrl = lodStages[0];
+      const base = new URL(".", this.lodUrl);
+      for (const stage of lodStages) {
+        if (new URL(".", stage).href !== base.href)
+          throw Error("Demo LOD stages must share their object directory");
+        const root = parseManifest(await read(stage, MAX_INDEX_BYTES), base);
+        if (root.world_id !== s.world_id || root.generation !== s.generation)
+          throw Error("Demo LOD dataset mismatch");
+        this.lodRoots.push(root);
+      }
+    } else
+      for (const stage of s.stages) {
+        const root = await read(new URL(stage, url));
+        validateRoot(root);
+        if (root.world_id !== s.world_id || root.generation !== s.generation)
+          throw Error("Demo dataset mismatch");
+        this.roots.push(root);
+      }
     this.clock.update(performance.now());
     this.clock.hidden = document.hidden;
-    return this.root();
+  }
+  async read(signal: AbortSignal): Promise<LodManifest> {
+    signal.throwIfAborted();
+    this.clock.update(performance.now());
+    const root = this.lodRoots[this.clock.stage];
+    if (!root) throw Error("Demo LOD stages unavailable");
+    return { ...root, revision: this.clock.revision };
   }
   async root(): Promise<LiveRoot> {
     this.clock.update(performance.now());

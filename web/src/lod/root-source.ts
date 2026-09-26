@@ -98,6 +98,11 @@ export function parsePublicationHealth(
 }
 
 /** One bounded read at a time; a successful unchanged poll has no draw callback. */
+export interface LodSnapshotSource {
+  readonly capacityBytes: number;
+  read(signal: AbortSignal): Promise<LodManifest | null>;
+}
+
 export class LodRootSource {
   private timer: ReturnType<typeof setTimeout> | undefined;
   private abort: AbortController | null = null;
@@ -109,6 +114,7 @@ export class LodRootSource {
   private current: LodManifest;
   private readonly url: URL;
   private readonly healthURL: URL | undefined;
+  private readonly source: LodSnapshotSource | undefined;
   private readonly accept: (root: LodManifest) => Promise<void>;
   private readonly reserve: () => boolean;
   private readonly release: () => void;
@@ -125,8 +131,10 @@ export class LodRootSource {
     release: () => void,
     status: (state: LodFeedState) => void,
     healthURL?: URL,
+    source?: LodSnapshotSource,
   ) {
     this.url = new URL(url);
+    this.source = source;
     if (healthURL) {
       if (!current.world_id || healthURL.href.length > 2048)
         throw Error("Invalid LOD publication health URL");
@@ -160,30 +168,28 @@ export class LodRootSource {
     try {
       reserved = this.reserve();
       if (!reserved) throw Error("LOD root update awaits memory headroom");
-      const response = await fetch(this.url, {
-        signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]),
-        headers: this.etag ? { "If-None-Match": this.etag } : {},
-        redirect: "error",
-        cache: "no-cache",
-      });
-      if (response.status !== 304) {
-        const bytes = await readBytes(response, MAX_INDEX_BYTES);
-        const next = parseManifest(
-          JSON.parse(new TextDecoder().decode(bytes)),
-          new URL(".", this.url),
-        );
-        assertLiveRevision(this.current, next);
-        if (
-          next.revision === this.current.revision &&
-          JSON.stringify(next) !== JSON.stringify(this.current)
-        )
-          throw Error("LOD content changed without a new revision");
-        abort.signal.throwIfAborted();
-        if (next.revision !== this.current.revision) {
-          await this.accept(next);
-          this.current = next;
+      if (this.source) {
+        const value = await this.source.read(abort.signal);
+        if (value) {
+          const next = parseManifest(value, new URL(".", this.url));
+          await this.adopt(next, abort.signal);
         }
-        this.etag = response.headers.get("etag");
+      } else {
+        const response = await fetch(this.url, {
+          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(10000)]),
+          headers: this.etag ? { "If-None-Match": this.etag } : {},
+          redirect: "error",
+          cache: "no-cache",
+        });
+        if (response.status !== 304) {
+          const bytes = await readBytes(response, MAX_INDEX_BYTES);
+          const next = parseManifest(
+            JSON.parse(new TextDecoder().decode(bytes)),
+            new URL(".", this.url),
+          );
+          await this.adopt(next, abort.signal);
+          this.etag = response.headers.get("etag");
+        }
       }
       abort.signal.throwIfAborted();
       let nextHealth: ReturnType<typeof parsePublicationHealth> | undefined;
@@ -225,6 +231,19 @@ export class LodRootSource {
         this.rerun = false;
         this.timer = setTimeout(() => void this.poll(), delay);
       }
+    }
+  }
+  private async adopt(next: LodManifest, signal: AbortSignal) {
+    assertLiveRevision(this.current, next);
+    if (
+      next.revision === this.current.revision &&
+      JSON.stringify(next) !== JSON.stringify(this.current)
+    )
+      throw Error("LOD content changed without a new revision");
+    signal.throwIfAborted();
+    if (next.revision !== this.current.revision) {
+      await this.accept(next);
+      this.current = next;
     }
   }
   destroy() {

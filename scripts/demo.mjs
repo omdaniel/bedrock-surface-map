@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, rm, cp } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rm, cp, rename } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
 import { spawnSync } from "node:child_process";
 import { decodePacket, digest } from "./demo-packet.mjs";
@@ -34,11 +34,42 @@ for (const [name, data] of files) {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, data);
 }
+const showcase = resolve(publicDir, "showcase");
+const lodStages = [];
+for (let stage = 0; stage < 4; stage++) {
+  const conversion = spawnSync(
+    "cargo",
+    [
+      "run",
+      "--release",
+      "--locked",
+      "-p",
+      "surface-cli",
+      "--",
+      "prepare-lod",
+      "--map",
+      resolve(showcase, `stage-${stage}.json`),
+      "--output",
+      showcase,
+      "--max-output-bytes",
+      String(16 * 1024 * 1024),
+    ],
+    { stdio: "inherit" },
+  );
+  if (conversion.status !== 0) process.exit(conversion.status ?? 1);
+  const name = `lod-stage-${stage}.json`;
+  await rename(resolve(showcase, "lod.json"), resolve(showcase, name));
+  lodStages.push(`showcase/${name}`);
+}
 await writeFile(
   resolve(publicDir, "viewer-config.json"),
   JSON.stringify({
     players: null,
-    demo: { scenario: "showcase/scenario.json", poster: "demo-poster.png" },
+    demo: {
+      scenario: "showcase/scenario.json",
+      poster: "demo-poster.png",
+      lod_stages: lodStages,
+    },
   }),
 );
 try {
