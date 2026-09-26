@@ -58,9 +58,10 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
   are unavailable for ordinary cache filling.
 - Height pages use a fixed GPU arena with no CPU world-height pyramid. Empty
   slots remain charged as allocated capacity.
-- Shadow coverage includes each rendered tile's full shaded area and its gutter,
-  including coarse fallback levels. A finer cut waits for its required pages and
-  mixed-edge parent/gutter sources, including sources outside the visible area.
+- Shadow coverage includes each rendered or refining tile's full shaded area and
+  its gutter, plus pinned roots. Intermediate levels needed only for metadata do
+  not retain height pages. A finer cut waits for its required pages and mixed-edge
+  parent/gutter sources, including sources outside the visible area.
 - Upload reservations survive native queuing. Retired GPU resources remain
   charged until asynchronous queue completion, without blocking navigation.
 - Coarse coverage remains available while detail loads. Refinement is debounced;

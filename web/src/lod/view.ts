@@ -25,6 +25,7 @@ import {
   type NodeRef,
   type TileKey,
   MAX_INDEX_BYTES,
+  MAX_TILE_BYTES,
 } from "./protocol";
 
 export interface LodCamera {
@@ -244,6 +245,7 @@ export class LodView {
       level: this.level,
       tiles: this.tiles.size,
       heights: this.heights.size,
+      heightKeys: [...this.heights.keys()],
       indexes: this.nodes.size,
       catalogPages: this.catalogPages.size,
       materialDescriptors: this.materials.size,
@@ -301,12 +303,6 @@ export class LodView {
       )
     )
       throw Error("Canvas exceeds the map presentation budget");
-    const target = this.targetLevel();
-    if (target !== this.desiredTarget) {
-      this.desiredTarget = target;
-      clearTimeout(this.settleTimer);
-      this.settleTimer = setTimeout(() => this.plan(true), 100);
-    }
     this.plan();
   }
   private bounds(): Bounds {
@@ -348,14 +344,20 @@ export class LodView {
         ? (Math.ceil(area[2] / size) - Math.floor(area[0] / size)) *
           (Math.ceil(area[3] / size) - Math.floor(area[1] / size))
         : 0;
-    const reclaimableTiles = [...this.tiles.values()].reduce((sum, tile) => {
-      return (
-        sum + this.renderer.tile_bytes(tile.key.level) + tile.pick.byteLength
+    const reclaimableTiles =
+      (this.ledger.peek("gpu:surface")?.totalBytes ?? 0) +
+      [...this.tiles.values()].reduce(
+        (sum, tile) => sum + tile.pick.byteLength,
+        0,
       );
-    }, 0);
+    // Forecast a replacement, not a second copy of the job already reserved.
+    // Actual admission still charges all current, pending and retiring resources.
+    const activeJob =
+      (this.ledger.peek("job")?.totalBytes ?? 0) +
+      (this.ledger.peek("catalog-job")?.totalBytes ?? 0);
     const fixedCharge = Math.max(
       0,
-      this.ledger.snapshot().totalBytes - reclaimableTiles,
+      this.ledger.snapshot().totalBytes - reclaimableTiles - activeJob,
     );
     for (; target < max; target++) {
       const tileCost = (level: number) =>
@@ -367,7 +369,7 @@ export class LodView {
         surface +=
           count(visible, 128 * 2 ** (target + 1)) * tileCost(target + 1);
       let heightPages = 0;
-      for (let level = target; level <= max; level++) {
+      for (const level of new Set([target, Math.min(target + 1, max), max])) {
         const size = 128 * 2 ** level;
         heightPages +=
           level === max
@@ -377,48 +379,76 @@ export class LodView {
                 size,
               );
       }
-      // The allocated height arena is already charged. Keep spare slots and
-      // transfer capacity for replacing the cut, rather than filling to its limit.
+      // Roots, target detail and its immediate parents include sibling-transition
+      // overlap. The ledger separately protects retirement and one maximum job.
       if (
         heightPages <= 96 &&
-        surface * 1.25 < this.ledger.limitBytes - fixedCharge - 8_000_000
+        surface + this.maximumTileJobBytes() <
+          this.ledger.limitBytes - fixedCharge
       )
         break;
     }
     return target;
   }
+  private maximumTileJobBytes() {
+    return (
+      MAX_TILE_BYTES * 2 +
+      1024 * 1024 +
+      Math.max(this.renderer.tile_bytes(0), this.renderer.tile_bytes(1)) +
+      131072
+    );
+  }
   private plan(refine = false) {
     if (this.disposed || !this.camera || document.hidden) return;
     this.accountGpu();
     const next = this.targetLevel();
+    if (next !== this.desiredTarget) {
+      this.desiredTarget = next;
+      clearTimeout(this.settleTimer);
+      if (next < this.target)
+        this.settleTimer = setTimeout(() => this.plan(true), 100);
+    }
     if (refine || next >= this.target) this.target = next;
     this.demands.clear();
     const area = this.bounds();
-    const surfaceTargets = new Set(
-      this.root.roots.map((ref) => tileId(ref.key)),
+    const surfaceTargets = new Map(
+      this.root.roots.map((ref) => [tileId(ref.key), ref.key]),
     );
     for (const key of this.cut) {
       if (!intersects(tileBounds(key), area)) continue;
-      surfaceTargets.add(tileId(key));
+      surfaceTargets.set(tileId(key), key);
       if (key.level > this.target) {
         for (const child of this.nodes.get(tileId(key))?.node.children ?? [])
           if (intersects(tileBounds(child.key), area))
-            surfaceTargets.add(tileId(child.key));
+            surfaceTargets.set(tileId(child.key), child.key);
       } else if (key.level < this.target) {
         const factor = 2 ** (this.target - key.level);
-        surfaceTargets.add(
-          tileId({
-            level: this.target,
-            x: Math.floor(key.x / factor),
-            z: Math.floor(key.z / factor),
-          }),
-        );
+        const parent = {
+          level: this.target,
+          x: Math.floor(key.x / factor),
+          z: Math.floor(key.z / factor),
+        };
+        surfaceTargets.set(tileId(parent), parent);
       }
     }
-    const footprints = Array.from(
+    const footprints: (Bounds | null)[] = Array.from(
       { length: this.root.roots[0].key.level + 1 },
-      (_, level) => (level >= this.target ? this.shadowArea(level) : null),
+      () => null,
     );
+    // Height residency follows drawable/refining surfaces, not every ancestor
+    // whose metadata we traverse. Retiring cuts keep their own pages protected.
+    for (const key of surfaceTargets.values()) {
+      const area = this.shadowArea(key.level, tileBounds(key));
+      const previous = footprints[key.level];
+      footprints[key.level] = previous
+        ? [
+            Math.min(previous[0], area[0]),
+            Math.min(previous[1], area[1]),
+            Math.max(previous[2], area[2]),
+            Math.max(previous[3], area[3]),
+          ]
+        : area;
+    }
     const add = (
       ref: ObjectRef,
       key: TileKey,
@@ -457,7 +487,7 @@ export class LodView {
           key.level ? "summary" : "detail",
           root ? 1 : 30 - key.level,
         );
-      if (root || casts || visible)
+      if (root || casts)
         add(stored.node.height, key, "height", root ? 2 : 20 - key.level);
       if (key.level > this.target && (descendants || visible))
         for (const child of stored.node.children) visit(child);

@@ -441,7 +441,7 @@ test.describe("LOD bounded residency over repeated navigation", () => {
     await quiet(page, await settled(page, maxLevel));
   });
 
-  test("exact interiors release intermediate surfaces while retaining navigation metadata", async ({
+  test("exact interiors release intermediate surfaces and heights while retaining navigation metadata", async ({
     page,
   }) => {
     await openCoarse(page);
@@ -471,6 +471,12 @@ test.describe("LOD bounded residency over repeated navigation", () => {
       expect(value.lod!.cut).toEqual([
         `0/${Math.floor(position.x / 128)}/${Math.floor(position.z / 128)}`,
       ]);
+      expect(value.lod!.heightKeys.some((key) => key.startsWith("1/"))).toBe(
+        false,
+      );
+      expect(value.lod!.heightKeys.some((key) => key.startsWith("0/"))).toBe(
+        true,
+      );
       bounded(value);
       retainedParents(value);
       await quiet(page, value);
