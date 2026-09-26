@@ -316,7 +316,8 @@ export function parseCatalog(value: unknown, count: number): Material[] {
     requireValue(
       text(m.key, 4096) &&
         text(m.name, 1024) &&
-        text(m.texture, 1024) &&
+        typeof m.texture === "string" &&
+        m.texture.length <= 1024 &&
         integer(m.tint, 0, 3) &&
         typeof m.approximate === "boolean" &&
         Array.isArray(m.uv) &&

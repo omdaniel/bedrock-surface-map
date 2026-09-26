@@ -607,13 +607,20 @@ test("catalog pages preserve synthetic material values and enforce requested cou
 });
 
 test("material descriptors reject wrong string, tint and approximation types", () => {
-  for (const field of ["key", "name", "texture"])
+  for (const field of ["key", "name"])
     for (const value of [null, [], 1, "", "x".repeat(8192)])
       assert.throws(() => parseCatalog([{ ...material(), [field]: value }], 1));
+  for (const texture of [null, [], 1, "x".repeat(1025)])
+    assert.throws(() => parseCatalog([{ ...material(), texture }], 1));
   for (const tint of [-1, 0.5, 4, "1", NaN, null])
     assert.throws(() => parseCatalog([{ ...material(), tint }], 1));
   for (const approximate of [null, 0, 1, "false", undefined])
     assert.throws(() => parseCatalog([{ ...material(), approximate }], 1));
+});
+
+test("catalog retains unresolved texture references with diagnostic appearance", () => {
+  const unresolved = { ...material(), texture: "", approximate: true };
+  assert.deepEqual(parseCatalog([unresolved], 1), [unresolved]);
 });
 
 test("material UV and average vectors contain exactly four finite normalized numbers", () => {
