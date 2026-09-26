@@ -192,18 +192,11 @@ function footprint(value: State) {
 function retainedParents(value: State) {
   const lod = value.lod!;
   const resident = new Set(lod.memory.entries.map((entry) => entry.id));
-  for (const id of [...lod.cut, ...lod.previousCut]) {
-    let [level, x, z] = id.split("/").map(Number);
-    while (level < maxLevel) {
-      level++;
-      x = Math.floor(x / 2);
-      z = Math.floor(z / 2);
-      expect(
-        resident.has(`pick:${level}/${x}/${z}`),
-        `Displayed or fading tile ${id} must retain parent ${level}/${x}/${z}`,
-      ).toBe(true);
-    }
-  }
+  for (const id of lod.edgeSources)
+    expect(
+      resident.has(`pick:${id}`),
+      `Displayed/fading edges need source ${id}`,
+    ).toBe(true);
 }
 
 function westDetail() {
@@ -448,6 +441,42 @@ test.describe("LOD bounded residency over repeated navigation", () => {
     await quiet(page, await settled(page, maxLevel));
   });
 
+  test("exact interiors release intermediate surfaces while retaining navigation metadata", async ({
+    page,
+  }) => {
+    await openCoarse(page);
+    for (const position of [
+      { x: 64, z: 64 },
+      { x: -64, z: -64 },
+    ]) {
+      await aim(page, position, 12);
+      await settled(page, 0);
+      const x = Math.floor(position.x / 256),
+        z = Math.floor(position.z / 256);
+      const parent = `1/${x}/${z}`;
+      await expect
+        .poll(async () => {
+          const value = await state(page);
+          return value.lod!.memory.entries.some(
+            (entry) => entry.id === `pick:${parent}`,
+          );
+        })
+        .toBe(false);
+      const value = await state(page);
+      expect(
+        value.lod!.memory.entries.some(
+          (entry) => entry.id === `index:${parent}`,
+        ),
+      ).toBe(true);
+      expect(value.lod!.cut).toEqual([
+        `0/${Math.floor(position.x / 128)}/${Math.floor(position.z / 128)}`,
+      ]);
+      bounded(value);
+      retainedParents(value);
+      await quiet(page, value);
+    }
+  });
+
   test("rapid zoom-out from mixed cuts retains displayed and fading parent caches", async ({
     page,
   }) => {
@@ -484,6 +513,9 @@ test.describe("LOD bounded residency over repeated navigation", () => {
         throw Error("Fixture never presented a mixed cut during refinement");
       });
       expect(observed.some((value) => value.lod!.previousCut.length > 0)).toBe(
+        true,
+      );
+      expect(observed.some((value) => value.lod!.edgeSources.length > 0)).toBe(
         true,
       );
       for (const value of observed) {

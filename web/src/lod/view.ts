@@ -10,7 +10,7 @@ import {
   type Bounds,
 } from "./selection";
 import { LodDecoder } from "./decoder";
-import { balancedCut, coveringTile, cutAncestors } from "./cut";
+import { residentCut, coveringTile, cutAncestors } from "./cut";
 import type { DecodeResult } from "./decoder.worker";
 import {
   localAsset,
@@ -107,6 +107,7 @@ export class LodView {
   private cutStamp = "";
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
+  private planTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
   private clock = 0;
   private mainWasm: WebAssembly.Memory;
@@ -256,6 +257,14 @@ export class LodView {
       cancellations: this.cancellations,
       cut: this.cut.map(tileId),
       previousCut: this.previousCut.map(tileId),
+      edgeSources: [
+        ...new Set(
+          [
+            ...this.edgeSources(this.cut),
+            ...this.edgeSources(this.previousCut),
+          ].map(tileId),
+        ),
+      ],
       retiringBytes: this.renderer.retiring_bytes(),
       gpuPending: this.renderer.pending_submissions(),
       preparations: this.renderer.pending_preparations(),
@@ -349,13 +358,17 @@ export class LodView {
       this.ledger.snapshot().totalBytes - reclaimableTiles,
     );
     for (; target < max; target++) {
-      let surface = 0,
-        heightPages = 0;
+      const tileCost = (level: number) =>
+        this.renderer.tile_bytes(level) + 131072;
+      let surface = this.root.roots.length * tileCost(max);
+      if (target < max)
+        surface += count(visible, 128 * 2 ** target) * tileCost(target);
+      if (target + 1 < max)
+        surface +=
+          count(visible, 128 * 2 ** (target + 1)) * tileCost(target + 1);
+      let heightPages = 0;
       for (let level = target; level <= max; level++) {
         const size = 128 * 2 ** level;
-        const tiles =
-          level === max ? this.root.roots.length : count(visible, size);
-        surface += tiles * (this.renderer.tile_bytes(level) + 131072);
         heightPages +=
           level === max
             ? this.root.roots.length
@@ -381,6 +394,27 @@ export class LodView {
     if (refine || next >= this.target) this.target = next;
     this.demands.clear();
     const area = this.bounds();
+    const surfaceTargets = new Set(
+      this.root.roots.map((ref) => tileId(ref.key)),
+    );
+    for (const key of this.cut) {
+      if (!intersects(tileBounds(key), area)) continue;
+      surfaceTargets.add(tileId(key));
+      if (key.level > this.target) {
+        for (const child of this.nodes.get(tileId(key))?.node.children ?? [])
+          if (intersects(tileBounds(child.key), area))
+            surfaceTargets.add(tileId(child.key));
+      } else if (key.level < this.target) {
+        const factor = 2 ** (this.target - key.level);
+        surfaceTargets.add(
+          tileId({
+            level: this.target,
+            x: Math.floor(key.x / factor),
+            z: Math.floor(key.z / factor),
+          }),
+        );
+      }
+    }
     const footprints = Array.from(
       { length: this.root.roots[0].key.level + 1 },
       (_, level) => (level >= this.target ? this.shadowArea(level) : null),
@@ -416,7 +450,7 @@ export class LodView {
       );
       const stored = this.nodes.get(id);
       if (!stored || stored.hash !== ref.index.sha256) return;
-      if (root || visible)
+      if (surfaceTargets.has(id))
         add(
           stored.node.data,
           key,
@@ -444,6 +478,13 @@ export class LodView {
     for (const id of this.failed.keys())
       if (!this.demands.has(id)) this.failed.delete(id);
     void this.loadNext();
+  }
+  private schedulePlan() {
+    if (this.planTimer !== undefined || this.disposed) return;
+    this.planTimer = setTimeout(() => {
+      this.planTimer = undefined;
+      this.plan();
+    }, 0);
   }
   private has(demand: Demand) {
     const id = tileId(demand.key);
@@ -843,17 +884,28 @@ export class LodView {
       for (const key of sources) this.edgeRequirements.set(tileId(key), key);
       return sources.every(isReady);
     };
-    const next = balancedCut({
+    const options = {
       roots,
       bounds: area,
-      focus: [this.camera.cx, this.camera.cz],
+      focus: [this.camera.cx, this.camera.cz] as const,
       maxTiles: 64,
-      shouldRefine: (key) => key.level > this.target,
-      children: (key) =>
+      targetLevel: this.target,
+      children: (key: TileKey) =>
         this.nodes.get(tileId(key))?.node.children.map((ref) => ref.key),
-      admit: (_parent, children, replacement) =>
-        children.every(isReady) && sourcesReady(replacement),
-    });
+      isReady,
+    };
+    let next = residentCut(options);
+    if (!sourcesReady(next)) {
+      // Keep displayed descendants while their replacement's edge dependencies
+      // arrive. Newly visible areas fall back to roots, not uncovered old views.
+      const retained = new Set([...this.cut, ...roots].map(tileId));
+      next = residentCut({
+        ...options,
+        isReady: (key) => retained.has(tileId(key)) && isReady(key),
+      });
+      if (!sourcesReady(next)) next = roots;
+      this.schedulePlan();
+    }
     const signature = (cut: TileKey[]) => cut.map(tileId).sort().join(",");
     sourcesReady(next);
     if (signature(next) === signature(this.cut)) return;
@@ -866,6 +918,7 @@ export class LodView {
       ...next.map((key) => key.level),
     );
     this.transitionStart = performance.now();
+    this.schedulePlan();
     this.requestFrame();
   }
   private evict(aggressive = false) {
@@ -878,7 +931,11 @@ export class LodView {
       ...this.edgeSources(this.previousCut),
       ...this.root.roots.map((r) => r.key),
     ];
-    const protectedIds = cutAncestors(displayed, this.root.roots[0].key.level);
+    const protectedIndexes = cutAncestors(
+      displayed,
+      this.root.roots[0].key.level,
+    );
+    const protectedIds = new Set(displayed.map(tileId));
     const protectedHeights = new Set(protectedIds);
     for (const key of displayed) {
       const required = this.referenceCut(
@@ -911,7 +968,7 @@ export class LodView {
     }
     for (const [id] of this.nodes) {
       if (this.nodes.size <= METADATA_LIMIT && !aggressive) break;
-      if (!protectedIds.has(id) && !this.demands.has(`index:${id}`)) {
+      if (!protectedIndexes.has(id) && !this.demands.has(`index:${id}`)) {
         this.nodes.delete(id);
         this.residencyRevision++;
         this.ledger.release(`index:${id}`);
@@ -1000,6 +1057,7 @@ export class LodView {
     if (progress < 1) this.requestFrame();
     else if (this.previousCut.length) {
       this.previousCut = [];
+      this.schedulePlan();
       this.evict();
       if (this.renderer.pending_preparations()) this.requestFrame();
     }
@@ -1078,6 +1136,7 @@ export class LodView {
     this.decoder.destroy();
     clearTimeout(this.settleTimer);
     clearTimeout(this.retryTimer);
+    clearTimeout(this.planTimer);
     window.removeEventListener("surface-lod-retired", this.onRetired);
     this.renderer.free();
   }

@@ -75,6 +75,11 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
   it every frame. Active and fading cuts retain their parent caches until those
   edges are no longer displayed. Their required height pages remain resident
   through the fade, then become eligible for eviction.
+- Navigation retains bounded ancestor metadata independently of surface data.
+  Ready detail remains selectable through evicted intermediate surface levels;
+  only pinned roots, displayed/fading tiles, pending refinement and actual edge
+  dependencies retain surface buffers. Missing sibling coverage falls back to
+  a ready ancestor while unrelated branches remain eligible for refinement.
 
 This ledger is not browser RSS. Browser networking, JavaScript engine overhead,
 compositor swapchains and driver allocations require separate process-level
