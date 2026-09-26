@@ -28,13 +28,34 @@ fn page_slot(key:vec2i,level:u32)->i32 {
     return -1;
 }
 fn node_offset(mip:u32)->u32 {return (65536u-(65536u>>(2u*mip)))/3u;}
+// Sparse trees can terminate at uniformly absent coarse nodes. Only absence is
+// inherited: a coarse mean/range can never stand in for missing exact ground.
+fn ancestor_absence(key:vec2i,local:vec2u,mip:u32)->vec2u {
+    for(var shift=1u;shift+u32(draw.key.x)<=16u;shift++) {
+        let parent=key>>vec2u(shift);
+        let slot=page_slot(parent,u32(draw.key.x)+shift);
+        if slot<0 {continue;}
+        let child=vec2u(key-(parent<<vec2u(shift)));
+        let parent_mip=u32(max(i32(mip)-i32(shift),0));
+        let at=((child*128u+local)>>vec2u(shift))>>vec2u(parent_mip);
+        let node=height_nodes[u32(slot)*21845u+node_offset(parent_mip)+at.y*(128u>>parent_mip)+at.x];
+        let flags=node.x>>16u;
+        if (flags&1u)!=0u {break;}
+        if flags==2u || flags==8u {return vec2u(flags<<16u,0u);}
+        if (flags&4u)!=0u {return vec2u(4u<<16u,0u);}
+        break;
+    }
+    return vec2u(32u<<16u,0u);
+}
 fn height_node(at:vec2f,mip:u32)->vec2u {
     if any(at<draw.world.xy) || any(at>=draw.world.zw) {return vec2u(8u<<16u,0u);}
     let delta=vec2i(floor(at/128.0));
-    let slot=page_slot(draw.key.yz+delta,u32(draw.key.x));
-    if slot<0 {return vec2u(32u<<16u,0u);}
-    let local=vec2u(clamp(floor(at-vec2f(delta)*128.0),vec2f(0),vec2f(127)))>>vec2u(mip);
-    return height_nodes[u32(slot)*21845u+node_offset(mip)+local.y*(128u>>mip)+local.x];
+    let key=draw.key.yz+delta;
+    let slot=page_slot(key,u32(draw.key.x));
+    let local=vec2u(clamp(floor(at-vec2f(delta)*128.0),vec2f(0),vec2f(127)));
+    if slot<0 {return ancestor_absence(key,local,mip);}
+    let cell=local>>vec2u(mip);
+    return height_nodes[u32(slot)*21845u+node_offset(mip)+cell.y*(128u>>mip)+cell.x];
 }
 fn relief_neighbor(at:vec2i,fallback:f32)->f32 {
     let node=height_node(vec2f(at),0u);let flags=node.x>>16u;

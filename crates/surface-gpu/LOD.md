@@ -133,8 +133,12 @@ Height pages occupy a bounded GPU arena. Eight compute passes create each page's
 a global height window or CPU height pyramid. Seventeen 256-entry hash tables
 look up pages at the requested draw level. Max nodes only prune traversal;
 occlusion at a coarse leaf uses its mean, never its maximum. The scheduler owns
-fine shadow-footprint admission; lookup never silently substitutes coarse pages
-for missing exact pages. Rays terminate at dataset bounds or its maximum height.
+fine shadow-footprint admission. A missing page may inherit certified absence
+from a covering ancestor cell: verified-empty remains empty, while unknown or
+mixed unknown/empty coverage remains unknown. Any ancestor cell containing
+known ground leaves the exact dependency missing; its mean or range never
+substitutes for an exact height. Existing exact pages take precedence. Rays
+terminate at dataset bounds or its maximum height.
 
 `height_status()` returns flags from the latest completed feedback readback:
 1 missing resident dependency, 2 dataset-unknown coverage, 4 traversal limit,

@@ -639,6 +639,69 @@ fn height_approximation_preserves_ground_and_coarse_max_is_only_pruning() {
 }
 
 #[test]
+fn sparse_ancestor_absence_is_not_missing_or_approximate_ground() {
+    let mut gpu = setup();
+    let out = output(&gpu, 64, 64);
+    for (x, z, level) in [(-1, -3, 1), (65534, -65535, 3), (-1, 0, 16)] {
+        let key = Key::new(0, x, z).unwrap();
+        let parent = Key::new(level, x >> level, z >> level).unwrap();
+        let origin = [x * 128, z * 128];
+        let camera = [origin[0] as f64 + 64., origin[1] as f64 + 64., 1.];
+        gpu.set_world(
+            [origin[0], origin[1], origin[0] + 128, origin[1] + 128],
+            320,
+        )
+        .unwrap();
+        gpu.set_cut(Vec::new()).unwrap();
+        gpu.add_tile(key, detail(0, 1)).unwrap();
+        draw(&mut gpu, &out, camera, false, 0.);
+        gpu.set_cut(unit_cut([key])).unwrap();
+        for (flags, status) in [(4, 2), (2, 0), (6, 2), (1, 1), (5, 1)] {
+            let words = (0..SAMPLES)
+                .flat_map(|_| [flags << 16, 320 << 16])
+                .collect();
+            gpu.add_height(parent, words).unwrap();
+            draw(&mut gpu, &out, camera, true, 0.5);
+            assert_eq!(
+                gpu.height_status()[0],
+                status,
+                "L{level} ancestor flags {flags}: only certified absence may cover unavailable fine heights"
+            );
+        }
+        let local_x = ((x - (parent.x << level)) * 128) >> level;
+        let local_z = ((z - (parent.z << level)) * 128) >> level;
+        let side = (128 >> level).max(1);
+        let mixed = (0..SAMPLES)
+            .flat_map(|i| {
+                let sx = (i % 128) as i32;
+                let sz = (i / 128) as i32;
+                let absent = (local_x..local_x + side).contains(&sx)
+                    && (local_z..local_z + side).contains(&sz);
+                [if absent { 4 << 16 } else { 1 << 16 }, 320 << 16]
+            })
+            .collect();
+        gpu.add_height(parent, mixed).unwrap();
+        draw(&mut gpu, &out, camera, true, 0.5);
+        assert_eq!(
+            gpu.height_status()[0],
+            2,
+            "L{level} lookup selects the covering ancestor cell/mip, not unrelated known ground"
+        );
+        gpu.add_height(key, vec![(2 << 16) | 32768; SAMPLES])
+            .unwrap();
+        draw(&mut gpu, &out, camera, true, 0.5);
+        assert_eq!(gpu.height_status()[0], 0, "exact pages take precedence");
+        gpu.set_cut(Vec::new()).unwrap();
+        gpu.remove_tile(key);
+        gpu.remove_height(key);
+        gpu.remove_height(parent);
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    }
+}
+
+#[test]
 fn distant_fine_camera_and_material_range_upload() {
     let mut gpu = setup();
     let out = output(&gpu, 64, 64);
