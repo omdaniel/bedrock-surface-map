@@ -105,6 +105,16 @@ test("encoded coarse coverage refines, releases exact detail, and preserves came
   expect(returned.lod!.workerWasmBytes).toBeLessThanOrEqual(16 * 1024 * 1024);
   expect(returned.lod!.level).toBeGreaterThan(0);
   expect(returned.lod!.failures).toEqual([]);
+  const progress = returned.lod!.gpuProgress;
+  expect(progress.submittedSerial).toBeGreaterThan(0);
+  expect(progress.completedSerial).toBeGreaterThan(0);
+  expect(progress.completedSerial).toBeLessThanOrEqual(
+    progress.submittedSerial,
+  );
+  expect(progress.oldestInFlightAgeMs).toBeGreaterThanOrEqual(0);
+  expect(Number.isFinite(progress.oldestInFlightAgeMs)).toBe(true);
+  if (progress.completedSerial === progress.submittedSerial)
+    expect(progress.oldestInFlightAgeMs).toBe(0);
   expect(errors).toEqual([]);
   await page.screenshot({ path: "test-results/lod-returned.png" });
 });

@@ -365,6 +365,20 @@ impl LodRenderer {
     pub fn pending_submissions(&self) -> u32 {
         self.gpu.pending_submissions() as u32
     }
+    /// [submittedSerial, completedSerial, oldestInFlightAgeMs, ageExact(0|1)].
+    /// Age uses performance.now(); idle/disposed age is zero. Exact=0 marks an
+    /// upper bound after non-frame work exceeded three outstanding submissions.
+    /// Completed means callback-acknowledged, not independently sampled GPU progress.
+    /// This read-only snapshot neither polls nor submits work. Disposed: [0,0,0,1].
+    pub fn submission_stats(&self) -> Vec<f64> {
+        let stats = self.gpu.submission_stats();
+        vec![
+            stats.submitted_serial as f64,
+            stats.completed_serial as f64,
+            stats.oldest_in_flight_age_ms,
+            u8::from(stats.oldest_in_flight_age_exact) as f64,
+        ]
+    }
     pub fn pending_tiles(&self) -> u32 {
         self.gpu.pending_tiles() as u32
     }

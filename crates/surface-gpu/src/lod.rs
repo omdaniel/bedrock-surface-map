@@ -542,6 +542,95 @@ struct FeedbackState {
     values: [u32; 4],
 }
 
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn submission_now_ms() -> f64;
+}
+
+#[cfg_attr(target_arch = "wasm32", derive(Default))]
+struct SubmissionClock {
+    #[cfg(not(target_arch = "wasm32"))]
+    origin: std::time::Instant,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl Default for SubmissionClock {
+    fn default() -> Self {
+        Self {
+            origin: std::time::Instant::now(),
+        }
+    }
+}
+impl SubmissionClock {
+    fn now_ms(&self) -> f64 {
+        #[cfg(target_arch = "wasm32")]
+        {
+            submission_now_ms()
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.origin.elapsed().as_secs_f64() * 1000.
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct SubmissionTime {
+    first: u64,
+    last: u64,
+    started_ms: f64,
+}
+#[derive(Default)]
+struct SubmissionTimes {
+    entries: [Option<SubmissionTime>; 3],
+}
+impl SubmissionTimes {
+    fn record(&mut self, serial: u64, completed: u64, now_ms: f64) {
+        let mut retained = [None; 3];
+        let mut count = 0;
+        for entry in self.entries.iter().flatten().filter(|e| e.last > completed) {
+            retained[count] = Some(*entry);
+            count += 1;
+        }
+        if count < retained.len() {
+            retained[count] = Some(SubmissionTime {
+                first: serial,
+                last: serial,
+                started_ms: now_ms,
+            });
+        } else {
+            // Non-frame submissions are not throttled. Preserve bounded storage
+            // and the oldest timestamp; partial completion makes this an upper bound.
+            retained[2].as_mut().unwrap().last = serial;
+        }
+        self.entries = retained;
+    }
+    fn oldest(&self, completed: u64, now_ms: f64) -> (f64, bool) {
+        self.entries
+            .iter()
+            .flatten()
+            .find(|e| e.last > completed)
+            .map_or((0., true), |e| {
+                ((now_ms - e.started_ms).max(0.), e.first > completed)
+            })
+    }
+}
+
+/// Queue progress sampled without polling the device or changing submission policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct SubmissionStats {
+    /// Renderer-local serial, including atlas, material, removal and frame work.
+    pub submitted_serial: u64,
+    /// Highest serial acknowledged by on_submitted_work_done, not a GPU timestamp.
+    pub completed_serial: u64,
+    /// Monotonic age of the oldest unacknowledged submission; zero when idle/disposed.
+    pub oldest_in_flight_age_ms: f64,
+    /// False means age is an upper bound after >3 outstanding submissions forced
+    /// timestamp coalescing and the first part of that range completed.
+    pub oldest_in_flight_age_exact: bool,
+}
+
 pub struct GpuLod {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -581,6 +670,8 @@ pub struct GpuLod {
     retirement: Mutex<Retirement>,
     completed: Arc<AtomicU64>,
     submitted: u64,
+    submission_clock: SubmissionClock,
+    submission_times: SubmissionTimes,
     upload_peak: usize,
     world: Option<([i32; 4], i32)>,
     lighting: Option<[f32; 8]>,
@@ -823,6 +914,8 @@ impl GpuLod {
             retirement: Mutex::default(),
             completed: Arc::default(),
             submitted: 0,
+            submission_clock: SubmissionClock::default(),
+            submission_times: SubmissionTimes::default(),
             upload_peak: 0,
             world: None,
             lighting: None,
@@ -976,6 +1069,11 @@ impl GpuLod {
     fn submit(&mut self, encoder: wgpu::CommandEncoder) {
         self.submitted += 1;
         let serial = self.submitted;
+        self.submission_times.record(
+            serial,
+            self.completed.load(Ordering::Acquire),
+            self.submission_clock.now_ms(),
+        );
         self.queue.submit([encoder.finish()]);
         let completed = self.completed.clone();
         #[cfg(target_arch = "wasm32")]
@@ -1079,6 +1177,29 @@ impl GpuLod {
         }
         self.reap();
         self.submitted - self.completed.load(Ordering::Acquire)
+    }
+    /// A coherent progress snapshot. Serial advancement distinguishes slow
+    /// acknowledgements from a stalled acknowledgement stream; age alone does
+    /// not establish whether the GPU or callback delivery is stalled. Uses
+    /// Instant natively and performance.now() on WASM, never wall-clock time.
+    /// Disposal returns zero serials/age and exact=true, even after late callbacks.
+    pub fn submission_stats(&self) -> SubmissionStats {
+        if self.is_disposed() {
+            return SubmissionStats {
+                oldest_in_flight_age_exact: true,
+                ..Default::default()
+            };
+        }
+        let completed_serial = self.completed.load(Ordering::Acquire);
+        let (oldest_in_flight_age_ms, oldest_in_flight_age_exact) = self
+            .submission_times
+            .oldest(completed_serial, self.submission_clock.now_ms());
+        SubmissionStats {
+            submitted_serial: self.submitted,
+            completed_serial,
+            oldest_in_flight_age_ms,
+            oldest_in_flight_age_exact,
+        }
     }
     pub fn pending_tiles(&self) -> usize {
         self.pending.len()
@@ -2688,6 +2809,7 @@ impl GpuLod {
         if !self.active.swap(false, Ordering::AcqRel) {
             return;
         }
+        self.submission_times = SubmissionTimes::default();
         self.pending = VecDeque::new();
         self.cuts = Default::default();
         self.transition = None;

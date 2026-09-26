@@ -2379,3 +2379,109 @@ fn live_surface_updates_dirty_coarse_shadows_and_restitch_neighbor_colors() {
         assert_ne!(pixel(right, 0, lit), pixel(right, 1, lit));
     }
 }
+
+#[test]
+fn submission_timing_tracks_three_oldest_ages_and_completion_progress() {
+    let mut times = SubmissionTimes::default();
+    assert_eq!(times.oldest(0, 100.), (0., true));
+    for serial in 1..=3 {
+        times.record(serial, 0, serial as f64 * 10.);
+    }
+    assert_eq!(times.entries.iter().flatten().count(), 3);
+    assert_eq!(times.oldest(0, 100.), (90., true));
+    assert_eq!(
+        times.oldest(0, 200.),
+        (190., true),
+        "no acknowledgement: same oldest submission keeps aging"
+    );
+    assert_eq!(times.oldest(1, 200.), (180., true));
+    assert_eq!(times.oldest(2, 200.), (170., true));
+    assert_eq!(times.oldest(3, 200.), (0., true));
+    times.record(4, 1, 210.);
+    assert_eq!(times.entries.map(|e| e.unwrap().first), [2, 3, 4]);
+    assert_eq!(times.oldest(3, 220.), (10., true));
+    times.record(5, 4, 230.);
+    assert_eq!(times.entries.iter().flatten().count(), 1);
+    assert_eq!(times.oldest(4, 230.), (0., true));
+    assert_eq!(times.oldest(5, 240.), (0., true));
+}
+
+#[test]
+fn submission_timing_non_frame_overflow_is_bounded_and_explicitly_inexact() {
+    let mut times = SubmissionTimes::default();
+    for serial in 1..=1000 {
+        times.record(serial, 0, serial as f64);
+    }
+    assert_eq!(times.entries.iter().flatten().count(), 3);
+    assert_eq!(times.entries[2].unwrap().first, 3);
+    assert_eq!(times.entries[2].unwrap().last, 1000);
+    assert_eq!(times.oldest(0, 1100.), (1099., true));
+    assert_eq!(times.oldest(2, 1100.), (1097., true));
+    assert_eq!(times.oldest(3, 1100.), (1097., false));
+    assert_eq!(times.oldest(999, 1100.), (1097., false));
+    times.record(1001, 999, 1200.);
+    assert_eq!(times.entries.iter().flatten().count(), 2);
+    assert_eq!(times.oldest(1000, 1210.), (10., true));
+    assert_eq!(times.oldest(1001, 1210.), (0., true));
+    times.record(1002, 1001, 1300.);
+    assert_eq!(times.entries.iter().flatten().count(), 1);
+    assert_eq!(times.oldest(1001, 1310.), (10., true));
+    assert_eq!(
+        times.oldest(1001, 1299.),
+        (0., true),
+        "age never becomes negative"
+    );
+}
+
+#[test]
+fn submission_stats_are_read_only_monotonic_and_clear_on_dispose() {
+    let mut gpu = setup();
+    let before = gpu.submission_stats();
+    assert!(
+        before.submitted_serial > 0,
+        "initial atlas work is instrumented"
+    );
+    assert_eq!(before.completed_serial, before.submitted_serial);
+    assert_eq!(before.oldest_in_flight_age_ms, 0.);
+    assert!(before.oldest_in_flight_age_exact);
+    let clock_before = gpu.submission_clock.now_ms();
+    assert!(gpu.submission_clock.now_ms() >= clock_before);
+    for _ in 0..6 {
+        gpu.submit(gpu.device.create_command_encoder(&Default::default()));
+    }
+    let inflight = gpu.submission_stats();
+    assert_eq!(inflight.submitted_serial, before.submitted_serial + 6);
+    assert!(
+        (before.completed_serial..=inflight.submitted_serial).contains(&inflight.completed_serial)
+    );
+    assert!(inflight.oldest_in_flight_age_ms.is_finite() && inflight.oldest_in_flight_age_ms >= 0.);
+    assert!(gpu.submission_times.entries.iter().flatten().count() <= 3);
+    assert_eq!(
+        gpu.submitted, inflight.submitted_serial,
+        "reading stats submits no work"
+    );
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    let settled = gpu.submission_stats();
+    assert_eq!(settled.submitted_serial, inflight.submitted_serial);
+    assert_eq!(settled.completed_serial, settled.submitted_serial);
+    assert_eq!(settled.oldest_in_flight_age_ms, 0.);
+    assert!(settled.oldest_in_flight_age_exact);
+    gpu.submit(gpu.device.create_command_encoder(&Default::default()));
+    gpu.dispose();
+    let disposed = SubmissionStats {
+        oldest_in_flight_age_exact: true,
+        ..Default::default()
+    };
+    assert_eq!(gpu.submission_stats(), disposed);
+    assert!(gpu.submission_times.entries.iter().all(Option::is_none));
+    gpu.device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .unwrap();
+    assert_eq!(
+        gpu.submission_stats(),
+        disposed,
+        "late callbacks cannot restore disposed diagnostics"
+    );
+}

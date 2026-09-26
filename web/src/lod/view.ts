@@ -395,6 +395,7 @@ export class LodView {
     }
   }
   get stats() {
+    const submission = this.renderer.submission_stats();
     return {
       memory: this.ledger.snapshot(),
       live: this.live
@@ -439,6 +440,12 @@ export class LodView {
       ],
       retiringBytes: this.renderer.retiring_bytes(),
       gpuPending: this.renderer.pending_submissions(),
+      gpuProgress: {
+        submittedSerial: submission[0],
+        completedSerial: submission[1],
+        oldestInFlightAgeMs: submission[2],
+        ageExact: submission[3] === 1,
+      },
       preparations: this.renderer.pending_preparations(),
       activeKind: this.active?.demand.kind ?? null,
       queuedUpload: this.upload !== null || this.submittedUpload !== null,

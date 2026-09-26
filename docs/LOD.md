@@ -158,6 +158,12 @@ This ledger is not browser RSS. Browser networking, JavaScript engine overhead,
 compositor swapchains and driver allocations require separate process-level
 measurement. Inspection follows the displayed cut, not finer cached records.
 Coarse inspection reports approximate heights and ranges, not an exact material.
+
+`window.__map.state().lod.gpuProgress` reports submitted and callback-acknowledged
+queue serials and the monotonic age of the oldest outstanding submission. Ages
+marked `ageExact: false` are conservative upper bounds from bounded timestamp
+coalescing. These diagnostics distinguish advancing from unchanged acknowledgments;
+they do not independently measure GPU execution time or diagnose a driver stall.
 Download failures retain available coverage and retry with
 bounded backoff. Hidden documents suspend new loading and resume when visible.
 Device loss cancels pending work and triggers one coarse-first reconstruction,
