@@ -423,10 +423,7 @@ try {
   // Docker can assign a different ephemeral host port when restarting a stopped
   // container. The supported deployment uses fixed ports; this fixture does not.
   port = inspect("gateway").NetworkSettings.Ports["443/tcp"][0].HostPort;
-  assert.deepEqual(
-    await readyJson(port, viewer.terrain.url),
-    terrainManifest,
-  );
+  assert.deepEqual(await readyJson(port, viewer.terrain.url), terrainManifest);
   assert.ok(stable.equals(await readFile(markerPath)));
   assert.ok(
     certificate.equals(
