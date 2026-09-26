@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PNG } from "pngjs";
+import { verifyServedLod } from "./verify-common.mjs";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: browser-smoke.mjs <archive>");
@@ -36,6 +37,7 @@ const mountPaths = externalUrls.length
 const { chromium } = await import("playwright");
 const staging = await mkdtemp(join(tmpdir(), "bedrock-map-browser-smoke-"));
 const children = new Set();
+const lodChecks = [];
 
 function packagedRoot() {
   return execFileSync("tar", ["-tzf", archive], { encoding: "utf8" })
@@ -166,6 +168,7 @@ try {
         if (!servedWasm.equals(await readFile(join(web, "assets", wasm))))
           throw Error("remote server is not serving the exact packaged WASM");
       }
+      lodChecks.push({ mount: basePath, ...(await verifyServedLod(url)) });
       const page = await browser.newPage({
         viewport: { width: 1280, height: 900 },
       });
@@ -182,6 +185,7 @@ try {
         await page.waitForFunction(
           () =>
             window.__map?.ready &&
+            window.__map.state().lod?.tiles > 0 &&
             window.__map.state().cached > 0 &&
             window.__map.state().pending === 0 &&
             window.__map.state().draws > 0,
@@ -189,8 +193,13 @@ try {
           { timeout: 30000 },
         );
         const state = await page.evaluate(() => window.__map.state());
-        if (state.cached < 1 || state.draws < 1)
-          throw Error("fixture terrain was not rendered");
+        if (
+          !state.lod ||
+          state.lod.tiles < 1 ||
+          state.cached < 1 ||
+          state.draws < 1
+        )
+          throw Error("fixture LOD terrain was not rendered");
         assertTerrainPixels(await page.locator("#map").screenshot());
         await page.mouse.move(640, 400);
         await page
@@ -201,7 +210,7 @@ try {
           throw Error("synthetic terrain picking failed");
         const expected = [
           "viewer-config.json",
-          "manifest.json",
+          "lod.json",
           ".wasm",
           ".zst",
           ".png",
@@ -214,6 +223,14 @@ try {
             )
           )
             throw Error(`packaged browser did not load ${suffix}`);
+        if (
+          !loaded.some(
+            (item) => item.url === lodChecks.at(-1).url && item.status === 200,
+          )
+        )
+          throw Error(
+            "packaged browser did not load its configured LOD descriptor",
+          );
         if (
           loaded.some(
             (item) => !item.url.startsWith(new URL(url).origin + basePath),
@@ -273,6 +290,7 @@ try {
       terrain_pixels: true,
       picking: true,
       unsupported_webgpu: true,
+      lod: lodChecks,
     }),
   );
 } finally {

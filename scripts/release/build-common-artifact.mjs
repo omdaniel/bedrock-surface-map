@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { relative, resolve } from "node:path";
+import { verifyCommon } from "./verify-common.mjs";
 
 const output = resolve(process.argv[2] ?? ".local/release/common");
 await rm(output, { recursive: true, force: true });
@@ -19,6 +20,23 @@ execFileSync(
     "surface-cli",
     "--",
     "fixture",
+    "--output",
+    resolve(output, "fixture"),
+  ],
+  { stdio: "inherit" },
+);
+execFileSync(
+  "cargo",
+  [
+    "run",
+    "--release",
+    "--locked",
+    "-p",
+    "surface-cli",
+    "--",
+    "prepare-lod",
+    "--map",
+    resolve(output, "fixture/manifest.json"),
     "--output",
     resolve(output, "fixture"),
   ],
@@ -63,4 +81,5 @@ await writeFile(
     2,
   ) + "\n",
 );
+await verifyCommon(output, commit);
 console.log(JSON.stringify({ output, commit, files: files.length }));
