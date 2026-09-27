@@ -10,6 +10,7 @@ pub fn ensure_lod(staged: &Path, max_output_bytes: u64) -> Result<()> {
         max_output_bytes > 0,
         "E_CONFIG_INVALID: LOD output budget must be positive"
     );
+    crate::dataset::validate_snapshot(staged)?;
     if crate::dataset::validate_lod(staged)?.is_none() {
         prepare_lod_with_options(
             &staged.join("manifest.json"),
@@ -24,6 +25,7 @@ pub fn ensure_lod(staged: &Path, max_output_bytes: u64) -> Result<()> {
             "E_RESOURCE_MISMATCH: LOD preparation did not publish a valid hierarchy"
         );
     }
+    crate::dataset::validate_snapshot(staged)?;
     Ok(())
 }
 

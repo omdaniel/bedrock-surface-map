@@ -13,7 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use surface_core::{
-    MapManifest, Material, SurfaceRegion, decode_region, decompress, encode_live_region,
+    Material, SurfaceRegion, decompress, encode_live_region,
     terrain::{MaterialSpec, SurfaceChunk, TerrainObservation, valid_id},
 };
 
@@ -346,6 +346,15 @@ fn publish_root(
     set_meta(db, "revision", &(revision + 1))?;
     let mut regions = Vec::new();
     let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    let seed_bounds: Option<String> = db
+        .query_row("SELECT value FROM meta WHERE key='seed_bounds'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if let Some(seed_bounds) = seed_bounds {
+        bounds = serde_json::from_str(&seed_bounds)?;
+        surface_core::lod::validate_bounds(bounds)?;
+    }
     let mut range = [i16::MAX, i16::MIN];
     let mut s = db.prepare("SELECT rx,rz,data,index_ref FROM regions ORDER BY rz,rx")?;
     let rows = s.query_map([], |r| {
@@ -552,26 +561,29 @@ impl Store {
         library: Option<&Path>,
         boundary: Option<&Boundary>,
     ) -> Result<Value> {
-        let manifest: MapManifest = serde_json::from_slice(&fs::read(map.join("manifest.json"))?)?;
-        ensure!(
-            manifest.format_version == 1,
-            "seed requires a verified offline manifest"
-        );
+        let manifest = crate::seed::Snapshot::load(map)?;
+        if let Some((world, generation)) = &manifest.identity {
+            ensure!(
+                *world == meta::<String>(&self.connection, "world_id")?
+                    && *generation == meta::<String>(&self.connection, "generation")?,
+                "seed snapshot world/generation mismatch"
+            );
+        }
         self.ensure_space()?;
         let initial = meta::<Value>(&self.connection, "manifest").is_err();
         ensure!(
             initial || boundary.is_some(),
             "existing dataset requires a reconciliation boundary"
         );
-        let (templates, atlas_path) = if let Some(lib) = library {
+        let (templates, atlas_bytes) = if let Some(lib) = library {
             let data: Value = serde_json::from_slice(&fs::read(lib.join("library.json"))?)?;
             let templates: Vec<Material> = serde_json::from_value(data["materials"].clone())?;
             (
                 templates,
-                lib.join(data["atlas"].as_str().context("atlas path")?),
+                fs::read(lib.join(data["atlas"].as_str().context("atlas path")?))?,
             )
         } else {
-            (manifest.materials.clone(), map.join(&manifest.atlas))
+            (manifest.materials.clone(), manifest.atlas.clone())
         };
         let objects = Objects {
             root: &self.root,
@@ -582,7 +594,7 @@ impl Store {
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         objects.refresh(&tx, &self.data_version)?;
-        let atlas = object(&objects, &fs::read(atlas_path)?, "png")?;
+        let atlas = object(&objects, &atlas_bytes, "png")?;
         if let Some(b) = boundary {
             let recorded: Boundary = meta(&tx, "boundary")?;
             ensure!(
@@ -596,6 +608,7 @@ impl Store {
         if initial {
             set_meta(&tx, "name", &manifest.name)?;
             set_meta(&tx, "spawn", &manifest.spawn)?;
+            set_meta(&tx, "seed_bounds", &manifest.bounds)?;
             set_meta(&tx, "atlas", &atlas)?;
             for template in templates {
                 tx.execute(
@@ -627,27 +640,13 @@ impl Store {
             .checked_add(1)
             .context("observation revision exhausted")?;
         let queued_ms = now_ms();
-        for reference in &manifest.regions {
-            ensure!(
-                Path::new(&reference.url)
-                    .components()
-                    .all(|c| matches!(c, std::path::Component::Normal(_))),
-                "unsafe import asset path"
-            );
-            let packed = fs::read(map.join(&reference.url))?;
-            ensure!(
-                hash(&packed) == reference.sha256,
-                "import checksum mismatch"
-            );
-            let region = decode_region(&decompress(&packed, surface_core::MAX_DECOMPRESSED)?)?;
-            ensure!(
-                region.rx == reference.rx && region.rz == reference.rz,
-                "region coordinate mismatch"
-            );
+        for index in 0..manifest.regions() {
+            let region = manifest.region(map, index)?;
             for z in 0..16 {
                 for x in 0..16 {
                     let mut chunk =
                         SurfaceChunk::from_region(&region, region.rx * 16 + x, region.rz * 16 + z)?;
+                    chunk.validate(manifest.materials.len(), false)?;
                     if chunk.columns.iter().all(|c| c[0] == 0) {
                         continue;
                     }
@@ -679,6 +678,7 @@ impl Store {
             }
         }
         ensure!(checked > 0, "empty repair import");
+        manifest.verify_unchanged(map)?;
         // Repair order is distinct from the backup observation fence stored on
         // each chunk. Newer live observations still win over backup contents.
         set_meta(&tx, "observation", &accepted)?;

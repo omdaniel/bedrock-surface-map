@@ -82,7 +82,7 @@ impl State {
     }
     pub fn operation(&self, prefix: &str) -> Result<tempfile::TempDir> {
         ensure!(
-            matches!(prefix, "demo" | "import" | "prepare-lod"),
+            matches!(prefix, "demo" | "import" | "register" | "prepare-lod"),
             "E_STATE_UNSAFE: invalid operation kind"
         );
         let root = self.staging();
@@ -170,7 +170,8 @@ impl State {
         let active = self.active()?;
         if let Some(selected) = &active {
             let public = self.datasets().join(&selected.dataset_id).join("public");
-            validate_public_tree(&public)?;
+            let snapshot = validate_public_tree(&public)?;
+            check_snapshot_source(&snapshot, &selected.source_sha256)?;
             ensure!(
                 tree_hash(&public)? == selected.dataset_id,
                 "E_RESOURCE_MISMATCH: selected immutable dataset differs from its identity"
@@ -243,7 +244,8 @@ impl State {
         );
         let current = self.active()?;
         reject_symlink(staged_public)?;
-        validate_public_tree(staged_public)?;
+        let snapshot = validate_public_tree(staged_public)?;
+        check_snapshot_source(&snapshot, &source_sha256)?;
         let id = tree_hash(staged_public)?;
         let active = ActiveDataset {
             schema_version: 1,
@@ -338,8 +340,19 @@ fn valid_hash(value: &str) -> bool {
     valid_id(value)
 }
 
-fn validate_public_tree(root: &Path) -> Result<()> {
-    let mut expected = dataset::validate_inventory(root)?;
+fn check_snapshot_source(snapshot: &dataset::SnapshotIdentity, source: &str) -> Result<()> {
+    if snapshot.format_version == 2 {
+        ensure!(
+            snapshot.source_sha256 == source,
+            "E_RESOURCE_MISMATCH: snapshot source fingerprint mismatch"
+        );
+    }
+    Ok(())
+}
+
+/// Validate a snapshot's content and reject every file outside its exact closure.
+pub fn validate_public_tree(root: &Path) -> Result<dataset::SnapshotIdentity> {
+    let (identity, mut expected) = dataset::validate_inventory_snapshot(root)?;
     walk(root, &mut |path| {
         ensure!(
             expected.remove(path.strip_prefix(root)?),
@@ -352,7 +365,7 @@ fn validate_public_tree(root: &Path) -> Result<()> {
         expected.is_empty(),
         "E_RESOURCE_MISMATCH: missing public dataset file"
     );
-    Ok(())
+    Ok(identity)
 }
 
 fn tree_hash(root: &Path) -> Result<String> {

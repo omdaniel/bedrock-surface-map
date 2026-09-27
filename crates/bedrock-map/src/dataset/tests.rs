@@ -400,7 +400,8 @@ fn legacy_optional_lod_and_state_inventory_keep_exact_allowlist() {
 }
 
 fn stream_fixture(root: &Path, bounds: [i32; 4]) -> serde_json::Value {
-    let (materials, atlas) = appearance(root);
+    let (mut materials, atlas) = appearance(root);
+    materials[1].key = json!(["minecraft:stone", {}]).to_string();
     let catalog = store(root, &serde_json::to_vec(&materials).unwrap(), "json");
     let mut region = SurfaceRegion::empty(-1, -1);
     let mut chunk = SurfaceChunk {
@@ -441,6 +442,119 @@ fn stream_fixture(root: &Path, bounds: [i32; 4]) -> serde_json::Value {
     )
     .unwrap();
     manifest
+}
+
+#[test]
+fn v2_registration_preparation_and_seed_keep_identity_and_exact_inventory() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::new(dir.path().join("state")).unwrap();
+    state.init().unwrap();
+    let operation = state.operation("prepare-lod").unwrap();
+    let public = operation.path().join("public");
+    fs::create_dir_all(&public).unwrap();
+    let mut manifest = stream_fixture(&public, [-256, -256, 0, 0]);
+    // A compact V2 source need only identify its regional index.
+    for field in ["surface", "heights", "columns", "height_range"] {
+        manifest["regions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+    }
+    fs::write(
+        public.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        state
+            .register_staged_dataset(&public, "b".repeat(64), false)
+            .is_err()
+    );
+    assert!(state.active().unwrap().is_none());
+    crate::preparation::ensure_lod(&public, crate::preparation::DEFAULT_LOD_MAX_BYTES).unwrap();
+    let identity = validate_snapshot(&public).unwrap();
+    assert_eq!(identity.world_id.as_deref(), Some("test"));
+    assert_eq!(identity.generation.as_deref(), Some("fixture"));
+    let closure = validate_inventory(&public).unwrap();
+    let selected = state
+        .register_staged_dataset(&public, identity.source_sha256, false)
+        .unwrap();
+    let registered = state.registered(&selected.dataset_id).unwrap().unwrap();
+    let before = fs::read(registered.join("lod.json")).unwrap();
+    crate::preparation::ensure_lod(&registered, 1).unwrap();
+    assert_eq!(fs::read(registered.join("lod.json")).unwrap(), before);
+    assert_eq!(
+        state
+            .registered_inventory(&selected.dataset_id)
+            .unwrap()
+            .unwrap()
+            .into_keys()
+            .collect::<BTreeSet<_>>(),
+        closure
+    );
+    let mut store =
+        surface_sync::store::Store::open(&dir.path().join("terrain"), "test", "fixture", 1 << 30)
+            .unwrap();
+    assert_eq!(store.seed(&registered, None, None).unwrap()["checked"], 1);
+    assert_eq!(
+        store.manifest().unwrap()["source_sha256"],
+        selected.source_sha256
+    );
+    // Selection metadata cannot substitute a different source identity.
+    let mut altered = selected;
+    altered.source_sha256 = "b".repeat(64);
+    fs::write(state.active_path(), serde_json::to_vec(&altered).unwrap()).unwrap();
+    assert!(state.active_validated().is_err());
+}
+
+#[test]
+fn region_only_large_bounds_register_and_prepare_without_a_global_height_field() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = State::new(dir.path().join("state")).unwrap();
+    state.init().unwrap();
+    let operation = state.operation("prepare-lod").unwrap();
+    let public = operation.path().join("public");
+    surface_cli::create_synthetic_fixture(&public).unwrap();
+    let mut manifest: MapManifest =
+        serde_json::from_slice(&fs::read(public.join("manifest.json")).unwrap()).unwrap();
+    fs::remove_file(public.join(&manifest.heights)).unwrap();
+    manifest.heights.clear();
+    manifest.heights_sha256.clear();
+    manifest.bounds = [-8192, -8192, 8192, 8192];
+    fs::write(
+        public.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    validate_snapshot(&public).unwrap();
+    // Regional statistics remain mandatory without the global field.
+    let mut wrong = manifest.clone();
+    wrong.height_range[1] += 1;
+    fs::write(
+        public.join("manifest.json"),
+        serde_json::to_vec(&wrong).unwrap(),
+    )
+    .unwrap();
+    assert!(validate_snapshot(&public).is_err());
+    fs::write(
+        public.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    crate::preparation::ensure_lod(&public, crate::preparation::DEFAULT_LOD_MAX_BYTES).unwrap();
+    let selected = state
+        .register_staged_dataset(&public, "a".repeat(64), false)
+        .unwrap();
+    state.active_validated().unwrap();
+    let files = state
+        .registered_inventory(&selected.dataset_id)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !files
+            .keys()
+            .any(|p| p.to_string_lossy().contains("heightfield"))
+    );
 }
 
 #[test]

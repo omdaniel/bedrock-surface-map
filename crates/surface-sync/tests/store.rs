@@ -116,6 +116,198 @@ fn current_height(store: &Store) -> i32 {
         .columns[0][1]
 }
 
+fn v2_fixture(root: &Path, height: i32) -> Value {
+    fixture(root, height);
+    fs::write(root.join("atlas.png"), b"\x89PNG\r\n\x1a\nsynthetic-atlas").unwrap();
+    let temp = TempDir::new().unwrap();
+    let mut source = Store::open(temp.path(), "test", "generation", 1 << 30).unwrap();
+    source.seed(root, None, None).unwrap();
+    let mut manifest = source.manifest().unwrap();
+    let limit = surface_core::lod::WORLD_LIMIT;
+    manifest["bounds"] = json!([-limit, -limit, limit, limit]);
+    // Index-only region descriptors exercise the compact snapshot form.
+    for region in manifest["regions"].as_array_mut().unwrap() {
+        for field in ["surface", "heights", "columns", "height_range"] {
+            region.as_object_mut().unwrap().remove(field);
+        }
+    }
+    fs::create_dir_all(root.join("objects")).unwrap();
+    for entry in fs::read_dir(source.root.join("objects")).unwrap() {
+        let entry = entry.unwrap();
+        fs::copy(entry.path(), root.join("objects").join(entry.file_name())).unwrap();
+    }
+    fs::write(
+        root.join("manifest.json"),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    manifest
+}
+
+#[test]
+fn v2_sparse_snapshot_seeds_and_publishes_without_global_heights() {
+    let dir = TempDir::new().unwrap();
+    let map = dir.path().join("map");
+    let mut source = v2_fixture(&map, 16);
+    // Spawn can lie in an absent gap within the declared sparse footprint.
+    source["spawn"] = json!([
+        surface_core::lod::WORLD_LIMIT / 2,
+        2,
+        surface_core::lod::WORLD_LIMIT / 2
+    ]);
+    fs::write(
+        map.join("manifest.json"),
+        serde_json::to_vec(&source).unwrap(),
+    )
+    .unwrap();
+    let mut store = Store::open(&dir.path().join("state"), "test", "generation", 1 << 30).unwrap();
+    let seeded = store.seed(&map, None, None).unwrap();
+    assert_eq!(seeded["checked"], 1);
+    assert_eq!(seeded["changed"], 1);
+    assert_eq!(current_height(&store), 16);
+    assert_eq!(store.manifest().unwrap()["bounds"], source["bounds"]);
+    assert_eq!(
+        store.manifest().unwrap()["source_sha256"],
+        source["source_sha256"]
+    );
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(store));
+    let mut publisher = surface_sync::lod_publish::Publisher::open(shared.clone()).unwrap();
+    while publisher.step().unwrap() != surface_sync::lod_publish::Step::Idle {}
+    let published = shared.lock().unwrap().lod_manifest().unwrap();
+    assert_eq!(published.world_id.as_deref(), Some("test"));
+    assert_eq!(published.generation, "generation");
+    assert_eq!(json!(published.bounds), source["bounds"]);
+    assert_eq!(json!(published.spawn), source["spawn"]);
+}
+
+#[test]
+fn v2_repair_preserves_newer_live_chunks_and_existing_boundary_rules() {
+    let (dir, mut store) = seeded();
+    let boundary = store.boundary().unwrap();
+    let now = boundary.created_ms + 1;
+    store.ingest(&observation(1, now, 48), now + 1).unwrap();
+    let map = dir.path().join("v2");
+    v2_fixture(&map, 96);
+    assert!(store.seed(&map, None, None).is_err());
+    let repaired = store.seed(&map, None, Some(&boundary)).unwrap();
+    assert_eq!(repaired["newer_live_preserved"], 1);
+    assert_eq!(current_height(&store), 48);
+}
+
+#[test]
+fn failed_v2_seed_publication_rolls_back_identity_chunks_and_lod_queue() {
+    let (dir, mut store) = seeded();
+    let boundary = store.boundary().unwrap();
+    let before = store.manifest().unwrap();
+    let queue = surface_sync::lod_queue::stats(&store.connection, 0).unwrap();
+    let map = dir.path().join("v2");
+    v2_fixture(&map, 96);
+    store.connection.execute_batch("CREATE TRIGGER fail_seed BEFORE UPDATE ON meta
+        WHEN NEW.key='manifest' BEGIN SELECT RAISE(ABORT,'synthetic seed publication failure'); END;").unwrap();
+    assert!(store.seed(&map, None, Some(&boundary)).is_err());
+    assert_eq!(store.manifest().unwrap(), before);
+    assert_eq!(current_height(&store), 16);
+    assert_eq!(
+        surface_sync::lod_queue::stats(&store.connection, 0).unwrap(),
+        queue
+    );
+}
+
+#[test]
+fn v2_seed_rejects_identity_and_rehashed_regional_corruption_without_mutation() {
+    for case in [
+        "world",
+        "generation",
+        "rules",
+        "height",
+        "chunk",
+        "size",
+        "traversal",
+    ] {
+        let dir = TempDir::new().unwrap();
+        let map = dir.path().join("map");
+        let mut manifest = v2_fixture(&map, 16);
+        let save = |bytes: &[u8], extension: &str| {
+            let sha256 = hash(bytes);
+            let url = format!("objects/{sha256}.{extension}");
+            fs::write(map.join(&url), bytes).unwrap();
+            json!({"url":url,"sha256":sha256,"bytes":bytes.len()})
+        };
+        match case {
+            "world" => manifest["world_id"] = json!("other"),
+            "generation" => manifest["generation"] = json!("other"),
+            "rules" => manifest["rules_version"] = json!(999),
+            "size" => manifest["catalog"]["bytes"] = json!(1),
+            "traversal" => manifest["atlas"]["url"] = json!("../atlas.png"),
+            "height" | "chunk" => {
+                let index_url = manifest["regions"][0]["index"]["url"].as_str().unwrap();
+                let mut index: Value =
+                    serde_json::from_slice(&fs::read(map.join(index_url)).unwrap()).unwrap();
+                if case == "height" {
+                    let url = index["heights"]["url"].as_str().unwrap();
+                    let mut raw = surface_core::decompress(
+                        &fs::read(map.join(url)).unwrap(),
+                        surface_core::CELLS * 2,
+                    )
+                    .unwrap();
+                    raw[0] ^= 1;
+                    index["heights"] = save(&zstd::encode_all(raw.as_slice(), 3).unwrap(), "zst");
+                } else {
+                    let url = index["chunks"]["-1,0"]["url"].as_str().unwrap();
+                    let mut chunk = SurfaceChunk::decode(
+                        &surface_core::decompress(&fs::read(map.join(url)).unwrap(), 32768)
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    chunk.columns[0][3] = 0;
+                    index["chunks"]["-1,0"] = save(
+                        &zstd::encode_all(chunk.encode().unwrap().as_slice(), 3).unwrap(),
+                        "zst",
+                    );
+                }
+                manifest["regions"][0]["index"] =
+                    save(&serde_json::to_vec(&index).unwrap(), "json");
+            }
+            _ => unreachable!(),
+        }
+        fs::write(
+            map.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let mut store =
+            Store::open(&dir.path().join("state"), "test", "generation", 1 << 30).unwrap();
+        assert!(store.seed(&map, None, None).is_err(), "{case}");
+        assert!(store.manifest().is_err(), "{case}");
+        assert_eq!(
+            store
+                .connection
+                .query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "{case}"
+        );
+        assert_eq!(
+            fs::read_dir(store.root.join("objects")).unwrap().count(),
+            0,
+            "{case}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn v2_seed_rejects_asset_directory_symlinks() {
+    let dir = TempDir::new().unwrap();
+    let map = dir.path().join("map");
+    v2_fixture(&map, 16);
+    fs::rename(map.join("objects"), map.join("actual-objects")).unwrap();
+    std::os::unix::fs::symlink("actual-objects", map.join("objects")).unwrap();
+    let mut store = Store::open(&dir.path().join("state"), "test", "generation", 1 << 30).unwrap();
+    assert!(store.seed(&map, None, None).is_err());
+    assert!(store.manifest().is_err());
+}
+
 #[test]
 fn lod_queue_tracks_only_content_changes_and_pins_frozen_inputs_during_gc() {
     use surface_core::lod::TileKey;

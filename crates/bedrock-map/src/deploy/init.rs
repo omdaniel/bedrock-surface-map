@@ -128,7 +128,14 @@ pub fn initialize(
             .world_id
             .clone()
             .unwrap_or(format!("world-{}", random_hex()?)),
-        generation: config.features.terrain.then(random_hex).transpose()?,
+        generation: if config.features.terrain {
+            Some(match &config.generation {
+                Some(generation) => generation.clone(),
+                None => random_hex()?,
+            })
+        } else {
+            None
+        },
         uid,
         gid,
         release: release.clone(),
@@ -210,7 +217,16 @@ pub fn load(root: &Path) -> Result<(Config, Lock)> {
             && lock
                 .generation
                 .as_ref()
-                .is_none_or(|g| files::valid_hash(g, 64)),
+                .is_none_or(|g| surface_core::terrain::valid_id(g))
+            && config
+                .generation
+                .as_ref()
+                .is_none_or(|g| lock.generation.as_ref() == Some(g))
+            && (config.generation.is_some()
+                || lock
+                    .generation
+                    .as_ref()
+                    .is_none_or(|g| files::valid_hash(g, 64))),
         "E_STATE_UNSAFE: deployment identity/configuration mismatch"
     );
     let expected = secret_names(&config);

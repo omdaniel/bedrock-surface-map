@@ -9,7 +9,8 @@ use crate::resources::safe_relative;
 
 mod inventory;
 mod lod;
-pub use inventory::validate_inventory;
+pub(crate) use inventory::validate_inventory_snapshot;
+pub use inventory::{validate_inventory, validate_snapshot};
 pub use lod::{ValidatedLod, validate_lod};
 
 #[cfg(test)]
@@ -19,6 +20,15 @@ const MAX_MANIFEST: u64 = 16 * 1024 * 1024;
 const MAX_REGION: u64 = 16 * 1024 * 1024;
 const MAX_ATLAS: u64 = 64 * 1024 * 1024;
 const MAX_HEIGHTS: usize = 32 * 1024 * 1024;
+
+/// Identity shared by legacy and regional snapshots, without terrain arrays.
+#[derive(Debug, serde::Deserialize)]
+pub struct SnapshotIdentity {
+    pub format_version: u32,
+    pub source_sha256: String,
+    pub world_id: Option<String>,
+    pub generation: Option<String>,
+}
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let metadata = fs::symlink_metadata(path)?;
@@ -84,8 +94,9 @@ fn validate_legacy(root: &Path) -> Result<MapManifest> {
         "E_RESOURCE_MISMATCH: unsupported snapshot format"
     );
     ensure!(
-        !manifest.heights.is_empty() && !manifest.regions.is_empty(),
-        "E_RESOURCE_MISMATCH: region-only repair export is not a complete snapshot"
+        !manifest.regions.is_empty()
+            && (manifest.heights.is_empty() == manifest.heights_sha256.is_empty()),
+        "E_RESOURCE_MISMATCH: missing regions or incomplete height reference"
     );
     ensure!(
         !manifest.materials.is_empty() && manifest.materials.len() <= 65_536,
@@ -120,11 +131,15 @@ fn validate_legacy(root: &Path) -> Result<MapManifest> {
             && height % SIDE as i64 == 0
             && min_x % SIDE as i32 == 0
             && min_z % SIDE as i32 == 0
-            && width
-                .checked_mul(height)
-                .is_some_and(|n| n <= 16 * 1024 * 1024),
+            && (manifest.heights.is_empty()
+                || width
+                    .checked_mul(height)
+                    .is_some_and(|n| n <= 16 * 1024 * 1024)),
         "E_RESOURCE_MISMATCH: invalid snapshot bounds"
     );
+    if manifest.heights.is_empty() {
+        surface_core::lod::validate_bounds(manifest.bounds)?;
+    }
     ensure!(
         manifest.spawn[0] >= min_x
             && manifest.spawn[0] < max_x
@@ -142,17 +157,24 @@ fn validate_legacy(root: &Path) -> Result<MapManifest> {
     );
     let atlas = object(root, &manifest.atlas, MAX_ATLAS)?;
     validate_atlas(&atlas)?;
-    let packed_heights = object(root, &manifest.heights, MAX_HEIGHTS as u64)?;
-    ensure!(
-        digest(&packed_heights) == manifest.heights_sha256,
-        "E_RESOURCE_MISMATCH: height checksum mismatch"
-    );
-    let raw_heights = decompress(&packed_heights, MAX_HEIGHTS)?;
-    ensure!(
-        raw_heights.len() == (width * height * 2) as usize,
-        "E_RESOURCE_MISMATCH: height field size mismatch"
-    );
-    let mut expected = vec![MISSING_HEIGHT; (width * height) as usize];
+    let raw_heights = if manifest.heights.is_empty() {
+        None
+    } else {
+        let packed_heights = object(root, &manifest.heights, MAX_HEIGHTS as u64)?;
+        ensure!(
+            digest(&packed_heights) == manifest.heights_sha256,
+            "E_RESOURCE_MISMATCH: height checksum mismatch"
+        );
+        let raw = decompress(&packed_heights, MAX_HEIGHTS)?;
+        ensure!(
+            raw.len() == (width * height * 2) as usize,
+            "E_RESOURCE_MISMATCH: height field size mismatch"
+        );
+        Some(raw)
+    };
+    let mut expected = raw_heights
+        .as_ref()
+        .map(|_| vec![MISSING_HEIGHT; (width * height) as usize]);
     let mut seen = HashSet::new();
     let mut range = [i16::MAX, i16::MIN];
     for reference in &manifest.regions {
@@ -209,9 +231,11 @@ fn validate_legacy(root: &Path) -> Result<MapManifest> {
             );
             range[0] = range[0].min(value);
             range[1] = range[1].max(value);
-            let gx = (x - i64::from(min_x)) as usize + index % SIDE;
-            let gz = (z - i64::from(min_z)) as usize + index / SIDE;
-            expected[gz * width as usize + gx] = value;
+            if let Some(expected) = &mut expected {
+                let gx = (x - i64::from(min_x)) as usize + index % SIDE;
+                let gz = (z - i64::from(min_z)) as usize + index / SIDE;
+                expected[gz * width as usize + gx] = value;
+            }
         }
         ensure!(
             columns == reference.columns,
@@ -222,13 +246,15 @@ fn validate_legacy(root: &Path) -> Result<MapManifest> {
         range == manifest.height_range,
         "E_RESOURCE_MISMATCH: height range mismatch"
     );
-    ensure!(
-        expected
-            .iter()
-            .zip(raw_heights.chunks_exact(2))
-            .all(|(expected, bytes)| *expected == i16::from_le_bytes([bytes[0], bytes[1]])),
-        "E_RESOURCE_MISMATCH: region and height field disagree"
-    );
+    if let (Some(expected), Some(raw_heights)) = (expected, raw_heights) {
+        ensure!(
+            expected
+                .iter()
+                .zip(raw_heights.chunks_exact(2))
+                .all(|(expected, bytes)| *expected == i16::from_le_bytes([bytes[0], bytes[1]])),
+            "E_RESOURCE_MISMATCH: region and height field disagree"
+        );
+    }
     Ok(manifest)
 }
 

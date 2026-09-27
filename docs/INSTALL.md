@@ -59,6 +59,20 @@ raw world, run:
 ./bedrock-map prepare-lod --state ./map-data --replace-active
 ```
 
+To select an existing derived snapshot directory first:
+
+```sh
+./bedrock-map register --state ./map-data \
+  --snapshot /path/to/surface-snapshot --replace-active
+./bedrock-map prepare-lod --state ./map-data --replace-active
+```
+
+Registration accepts verified v1 snapshots, including region-only exports, and
+current-state v2 snapshots. It copies only a validated complete asset closure;
+unlisted files, invalid hashes and inconsistent surface data are rejected. It
+does not import a raw world or allocate a world-sized height field for regional
+input. The original directory remains unchanged.
+
 Conversion registers a new immutable dataset and preserves the original. Its
 default generated-object budget is 2 GiB; `--max-output-bytes` sets an explicit
 budget for this command. A failed conversion leaves the selected dataset intact.

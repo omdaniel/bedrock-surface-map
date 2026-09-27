@@ -17,7 +17,8 @@ acceptance are separate from passing synthetic CI.
   with its adjacent `deployment-release.json`. That file pairs published runtime
   and gateway image digests with the bundle's source/common-resource identity.
   A snapshot-only archive or an unpublished OCI candidate is not this bundle.
-- A consistent offline BDS world archive and explicitly obtained compatible
+- A consistent offline BDS world archive or verified derived surface snapshot,
+  and explicitly obtained compatible
   texture assets. Never point the importer at a running world database.
 - A dedicated DNS hostname whose A record reaches this map host, incoming TCP
   80/443 (including any NAT forwarding), and persistent Caddy certificate storage.
@@ -60,6 +61,14 @@ Alternatively supply a compatible local asset ZIP with `import --assets`; use
 that same archive for `deploy prepare --assets`. The bundled synthetic demo is
 not a substitute for an imported Bedrock seed. See [snapshot installation](INSTALL.md).
 
+For an existing derived snapshot, use `bedrock-map register --state ./map-data
+--snapshot /path/to/surface-snapshot` instead of `import`. Both v1 region-only
+exports and v2 current-state snapshots are accepted without raw-world access.
+For v2, set `world_id` and `generation` in the top level of `deployment.toml`
+to the snapshot's exact identities; preparation rejects a mismatch. Omitting
+these settings creates new identities suitable for a v1 seed, not an unrelated
+v2 snapshot.
+
 Preparation derives LOD from the selected surface snapshot when necessary and
 publishes the live seed's initial hierarchy before sealing its file inventories.
 The generated viewer uses this hierarchy automatically, with the same world and
@@ -88,6 +97,14 @@ Both feeds default to disabled; select at least one. Disabled services, secrets,
 routes and viewer bindings are omitted. Ingest ports default to 18082 (terrain)
 and 18081 (players); `[ports]` can explicitly change them. The public origin must
 be lowercase HTTPS with no path, port, trailing slash or credentials.
+
+The top-level `terrain_store_limit_bytes` sets the derived terrain store quota
+for both preparation and runtime. It defaults to 2,147,483,648 bytes (2 GiB) and
+accepts a positive integer through 9,223,372,036,854,775,807. Choose sufficient
+disk capacity for the snapshot and hierarchy before initialization; large-world
+client support does not imply the default server quota fits every dataset.
+The sealed preparation records this setting and rejects a different runtime
+quota. This is separate from `prepare-lod --max-output-bytes`.
 
 Optional `[terrain_pack]` settings control the generated BDS module variables:
 `view_distance` is the chunk discovery radius (4-16, default 16), and
