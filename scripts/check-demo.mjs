@@ -58,34 +58,35 @@ try {
   // than the first terrain event to finish loading the initial exact cut.
   await page.getByRole("button", { name: "Pause demo", exact: true }).click();
   await page.getByRole("button", { name: "Restart demo", exact: true }).click();
-  await page.waitForFunction(
-    () =>
-      window.__map?.ready &&
-      window.__map.state().cached > 0 &&
-      window.__map.state().pending === 0,
-    {},
-    { timeout: coldTimeout },
-  );
+  const settledRevision = (
+    minimum,
+    timeout = process.env.CI || localSoftware ? 180000 : 30000,
+  ) =>
+    page.waitForFunction(
+      (revision) => {
+        const state = window.__map?.state();
+        const lod = state?.lod;
+        return (
+          window.__map?.ready &&
+          state.cached > 0 &&
+          lod?.live?.revision >= revision &&
+          state.pending === 0 &&
+          state.renderPending === false &&
+          lod.pending === 0 &&
+          lod.activeKind === null &&
+          lod.queuedUpload === false &&
+          lod.preparations === 0 &&
+          lod.gpuPending === 0 &&
+          lod.retiringBytes === 0
+        );
+      },
+      minimum,
+      { timeout },
+    );
+  await settledRevision(0, coldTimeout);
   const coldRefinementMs = performance.now() - coldStarted;
   await page.waitForSelector(".player-marker");
-  await page.waitForTimeout(2400);
   const initial = await page.evaluate(() => window.__map.state());
-  const settledRevision = (minimum) =>
-    page.waitForFunction((revision) => {
-      const state = window.__map?.state();
-      const lod = state?.lod;
-      return (
-        lod?.live?.revision >= revision &&
-        state.pending === 0 &&
-        state.renderPending === false &&
-        lod.pending === 0 &&
-        lod.activeKind === null &&
-        lod.queuedUpload === false &&
-        lod.preparations === 0 &&
-        lod.gpuPending === 0 &&
-        lod.retiringBytes === 0
-      );
-    }, minimum);
   const initialHttpBodyBytes = (await Promise.all(responses)).reduce(
     (a, b) => a + b,
     0,
