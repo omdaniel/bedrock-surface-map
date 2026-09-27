@@ -65,6 +65,22 @@ try {
   await page.waitForSelector(".player-marker");
   await page.waitForTimeout(2400);
   const initial = await page.evaluate(() => window.__map.state());
+  const settledRevision = (minimum) =>
+    page.waitForFunction((revision) => {
+      const state = window.__map?.state();
+      const lod = state?.lod;
+      return (
+        lod?.live?.revision >= revision &&
+        state.pending === 0 &&
+        state.renderPending === false &&
+        lod.pending === 0 &&
+        lod.activeKind === null &&
+        lod.queuedUpload === false &&
+        lod.preparations === 0 &&
+        lod.gpuPending === 0 &&
+        lod.retiringBytes === 0
+      );
+    }, minimum);
   const initialHttpBodyBytes = (await Promise.all(responses)).reduce(
     (a, b) => a + b,
     0,
@@ -113,11 +129,7 @@ try {
   const pos = await page.locator(".player-detail").first().innerText();
   await page.clock.fastForward(11000);
   await page.waitForTimeout(1000);
-  await page.waitForFunction(
-    () =>
-      window.__map.state().lod?.live?.revision > 1 &&
-      window.__map.state().pending === 0,
-  );
+  await settledRevision(initial.lod.live.revision + 1);
   const built = await page.evaluate(() => window.__map.state());
   await pickSite(67, "oak planks");
   const builtPixels = PNG.sync.read(await page.locator("canvas").screenshot());
@@ -132,6 +144,7 @@ try {
   await page.screenshot({ path: `${output}/construction.png` });
   await page.clock.fastForward(16000);
   await page.waitForTimeout(1000);
+  await settledRevision(built.lod.live.revision + 1);
   const opened = await page.evaluate(() => window.__map.state());
   assert.ok(opened.lod.live.revision > built.lod.live.revision);
   await pickSite(64, "sand");
@@ -145,11 +158,14 @@ try {
     await page.clock.fastForward(15000);
     await page.waitForTimeout(300);
   }
+  // Virtual time advances the scenario, not asynchronous transport/GPU work.
+  await settledRevision(9);
   const looped = await page.evaluate(() => window.__map.state());
   assert.ok(looped.lod.live.revision >= 9, "two loops");
   await page.getByRole("button", { name: "Restart demo", exact: true }).click();
   await page.clock.fastForward(2100);
   await page.waitForTimeout(500);
+  await settledRevision(looped.lod.live.revision + 1);
   assert.ok(
     (await page.evaluate(() => window.__map.state())).lod.live.revision >
       looped.lod.live.revision,
