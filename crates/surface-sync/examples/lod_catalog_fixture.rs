@@ -18,6 +18,15 @@ use surface_sync::{
 };
 
 const LIMIT: u64 = 64 * 1024 * 1024;
+// Original 16x16 opaque pink pixels ([232, 48, 176, 255]), encoded as PNG.
+// No Minecraft assets, image dependency, or generated large fixture is needed.
+const REPLACEMENT_ATLAS: &[u8] = &[
+    137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 16, 0, 0, 0, 16, 8, 6,
+    0, 0, 0, 31, 243, 255, 97, 0, 0, 0, 47, 73, 68, 65, 84, 120, 1, 165, 193, 1, 1, 0, 32, 12, 128,
+    48, 78, 34, 163, 27, 203, 22, 62, 4, 219, 188, 115, 63, 129, 68, 18, 73, 36, 145, 68, 18, 73,
+    36, 145, 68, 18, 73, 36, 145, 68, 18, 73, 180, 134, 209, 2, 231, 104, 78, 150, 242, 0, 0, 0, 0,
+    73, 69, 78, 68, 174, 66, 96, 130,
+];
 type Shared = Arc<Mutex<Store>>;
 
 fn read(root: &Path, reference: &ObjectRef, limit: usize) -> Result<Vec<u8>> {
@@ -443,7 +452,123 @@ fn main() -> Result<()> {
         previous = grown;
         previous_materials = grown_materials;
     }
-    let report = serde_json::json!({"probe": probe, "revisions": revisions, "nodes": old.len(), "changed_coarse": changed_coarse, "audited": ["hashes", "chunk/detail", "catalog/summary", "height/range", "append-prefix", "unchanged-fine", "catalog-page-boundary", "stable-material-ids", "unchanged-boundary-terrain"]});
+    let restored_materials = previous_materials.clone();
+    let restored = previous.clone();
+    let mut replacement_materials = restored_materials.clone();
+    for material in replacement_materials.iter_mut().skip(1) {
+        material.texture = "synthetic:original-pink-atlas".into();
+        material.average = [232. / 255., 48. / 255., 176. / 255., 1.];
+    }
+    let library = temporary.path().join("atlas-library");
+    fs::create_dir(&library)?;
+    fs::write(library.join("atlas.png"), REPLACEMENT_ATLAS)?;
+    fs::write(
+        library.join("library.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "atlas": "atlas.png", "materials": replacement_materials,
+        }))?,
+    )?;
+    // Seed owns the replacement object's hash/length. Only fixture inputs are
+    // injected below: there is no public atlas-repair API. Never patch manifests,
+    // catalog pages, summary colors, queue rows, or publication revisions.
+    let mut asset_store = Store::open(
+        &temporary.path().join("atlas-state"),
+        "fixture-world",
+        "fixture-generation",
+        LIMIT,
+    )?;
+    asset_store.seed(&map, Some(&library), None)?;
+    let replacement_atlas: ObjectRef =
+        serde_json::from_value(asset_store.manifest()?["atlas"].clone())?;
+    let bytes = read(&asset_store.root, &replacement_atlas, MAX_ATLAS_BYTES)?;
+    fs::copy(
+        asset_store.root.join(&replacement_atlas.url),
+        state.join(&replacement_atlas.url),
+    )?;
+    ensure!(bytes == REPLACEMENT_ATLAS, "replacement seed atlas");
+    drop(asset_store);
+    fs::remove_dir_all(temporary.path().join("atlas-state"))?;
+    fs::remove_dir_all(&library)?;
+    let mut atlas_revisions = vec![restored.revision];
+    let mut atlas_changed_coarse = Vec::new();
+    for (stage, atlas, descriptors) in [
+        (5, &replacement_atlas, &replacement_materials),
+        (6, &restored.atlas, &restored_materials),
+    ] {
+        {
+            let mut store = store.lock().unwrap();
+            let tx = store.connection.transaction()?;
+            ensure!(
+                tx.execute(
+                    "UPDATE meta SET value=?1 WHERE key='atlas'",
+                    [serde_json::to_string(atlas)?],
+                )? == 1,
+                "fixture atlas input"
+            );
+            for descriptor in descriptors.iter().skip(1) {
+                ensure!(
+                    tx.execute(
+                        "UPDATE templates SET material=?1 WHERE name=?2",
+                        [serde_json::to_string(descriptor)?, descriptor.name.clone()],
+                    )? == 1,
+                    "fixture atlas template"
+                );
+            }
+            tx.commit()?;
+            ensure!(
+                store.refresh_catalog()? == descriptors.len() - 1,
+                "atlas descriptor refresh"
+            );
+            ensure!(
+                store.lod_manifest()? == previous,
+                "atlas exposed unfinished LOD epoch"
+            );
+        }
+        let next = snapshot(&store, &mut publisher, temporary.path(), stage)?;
+        let (next_materials, next_nodes) = audit(&state, &next)?;
+        ensure!(
+            serde_json::to_vec(&next_materials)? == serde_json::to_vec(descriptors)?,
+            "atlas catalog descriptors/IDs"
+        );
+        ensure!(
+            next.atlas == *atlas
+                && next.atlas != previous.atlas
+                && next.catalog != previous.catalog
+                && next.material_count == restored.material_count
+                && next.bounds == restored.bounds
+                && next.height_range == restored.height_range
+                && next.world_id == restored.world_id
+                && next.generation == restored.generation
+                && next.source_sha256 == restored.source_sha256
+                && next.appearance_version == restored.appearance_version
+                && next.revision > previous.revision,
+            "atlas epoch identity/appearance/revision"
+        );
+        let (_, previous_nodes) = audit(&state, &previous)?;
+        ensure!(next_nodes.len() == previous_nodes.len(), "atlas graph size");
+        let mut coarse = BTreeSet::new();
+        for (key, node) in &previous_nodes {
+            let newer = &next_nodes[key];
+            ensure!(node.height == newer.height, "atlas changed heights");
+            if key.level == 0 {
+                ensure!(node == newer, "atlas changed exact terrain/chunks");
+            } else if node.data != newer.data {
+                coarse.insert(newer.data.url.clone());
+            }
+        }
+        ensure!(
+            !coarse.is_empty(),
+            "atlas did not rebuild coarse appearance"
+        );
+        atlas_changed_coarse.push(coarse);
+        atlas_revisions.push(next.revision);
+        previous = next;
+    }
+    ensure!(
+        previous.roots == restored.roots && previous.catalog == restored.catalog,
+        "atlas restoration did not reproduce canonical appearance"
+    );
+    let report = serde_json::json!({"probe": probe, "revisions": revisions, "atlas_revisions": atlas_revisions, "atlas_changed_coarse": atlas_changed_coarse, "nodes": old.len(), "changed_coarse": changed_coarse, "audited": ["hashes", "chunk/detail", "catalog/summary", "height/range", "append-prefix", "unchanged-fine", "catalog-page-boundary", "stable-material-ids", "unchanged-boundary-terrain", "atlas-replacement", "atlas-restoration"]});
     fs::write(
         temporary.path().join("report.json"),
         serde_json::to_vec_pretty(&report)?,

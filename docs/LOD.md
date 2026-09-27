@@ -215,7 +215,12 @@ The catalog fixture audits immutable objects, exact chunks, height pages and
 summary colors against the published material descriptors. The browser check
 exercises append-only catalog growth through the 256-descriptor page boundary,
 descriptor reconstruction, temporary root failure and independent player updates.
-It does not replace atlas-replacement or real-server acceptance checks.
+The separate atlas case replaces an original synthetic PNG and matching material
+averages, then restores the prior appearance through Store/Publisher roots. It
+holds atlas, coarse and fine responses to check coarse-first reconstruction,
+unchanged exact terrain/IDs/heights, camera/picking/player continuity, bounded
+memory and completed retirement. Atlas/template inputs use fixture-only database
+setup; this is not an operator atlas-repair API or real-server acceptance.
 
 Native GPU tests require a wgpu adapter. Synthetic browser tests check rendering,
 retirement, constrained admission, malformed responses and navigation recovery.

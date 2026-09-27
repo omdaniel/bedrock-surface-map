@@ -20,6 +20,8 @@ const report: {
   revisions: number[];
   nodes: number;
   changed_coarse: string[];
+  atlas_revisions: number[];
+  atlas_changed_coarse: string[][];
 } = json("report.json");
 const object = (url: string) => {
   if (!/^objects\/[a-f0-9]{64}\.(json|zst|png)$/.test(url))
@@ -53,6 +55,405 @@ const camera = (value: State) => ({
   vivid: value.vivid,
   reliefStrength: value.reliefStrength,
   reliefWidth: value.reliefWidth,
+});
+
+test("native atlas replacement adopts one appearance epoch, preserves camera/picking/players, and retires on restoration", async ({
+  page,
+}, info) => {
+  test.setTimeout(180_000);
+  const epochs: LodManifest[] = [4, 5, 6].map((stage) =>
+    json(`lod-${stage}.json`),
+  );
+  expect(epochs.map((root) => root.revision)).toEqual(report.atlas_revisions);
+  const verified = (reference: {
+    url: string;
+    bytes: number;
+    sha256: string;
+  }) => {
+    const bytes = object(reference.url);
+    expect(bytes.length).toBe(reference.bytes);
+    expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+      reference.sha256,
+    );
+    return bytes;
+  };
+  const graphs = epochs.map((root) => {
+    const nodes = new Map<string, LodNode>();
+    const visit = (reference: NodeRef) => {
+      const node: LodNode = JSON.parse(verified(reference.index).toString());
+      expect(node.key).toEqual(reference.key);
+      nodes.set(`${node.key.level}/${node.key.x}/${node.key.z}`, node);
+      verified(node.data);
+      verified(node.height);
+      node.chunks?.forEach(verified);
+      node.children.forEach(visit);
+    };
+    root.roots.forEach(visit);
+    expect(nodes.size).toBe(report.nodes);
+    verified(root.atlas);
+    return nodes;
+  });
+  const catalogs = epochs.map((root) =>
+    root.catalog.flatMap((catalog) => {
+      const descriptors: Material[] = JSON.parse(verified(catalog).toString());
+      expect(descriptors.length).toBe(catalog.count);
+      return descriptors;
+    }),
+  );
+  const pink = PNG.sync.read(object(epochs[1].atlas.url));
+  expect([pink.width, pink.height]).toEqual([16, 16]);
+  for (let i = 0; i < pink.data.length; i += 4)
+    expect([...pink.data.subarray(i, i + 4)]).toEqual([232, 48, 176, 255]);
+  for (const next of [1, 2]) {
+    expect(epochs[next].atlas).not.toEqual(epochs[next - 1].atlas);
+    expect(epochs[next].catalog).not.toEqual(epochs[next - 1].catalog);
+    for (const field of [
+      "world_id",
+      "generation",
+      "source_sha256",
+      "appearance_version",
+      "material_count",
+      "bounds",
+      "height_range",
+    ] as const)
+      expect(epochs[next][field]).toEqual(epochs[0][field]);
+    expect(
+      catalogs[next].map((m) => [m.key, m.name, m.uv, m.tint, m.approximate]),
+    ).toEqual(
+      catalogs[0].map((m) => [m.key, m.name, m.uv, m.tint, m.approximate]),
+    );
+    const changed: string[] = [];
+    for (const [key, node] of graphs[next - 1]) {
+      const newer = graphs[next].get(key)!;
+      expect(newer.height).toEqual(node.height);
+      if (!node.key.level) expect(newer).toEqual(node);
+      else if (newer.data.url !== node.data.url) changed.push(newer.data.url);
+    }
+    expect(changed.sort()).toEqual(
+      [...report.atlas_changed_coarse[next - 1]].sort(),
+    );
+    expect(changed.length).toBeGreaterThan(0);
+  }
+  expect(epochs[2].atlas).toEqual(epochs[0].atlas);
+  expect(epochs[2].roots).toEqual(epochs[0].roots);
+  expect(catalogs[2]).toEqual(catalogs[0]);
+  // Every used non-sentinel average describes the replacement's actual pixels.
+  for (const material of catalogs[1].slice(1))
+    material.average.forEach((channel, i) =>
+      expect(channel).toBeCloseTo([232 / 255, 48 / 255, 176 / 255, 1][i], 6),
+    );
+
+  const fineUrls = new Set(
+    [...graphs[0].values()]
+      .filter((node) => !node.key.level)
+      .map((node) => node.data.url),
+  );
+  function gate() {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release, reads: 0 };
+  }
+  let stage = 0,
+    playerSequence = 0,
+    playerX = report.probe.x + 30;
+  let atlasGate = gate(),
+    coarseGate = gate(),
+    fineGate = gate();
+  const requests: string[] = [],
+    errors: string[] = [];
+  let navigations = 0;
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) navigations++;
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+  const api = "/api/v1/worlds/fixture-world/terrain";
+  const player = JSON.parse(
+    readFileSync("fixtures/tracking/snapshot.json", "utf8"),
+  );
+  await page.route("**/viewer-config.json", (route) =>
+    route.fulfill({
+      json: {
+        terrain: {
+          lod_url: `${api}/lod.json`,
+          url: `${api}/manifest.json`,
+          world_id: "fixture-world",
+          generation: "fixture-generation",
+        },
+        players: {
+          url: "/api/v1/worlds/fixture-world/players",
+          world_id: "fixture-world",
+          generation: "fixture-generation",
+          source_sha256: epochs[0].source_sha256,
+        },
+      },
+    }),
+  );
+  await page.route("**/api/v1/worlds/fixture-world/players", (route) => {
+    const snapshot = structuredClone(player);
+    snapshot.sequence = ++playerSequence;
+    snapshot.sampled_at_ms = Date.now();
+    snapshot.players[0].position = {
+      x: playerX,
+      y: 64,
+      z: report.probe.z,
+      heading: 90,
+    };
+    return route.fulfill({
+      json: {
+        schema_version: 1,
+        world_id: "fixture-world",
+        status: "live",
+        reason: null,
+        age_ms: 0,
+        snapshot,
+      },
+    });
+  });
+  await page.route(
+    "**/api/v1/worlds/fixture-world/terrain/**",
+    async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      requests.push(path);
+      if (path.endsWith("/status"))
+        return route.fulfill({ json: json(`health-${stage + 4}.json`) });
+      if (path.endsWith("/lod.json")) {
+        const etag = `"native-atlas-${epochs[stage].revision}"`;
+        return route.request().headers()["if-none-match"] === etag
+          ? route.fulfill({ status: 304, headers: { ETag: etag } })
+          : route.fulfill({ json: epochs[stage], headers: { ETag: etag } });
+      }
+      const url = `objects/${path.split("/").at(-1)}`;
+      if (stage > 0) {
+        const blocked =
+          url === epochs[stage].atlas.url
+            ? atlasGate
+            : report.atlas_changed_coarse[stage - 1].includes(url)
+              ? coarseGate
+              : fineUrls.has(url)
+                ? fineGate
+                : null;
+        if (blocked) {
+          blocked.reads++;
+          await blocked.promise;
+        }
+      }
+      return route.fulfill({
+        body: object(url),
+        contentType: url.endsWith(".json")
+          ? "application/json"
+          : url.endsWith(".png")
+            ? "image/png"
+            : "application/octet-stream",
+      });
+    },
+  );
+  const evidence = [];
+  try {
+    await page.goto("/");
+    await page.waitForFunction(() => window.__map?.ready);
+    await page.evaluate(({ x, z }) => {
+      const value = window.__map.state();
+      window.__map.pan(x + 0.5 - value.cx, z + 0.5 - value.cz);
+      window.__map.zoom(6 / window.__map.state().scale);
+    }, report.probe);
+    await page
+      .getByRole("button", { name: "Lighting and color", exact: true })
+      .click();
+    await page
+      .getByRole("slider", { name: "Sun elevation", exact: true })
+      .evaluate((element: HTMLInputElement) => {
+        element.value = "65";
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    await page
+      .getByRole("button", { name: "Lighting and color", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Players", exact: true }).click();
+    await expect(page.locator(".players-status")).toHaveText("1 online");
+    const baseline = await settled(page, epochs[0].revision, 0);
+    await pick(page, true);
+    const baselinePixels = await pixels(page);
+    await page.evaluate(() => {
+      const sampling = {
+        timer: 0,
+        samples: 0,
+        maxMemory: 0,
+        maxLedgerPeak: 0,
+        revisions: [] as number[],
+      };
+      (window as SamplingWindow).__catalogAcceptance = sampling;
+      sampling.timer = window.setInterval(() => {
+        const value = window.__map.state();
+        sampling.samples++;
+        sampling.maxMemory = Math.max(sampling.maxMemory, value.memory);
+        sampling.maxLedgerPeak = Math.max(
+          sampling.maxLedgerPeak,
+          value.lod?.memory.peakBytes ?? 0,
+        );
+        const revision = value.lod?.live?.revision;
+        if (revision !== undefined && sampling.revisions.at(-1) !== revision)
+          sampling.revisions.push(revision);
+      }, 20);
+    });
+    let previousPixels = baselinePixels;
+    for (const next of [1, 2]) {
+      atlasGate = gate();
+      coarseGate = gate();
+      fineGate = gate();
+      const requestsBefore = requests.length;
+      stage = next;
+      await expect
+        .poll(() => atlasGate.reads, { timeout: 30_000 })
+        .toBeGreaterThan(0);
+      const unavailable = await state(page);
+      expect(unavailable.lod).toBeNull();
+      expect(await page.evaluate(() => window.__map.ready)).toBe(false);
+      expect(camera(unavailable)).toEqual(camera(baseline));
+      const box = (await page.locator("#map").boundingBox())!;
+      await page.mouse.move(
+        box.x + box.width / 2 + 2,
+        box.y + box.height / 2 + 2,
+      );
+      await expect(page.locator("#inspect")).toBeHidden();
+      // Player polling and projection continue even while no terrain view exists.
+      const playerBefore = playerSequence;
+      playerX += 1;
+      await expect.poll(() => playerSequence).toBeGreaterThan(playerBefore);
+      await expect(page.locator(".player-detail")).toContainText(
+        `${Math.floor(playerX)}, 64,`,
+      );
+      await expect(page.locator(".player-marker")).toHaveCount(1);
+      await expect(page.locator(".player-marker")).toBeVisible();
+      expect(camera(await state(page))).toEqual(camera(baseline));
+      atlasGate.release();
+      await expect
+        .poll(() => coarseGate.reads, { timeout: 30_000 })
+        .toBeGreaterThan(0);
+      const loading = await state(page);
+      expect(loading.lod!.live!.revision).toBe(epochs[next].revision);
+      expect(loading.lod!.firstVisible).toBeNull();
+      expect(loading.lod!.cut).toEqual([]);
+      expect(loading.lod!.previousCut).toEqual([]);
+      expect(camera(loading)).toEqual(camera(baseline));
+      bounded(loading);
+      coarseGate.release();
+      await expect
+        .poll(() => fineGate.reads, { timeout: 30_000 })
+        .toBeGreaterThan(0);
+      await page.waitForFunction((revision) => {
+        const value = window.__map.state(),
+          lod = value.lod;
+        return (
+          lod?.live?.revision === revision &&
+          lod.firstVisible !== null &&
+          lod.cut.length > 0 &&
+          lod.cut.every((key) => !key.startsWith("0/")) &&
+          !lod.gpuPending &&
+          !value.renderPending
+        );
+      }, epochs[next].revision);
+      const coarseOnly = await state(page);
+      expect(
+        coarseOnly.lod!.previousCut.every((key) => !key.startsWith("0/")),
+      ).toBe(true);
+      bounded(coarseOnly);
+      const coarsePixels = await pixels(page);
+      // The centered stone patch is green in the prior descriptor epoch and
+      // pink in the new atlas epoch. Check both interim coarse and final fine.
+      const appearance = (bytes: Buffer) => {
+        const image = PNG.sync.read(bytes);
+        const offset =
+          (Math.floor(image.height / 2) * image.width +
+            Math.floor(image.width / 2)) *
+          4;
+        const [r, g, b] = image.data.subarray(offset, offset + 3);
+        if (next === 1) {
+          expect(r).toBeGreaterThan(g * 1.4);
+          expect(b).toBeGreaterThan(g * 1.4);
+        } else expect(g).toBeGreaterThan(r * 1.4);
+      };
+      appearance(coarsePixels);
+      await info.attach(`atlas-${next}-coarse-before-fine`, {
+        body: coarsePixels,
+        contentType: "image/png",
+      });
+      fineGate.release();
+      const fine = await settled(page, epochs[next].revision, 0);
+      expect(camera(fine)).toEqual(camera(baseline));
+      await pick(page, true);
+      const finePixels = await pixels(page);
+      if (next === 1) appearance(finePixels);
+      expect(pixelChanges(previousPixels, finePixels)).toBeGreaterThan(100);
+      if (next === 2) expect(pixelChanges(baselinePixels, finePixels)).toBe(0);
+      expect(fine.lod!.retiringBytes).toBe(0);
+      expect(
+        fine
+          .lod!.memory.entries.filter(
+            (entry) => entry.category === "retirement",
+          )
+          .reduce((sum, entry) => sum + entry.capacityBytes, 0),
+      ).toBe(0);
+      if (next === 2)
+        expect(fine.lod!.memory.totalBytes).toBeLessThanOrEqual(
+          baseline.lod!.memory.totalBytes + 1024 * 1024,
+        );
+      await expect(page.locator(".local-state")).toHaveText("Terrain live");
+      const objectRequests = requests.slice(requestsBefore);
+      expect(objectRequests).toContain(`${api}/${epochs[next].atlas.url}`);
+      expect(objectRequests).not.toContain(
+        `${api}/${epochs[next - 1].atlas.url}`,
+      );
+      evidence.push({
+        revision: epochs[next].revision,
+        atlasReads: atlasGate.reads,
+        coarseReads: coarseGate.reads,
+        fineReads: fineGate.reads,
+        coarseCut: coarseOnly.lod!.cut,
+        fineCut: fine.lod!.cut,
+        peakBytes: fine.lod!.memory.peakBytes,
+        memory: fine.memory,
+        retiringBytes: fine.lod!.retiringBytes,
+        objectRequests,
+      });
+      await info.attach(`atlas-${next}-fine`, {
+        body: finePixels,
+        contentType: "image/png",
+      });
+      previousPixels = finePixels;
+    }
+    const sampling = await page.evaluate(() => {
+      const sampling = (window as SamplingWindow).__catalogAcceptance!;
+      clearInterval(sampling.timer);
+      return sampling;
+    });
+    expect(sampling.revisions).toEqual(report.atlas_revisions);
+    expect(sampling.samples).toBeGreaterThan(0);
+    expect(sampling.maxMemory).toBeLessThanOrEqual(200_000_000);
+    expect(sampling.maxLedgerPeak).toBeLessThanOrEqual(200_000_000);
+    expect(navigations).toBe(1);
+    expect(errors).toEqual([]);
+    await info.attach("atlas-acceptance", {
+      body: JSON.stringify(
+        {
+          revisions: report.atlas_revisions,
+          camera: camera(baseline),
+          navigations,
+          sampling,
+          evidence,
+        },
+        null,
+        2,
+      ),
+      contentType: "application/json",
+    });
+  } finally {
+    atlasGate.release();
+    coarseGate.release();
+    fineGate.release();
+    await page.unrouteAll({ behavior: "wait" });
+  }
 });
 function bounded(value: State) {
   expect(value.memory).toBeLessThanOrEqual(200_000_000);
