@@ -746,6 +746,26 @@ export class LodView {
           : this.tiles.get(id);
     return record?.hash === demand.ref.sha256;
   }
+  private scheduleRetry() {
+    clearTimeout(this.retryTimer);
+    this.retryTimer = undefined;
+    if (this.disposed || document.hidden) return;
+    const now = performance.now();
+    let deadline = Infinity;
+    for (const [id, failure] of this.failed) {
+      const demand = this.demands.get(id);
+      if (demand && !this.has(demand) && failure.until > now)
+        deadline = Math.min(deadline, failure.until);
+    }
+    if (!Number.isFinite(deadline)) return;
+    this.retryTimer = setTimeout(
+      () => {
+        this.retryTimer = undefined;
+        this.plan();
+      },
+      Math.max(1, deadline - now),
+    );
+  }
   private async loadNext() {
     if (this.disposed || document.hidden || this.active || this.adoptingRoot)
       return;
@@ -760,6 +780,7 @@ export class LodView {
           (this.failed.get(id)?.until ?? 0) <= performance.now(),
       )
       .sort((a, b) => a[1].priority - b[1].priority);
+    this.scheduleRetry();
     const job = wanted[0];
     if (!job) return;
     const [id, demand] = job;
@@ -881,8 +902,6 @@ export class LodView {
         });
         this.notify("Terrain detail delayed; retaining available coverage");
         if (/HTTP (404|410)/.test(String(error))) this.live?.refresh();
-        clearTimeout(this.retryTimer);
-        this.retryTimer = setTimeout(() => this.plan(), 2000);
       }
     } finally {
       this.ledger.release("job");

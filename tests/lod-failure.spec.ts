@@ -425,6 +425,8 @@ test.describe("LOD failures with real synthetic payload references", () => {
           )
           .toBe(true);
         await responsiveCoarse(page, detail.anchor);
+        // Exercise the longer second backoff, not only the first retry.
+        await expect.poll(() => hits, { timeout: 15_000 }).toBeGreaterThan(1);
         await attachCanvas(page, info, `${failure}-coarse-coverage`);
         active = false;
         await recovered(page, detail.anchor);
