@@ -174,9 +174,14 @@ try {
       });
       const failures = [];
       const errors = [];
+      const consoleErrors = [];
       const loaded = [];
       page.on("requestfailed", (request) => failures.push(request.url()));
       page.on("pageerror", (error) => errors.push(String(error)));
+      page.on("console", (message) => {
+        if (message.type() === "error" && consoleErrors.length < 16)
+          consoleErrors.push(message.text().slice(0, 2048));
+      });
       page.on("response", (response) =>
         loaded.push({ url: response.url(), status: response.status() }),
       );
@@ -288,7 +293,13 @@ try {
           })
           .catch((cause) => ({ error: String(cause) }));
         console.error(
-          JSON.stringify({ mount: basePath, diagnostic, errors, failures }),
+          JSON.stringify({
+            mount: basePath,
+            diagnostic,
+            errors,
+            consoleErrors,
+            failures,
+          }),
         );
         throw error;
       } finally {

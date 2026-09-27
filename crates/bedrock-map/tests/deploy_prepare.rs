@@ -715,7 +715,13 @@ fn firewall_recipe_is_scoped_syntactically_valid_and_never_automatically_applied
 #[test]
 fn feature_combinations_match_mounts_routes_and_world_module_ids() {
     for (terrain, players) in [(true, false), (false, true), (true, true)] {
-        let f = Fixture::new(terrain, players);
+        let f = Fixture::with_options(
+            terrain,
+            players,
+            false,
+            None,
+            terrain.then_some(("world-80818082", "fixture-generation")),
+        );
         let p = f.prepare().unwrap();
         let config: Value = serde_json::from_slice(
             &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
@@ -768,7 +774,19 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         assert_eq!(caddy.contains("terrain:8111"), terrain);
         assert_eq!(caddy.contains("manifest\\.json|lod\\.json|status"), terrain);
         assert_eq!(caddy.contains("players:8110"), players);
-        assert!(!caddy.contains("8081") && !caddy.contains("8082") && !caddy.contains("ingest"));
+        let upstreams: Vec<_> = caddy
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                (words.next() == Some("reverse_proxy")).then(|| words.next().unwrap())
+            })
+            .collect();
+        let expected: Vec<_> = [(players, "players:8110"), (terrain, "terrain:8111")]
+            .into_iter()
+            .filter_map(|(enabled, address)| enabled.then_some(address))
+            .collect();
+        assert_eq!(upstreams, expected);
+        assert!(!caddy.contains("ingest"));
         for service in compose["services"].as_object().unwrap().values() {
             assert!(service.get("depends_on").is_none());
             assert_eq!(service["read_only"], true);
