@@ -266,6 +266,8 @@ test.describe("LOD bounded residency over repeated navigation", () => {
   test("repeated lighting and zoom reversals drain retirement and stop terrain frames", async ({
     page,
   }) => {
+    if (process.env.CI || process.env.SURFACE_CI_LOCAL_SOFTWARE === "1")
+      test.setTimeout(360_000);
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await openCoarse(page);
