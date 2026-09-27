@@ -12,6 +12,9 @@ const url =
 const output = ".local/demo-evidence";
 await mkdir(output, { recursive: true });
 const localSoftware = process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
+// Software-GPU cold refinement verifies correctness, not hardware frame rate.
+// Keep it bounded and report wall time separately from the simulated clock.
+const coldTimeout = process.env.CI || localSoftware ? 180000 : 90000;
 const browser = await chromium.launch({
   channel: process.env.CI || localSoftware ? undefined : "chrome",
   headless: localSoftware || !process.env.CI,
@@ -48,6 +51,7 @@ try {
     ),
   );
   page.on("request", (r) => requests.push(r.url()));
+  const coldStarted = performance.now();
   await page.clock.install();
   await page.goto(url);
   // Freeze the scenario before refinement: software adapters may take longer
@@ -60,8 +64,9 @@ try {
       window.__map.state().cached > 0 &&
       window.__map.state().pending === 0,
     {},
-    { timeout: 90000 },
+    { timeout: coldTimeout },
   );
+  const coldRefinementMs = performance.now() - coldStarted;
   await page.waitForSelector(".player-marker");
   await page.waitForTimeout(2400);
   const initial = await page.evaluate(() => window.__map.state());
@@ -189,6 +194,11 @@ try {
       .reduce((n, r) => n + r.encodedBodySize, 0),
   );
   const result = {
+    verification: {
+      softwareGpu: Boolean(process.env.CI || localSoftware),
+      coldTimeoutMs: coldTimeout,
+      coldRefinementMs,
+    },
     initialHttpBodyBytes,
     initial,
     built,
@@ -213,7 +223,7 @@ try {
   await ui.waitForFunction(
     () => window.__map?.ready && window.__map.state().pending === 0,
     {},
-    { timeout: 90000 },
+    { timeout: coldTimeout },
   );
   await ui.waitForSelector(".player-marker");
   await ui.getByRole("button", { name: "Follow Rowan", exact: true }).click();

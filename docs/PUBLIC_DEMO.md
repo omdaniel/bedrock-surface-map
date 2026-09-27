@@ -78,6 +78,10 @@ expansion bounds. `scripts/check-demo.mjs` exercises two timeline loops,
 monotonic restart, player-only idle rendering, center/follow, manual follow
 cancellation, pause, mobile layout, reduced motion and the missing-WebGPU poster.
 Terrain changes use the same decoder, picking and shadow-update path as live maps.
+Software-GPU checks allow up to 180 seconds for cold refinement and record its
+wall-clock duration independently of the simulated timeline. Native Chrome checks
+allow 90 seconds. These bounded correctness waits are not hardware performance
+targets; pixel, picking, update and settled-resource assertions remain required.
 
 Run the built-site check and artifact audit above before publication. Inspect
 desktop/mobile screenshots for fictional labels, visible controls and matching
