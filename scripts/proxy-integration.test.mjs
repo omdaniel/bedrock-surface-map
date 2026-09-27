@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { mapProxy } from "./map-proxy.mjs";
+import { configuredLodUrl } from "../web/src/config.ts";
 
 test("real proxies use ephemeral read ports without exposing arbitrary routes or credentials", async () => {
   const servers = [],
@@ -43,20 +44,35 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
       map: "maps/fixture/manifest.json",
     });
     const viewer = await listen((req, res) => {
-      void proxy(req, res, () => res.writeHead(404).end());
+      void proxy(req, res, () => {
+        if (req.url === "/maps/fixture/manifest.json")
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end('{"feed":"offline"}');
+        else res.writeHead(404).end();
+      });
     });
     const configuration = await (
       await fetch(viewer + "/viewer-config.json")
     ).json();
     assert.equal(configuration.map, "maps/fixture/manifest.json");
     assert.equal(
-      configuration.lod_url,
+      configuration.terrain.lod_url,
       "/api/v1/worlds/independent-world/terrain/lod.json",
     );
+    assert.equal(configuration.lod_url, undefined);
+    assert.equal(
+      configuredLodUrl(configuration, new URLSearchParams("terrain=off")),
+      undefined,
+    );
+    const offline = await fetch(new URL(configuration.map, viewer));
+    assert.equal(offline.status, 200);
+    assert.equal((await offline.json()).feed, "offline");
+    assert.equal(requests.length, 0);
     for (const [path, feed] of [
       [configuration.players.url, "players"],
       [configuration.terrain.url, "terrain"],
-      [configuration.lod_url, "terrain"],
+      [configuration.terrain.lod_url, "terrain"],
     ]) {
       const response = await fetch(viewer + path, {
         headers: { Cookie: "private=fixture", Authorization: "Bearer fixture" },
@@ -66,7 +82,7 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
       const seen = requests.at(-1);
       assert.equal(seen.headers.cookie, undefined);
       assert.equal(seen.headers.authorization, undefined);
-      if (path === configuration.lod_url) {
+      if (path === configuration.terrain.lod_url) {
         assert.equal(response.headers.get("cache-control"), "no-cache");
         assert.equal(response.headers.get("etag"), '"lod-1"');
         assert.equal(seen.method, "GET");
@@ -77,7 +93,7 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
       );
     }
     for (const method of ["GET", "HEAD"]) {
-      const response = await fetch(viewer + configuration.lod_url, {
+      const response = await fetch(viewer + configuration.terrain.lod_url, {
         method,
         headers: {
           "If-None-Match": '"lod-1"',
@@ -91,7 +107,7 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
       assert.equal(response.headers.get("etag"), '"lod-1"');
       const seen = requests.at(-1);
       assert.equal(seen.feed, "terrain");
-      assert.equal(seen.path, configuration.lod_url);
+      assert.equal(seen.path, configuration.terrain.lod_url);
       assert.equal(seen.method, method);
       assert.equal(seen.headers["if-none-match"], '"lod-1"');
       assert.equal(seen.headers.cookie, undefined);
@@ -103,18 +119,25 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
       [configuration.terrain.url, "POST", 405],
       ["/api/ingest", "GET", 404],
       [configuration.terrain.url + "?url=http://example.test", "GET", 404],
-      [configuration.lod_url, "POST", 405],
-      [configuration.lod_url, "PUT", 405],
-      [configuration.lod_url, "DELETE", 405],
-      [configuration.lod_url + "?url=http://example.test", "GET", 404],
-      [configuration.lod_url + "/", "GET", 404],
+      [configuration.terrain.lod_url, "POST", 405],
+      [configuration.terrain.lod_url, "PUT", 405],
+      [configuration.terrain.lod_url, "DELETE", 405],
+      [configuration.terrain.lod_url + "?url=http://example.test", "GET", 404],
+      [configuration.terrain.lod_url + "/", "GET", 404],
       [
-        configuration.lod_url.replace("independent-world", "other-world"),
+        configuration.terrain.lod_url.replace(
+          "independent-world",
+          "other-world",
+        ),
         "GET",
         404,
       ],
-      [configuration.lod_url.replace("lod.json", "%6cod.json"), "GET", 404],
-      [configuration.lod_url.replace("lod.json", "ingest"), "GET", 404],
+      [
+        configuration.terrain.lod_url.replace("lod.json", "%6cod.json"),
+        "GET",
+        404,
+      ],
+      [configuration.terrain.lod_url.replace("lod.json", "ingest"), "GET", 404],
     ])
       assert.equal((await fetch(viewer + path, { method })).status, status);
     assert.equal(requests.length, count);

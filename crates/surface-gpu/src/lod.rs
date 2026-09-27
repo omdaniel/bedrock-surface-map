@@ -681,6 +681,8 @@ pub struct GpuLod {
     lighting: Option<[f32; 8]>,
     lighting_epoch: u64,
     view: Option<View>,
+    grid: Option<bool>,
+    presentation_dirty: bool,
     active: Arc<AtomicBool>,
     feedback_revision: u64,
 }
@@ -945,6 +947,8 @@ impl GpuLod {
             lighting: None,
             lighting_epoch: 0,
             view: None,
+            grid: None,
+            presentation_dirty: true,
             active: Arc::new(AtomicBool::new(true)),
             feedback_revision: 1,
         };
@@ -1232,6 +1236,62 @@ impl GpuLod {
     pub fn pending_preparations(&self) -> usize {
         self.pending.len() + self.preparation_keys().len()
     }
+    pub fn needs_frame(&self) -> bool {
+        !self.is_disposed()
+            && self.view.is_some_and(|v| v.width > 0 && v.height > 0)
+            && (self.presentation_dirty || self.pending_preparations() > 0)
+    }
+    fn presentation_source(&self, key: Key, view: View) -> bool {
+        let touches = |source: Key| {
+            source.level == key.level
+                && (i64::from(source.x) - i64::from(key.x)).abs() <= 1
+                && (i64::from(source.z) - i64::from(key.z)).abs() <= 1
+        };
+        self.active_cuts().any(|(cut, _)| {
+            cut.entries.iter().any(|e| {
+                e.opacity > 0.
+                    && view.visible(e.key)
+                    && (touches(e.key)
+                        || cut
+                            .boundaries
+                            .get(&e.key)
+                            .is_some_and(|b| b.sources(e.key, view).into_iter().any(touches)))
+            })
+        })
+    }
+    fn fine_height_dependency(&self, key: Key, view: View) -> bool {
+        let Some(lighting) = self.lighting else {
+            return false;
+        };
+        let shadows = lighting[0] != 0. && lighting[3] != 0.;
+        if !self.in_world(key) || (!shadows && lighting[5] == 0.) {
+            return false;
+        }
+        // Fine fragments read heights directly. Bound rays conservatively by
+        // the lowest representable receiver, including relief/sample offsets.
+        let distance = if shadows {
+            (f64::from(lighting[7]) - f64::from(i16::MIN)).max(0.)
+                / 16.
+                / f64::from(lighting[1]).to_radians().tan()
+        } else {
+            0.
+        };
+        let direction = surface_core::sun_direction(lighting[2]);
+        let ray = direction.map(|d| f64::from(d) * distance);
+        let rect = key_rect(key).map(|v| v as f64);
+        self.active_cuts().any(|(cut, _)| {
+            cut.entries.iter().any(|e| {
+                if e.key.level != 0 || e.opacity == 0. || !view.visible(e.key) {
+                    return false;
+                }
+                let receiver = key_rect(e.key).map(|v| v as f64);
+                rect[0] < receiver[2] + 1. + ray[0].max(0.)
+                    && rect[2] > receiver[0] - 1. + ray[0].min(0.)
+                    && rect[1] < receiver[3] + 1. + ray[1].max(0.)
+                    && rect[3] > receiver[1] - 1. + ray[1].min(0.)
+            })
+        })
+    }
     fn cut_weights(&self) -> [f32; 2] {
         self.transition.map_or([1., 0.], |t| [1. - t, t])
     }
@@ -1349,6 +1409,7 @@ impl GpuLod {
             "invalid LOD world bounds or quantized height maximum"
         );
         if self.world != Some((bounds, height_max)) {
+            self.presentation_dirty = true;
             self.world = Some((bounds, height_max));
             self.dirty_coarse();
             self.feedback_revision += 1;
@@ -1681,6 +1742,7 @@ impl GpuLod {
         if self.transition.is_some() || self.cuts[0].entries != cut {
             let topology = Topology::new(cut, false)?;
             self.validate_residency(&topology)?;
+            self.presentation_dirty = true;
             self.feedback_revision += 1;
             self.cuts = [topology, Topology::default()];
             self.transition = None;
@@ -1713,9 +1775,11 @@ impl GpuLod {
                 self.validate_residency(cut)?;
             }
             self.cuts = cuts;
+            self.presentation_dirty = true;
             self.feedback_revision += 1;
         }
         if self.transition != Some(progress) {
+            self.presentation_dirty = true;
             self.transition = Some(progress);
             self.feedback_revision += 1;
         }
@@ -1791,6 +1855,7 @@ impl GpuLod {
         );
         let old = std::mem::replace(&mut self.material_buffer, new);
         self.material_count = values.len() / 12;
+        self.presentation_dirty = true;
         self.feedback_revision += 1;
         self.rebind();
         self.retire(vec![Resource::Buffer(old)], vec![]);
@@ -1833,6 +1898,7 @@ impl GpuLod {
         );
         let old = std::mem::replace(&mut self.material_buffer, new);
         self.material_count = count as usize;
+        self.presentation_dirty = true;
         self.rebind();
         self.retire(vec![Resource::Buffer(old)], vec![]);
         self.feedback_revision += 1;
@@ -1868,6 +1934,7 @@ impl GpuLod {
         self.upload_peak = self.upload_peak.max(self.cpu_bytes() + values.len() * 4);
         self.retire(vec![Resource::Buffer(staging)], vec![]);
         self.feedback_revision += 1;
+        self.presentation_dirty = true;
         self.submit(encoder);
         Ok(())
     }
@@ -1876,8 +1943,12 @@ impl GpuLod {
             return;
         }
         self.pending.retain(|p| !p.kind.tile() || p.key != key);
+        let visible = self.view.is_some_and(|v| self.presentation_source(key, v));
+        self.presentation_dirty |= visible;
         if let Some(tile) = self.tiles.remove(&key) {
-            self.feedback_revision += 1;
+            if visible {
+                self.feedback_revision += 1;
+            }
             if self.transition.is_none() {
                 self.cuts[0].entries.retain(|e| e.key != key);
                 self.cuts[0].boundaries = cut_boundaries(&self.cuts[0].entries);
@@ -1893,10 +1964,16 @@ impl GpuLod {
             return;
         }
         self.pending.retain(|p| !p.kind.height() || p.key != key);
+        let visible = self
+            .view
+            .is_some_and(|v| self.fine_height_dependency(key, v));
+        self.presentation_dirty |= visible;
         if let Some(slot) = self.heights.remove(&key) {
-            self.feedback_revision += 1;
             self.retire(vec![], vec![slot]);
             self.dirty_height_dependents(key);
+            if visible || !self.preparation_keys().is_empty() {
+                self.feedback_revision += 1;
+            }
             let mut encoder = self.device.create_command_encoder(&Default::default());
             self.upload_table(&mut encoder);
             self.submit(encoder);
@@ -2599,6 +2676,45 @@ impl GpuLod {
         relief: f32,
         relief_width: f32,
     ) -> Result<bool> {
+        self.frame(
+            Some(output),
+            cx,
+            cz,
+            scale,
+            width,
+            height,
+            grid,
+            shadows,
+            elevation,
+            azimuth,
+            strength,
+            vivid,
+            relief,
+            relief_width,
+        )
+    }
+
+    /// Without an output, returns true if presentation is needed; otherwise
+    /// submits at most one preparation and returns false. With an output,
+    /// preparation and visible replacements remain atomic with presentation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn frame(
+        &mut self,
+        output: Option<&wgpu::TextureView>,
+        cx: f64,
+        cz: f64,
+        scale: f64,
+        width: u32,
+        height: u32,
+        grid: bool,
+        shadows: bool,
+        elevation: f32,
+        azimuth: f32,
+        strength: f32,
+        vivid: bool,
+        relief: f32,
+        relief_width: f32,
+    ) -> Result<bool> {
         self.ensure_active()?;
         let view = View::new([cx, cz], scale, width, height)?;
         ensure!(
@@ -2626,19 +2742,38 @@ impl GpuLod {
             height_max as f32,
         ];
         if self.view != Some(view) {
+            self.presentation_dirty = true;
             self.view = Some(view);
             self.feedback_revision += 1;
         }
         if self.lighting != Some(lighting) {
+            self.presentation_dirty = true;
             self.lighting = Some(lighting);
             self.lighting_epoch += 1;
             self.feedback_revision += 1;
         }
+        if self.grid != Some(grid) {
+            self.grid = Some(grid);
+            self.presentation_dirty = true;
+        }
         self.reap_feedback();
+        let preparation = self.pending.front();
+        let changes_visible = preparation.is_some_and(|p| {
+            (p.kind.tile() && self.presentation_source(p.key, view))
+                || (p.kind.height() && self.fine_height_dependency(p.key, view))
+        });
+        let shade_visible = preparation.is_none() && !self.preparation_keys().is_empty();
+        if output.is_none() && (self.presentation_dirty || changes_visible || shade_visible) {
+            self.presentation_dirty = true;
+            return Ok(true);
+        }
         if self.pending_submissions() >= 3 {
             return Ok(false);
         }
         self.validate_visible_sources(view)?;
+        if output.is_none() && preparation.is_none() {
+            return Ok(false);
+        }
         let draw_count: usize = self
             .active_cuts()
             .map(|(cut, _)| {
@@ -2648,6 +2783,7 @@ impl GpuLod {
                     .count()
             })
             .sum();
+        let draw_count = if output.is_some() { draw_count } else { 0 };
         let upload_bytes = 80 + (draw_count as u64 + 1) * DRAW_BYTES;
         let prepare_bytes = self
             .pending
@@ -2658,16 +2794,25 @@ impl GpuLod {
                 <= MAX_GPU_BYTES,
             "LOD frame exceeds 200 MB GPU budget"
         );
-        self.resize(width, height)?;
+        if output.is_some() {
+            self.resize(width, height)?;
+        }
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let prepared = self.prepare_one(&mut encoder)?;
+        if output.is_none() && prepared.is_none() {
+            return Ok(false);
+        }
         let shade_key = match prepared {
             Some((Kind::Tile | Kind::Surface, key)) if key.level > 0 => Some(key),
             Some(_) => None,
             None => self.preparation_keys().first().copied(),
         };
-        if prepared.is_some() || shade_key.is_some() {
+        if output.is_some() || !self.preparation_keys().is_empty() {
             self.feedback_revision += 1;
+        }
+        if output.is_none() && shade_key.is_none() {
+            self.submit(encoder);
+            return Ok(false);
         }
         encoder.clear_buffer(&self.feedback_lanes, 0, None);
         let direction = surface_core::sun_direction(azimuth);
@@ -2703,7 +2848,7 @@ impl GpuLod {
         }
         let mut draws: [Vec<(Key, u64)>; 2] = Default::default();
         for ((cut, weight), draws) in self.cuts.iter().zip(self.cut_weights()).zip(&mut draws) {
-            if weight == 0. {
+            if weight == 0. || output.is_none() {
                 continue;
             }
             for e in cut
@@ -2733,6 +2878,12 @@ impl GpuLod {
         if let Some(key) = shade_key {
             encoder.copy_buffer_to_buffer(&staging, 80, &self.tiles[&key].origin, 0, DRAW_BYTES);
             self.shade_one(key, &mut encoder);
+        }
+        if output.is_none() {
+            self.upload_peak = self.upload_peak.max(self.cpu_bytes() + uniforms.capacity());
+            self.retire(vec![Resource::Buffer(staging)], vec![]);
+            self.submit(encoder);
+            return Ok(false);
         }
         let target = self.target.as_ref().unwrap();
         for (index, (cut, draws)) in self.cuts.iter().zip(&draws).enumerate() {
@@ -2787,7 +2938,7 @@ impl GpuLod {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("LOD resolve"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: output,
+                    view: output.unwrap(),
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -2823,6 +2974,7 @@ impl GpuLod {
             encoder.copy_buffer_to_buffer(&self.feedback, 0, &self.readbacks[index], 0, 16);
         }
         self.submit(encoder);
+        self.presentation_dirty = false;
         if let Some(index) = readback {
             self.read_feedback(index, self.submitted, self.feedback_revision);
         }

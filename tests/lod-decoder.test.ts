@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { setImmediate as tick } from "node:timers/promises";
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import { LodDecoder } from "../web/src/lod/decoder.ts";
 import {
   decodeChunkPatch,
@@ -13,6 +13,7 @@ import {
 import { DecoderDownloads } from "../web/src/lod/decoder-transport.ts";
 import type { DecodeResult } from "../web/src/lod/decoder.worker.ts";
 import type { LodNode } from "../web/src/lod/protocol.ts";
+import { MemoryLedger, WASM_ALLOWANCE_BYTES } from "../web/src/lod/memory.ts";
 
 const base = new URL("http://127.0.0.1:5195/maps/synthetic/lod.json");
 const ref = (url = "objects/test", bytes = 16) => ({
@@ -378,6 +379,7 @@ test("transport rejects length, checksum and size violations and cancels bodies"
 
 class FakeWorker {
   static last: FakeWorker;
+  static created = 0;
   onmessage!: (event: { data: DecodeResult }) => void;
   onerror!: (event: { message: string }) => void;
   messages: { type: string; id: number }[] = [];
@@ -385,6 +387,7 @@ class FakeWorker {
   failPost = false;
   constructor() {
     FakeWorker.last = this;
+    FakeWorker.created++;
   }
   postMessage(message: { type: string; id: number }) {
     if (this.failPost) throw Error("dispatch failed");
@@ -497,5 +500,120 @@ test("invalid updates dispatch nothing; dispatch failure and worker death releas
   worker.onerror({ message: "worker died" });
   await Promise.all(checks);
   assert.equal(worker.terminated, true);
-  assert.throws(() => decoder.update(node, null, base, 64, signal), /stopped/);
+  assert.throws(() => decoder.update(node, null, base, 64, signal), /failed/);
+});
+
+function fakeWorker(t: TestContext) {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Worker");
+  Object.defineProperty(globalThis, "Worker", {
+    configurable: true,
+    value: FakeWorker,
+  });
+  t.after(() => {
+    if (descriptor) Object.defineProperty(globalThis, "Worker", descriptor);
+    else Reflect.deleteProperty(globalThis, "Worker");
+  });
+}
+
+for (const failure of ["module", "WASM"])
+  test(`initial ${failure} failure permits one explicit replacement with no stale jobs or capacity reset`, async (t) => {
+    fakeWorker(t);
+    const decoder = new LodDecoder();
+    t.after(() => decoder.destroy());
+    const worker = FakeWorker.last;
+    const node = fixture();
+    const abort = new AbortController();
+    const a = decoder.update(node, null, base, 64, abort.signal);
+    const b = decoder.update(
+      node,
+      null,
+      base,
+      64,
+      new AbortController().signal,
+    );
+    const checks = [
+      assert.rejects(a, /init failed/),
+      assert.rejects(b, /init failed/),
+    ];
+    if (failure === "WASM")
+      worker.reply(1, {
+        error: "WASM init failed",
+        restartRequired: true,
+        wasmBytes: 131072,
+      });
+    else worker.onerror({ message: "module init failed" });
+    await Promise.all(checks);
+    assert.equal(worker.terminated, true);
+    abort.abort();
+    assert.equal(worker.messages.length, 2, "old abort listeners are removed");
+    const created = FakeWorker.created;
+    assert.throws(
+      () => decoder.update(node, null, base, 64, new AbortController().signal),
+      /failed/,
+    );
+    assert.equal(
+      FakeWorker.created,
+      created,
+      "dispatch never automatically respawns",
+    );
+    const beforeRetry = decoder.wasmBytes;
+    decoder.retry();
+    decoder.retry();
+    assert.equal(decoder.wasmBytes, beforeRetry);
+    assert.equal(FakeWorker.created, created + 1);
+    const replacement = FakeWorker.last;
+    const recovered = decoder.update(
+      node,
+      null,
+      base,
+      64,
+      new AbortController().signal,
+    );
+    worker.reply(3, { error: "stale", wasmBytes: 16 * 1024 * 1024 });
+    worker.onerror({ message: "stale crash" });
+    assert.equal(replacement.terminated, false);
+    replacement.reply(3, { words: new Uint32Array([42]), wasmBytes: 65536 });
+    assert.equal((await recovered).words![0], 42);
+    const ledger = new MemoryLedger();
+    ledger.observeWasm("worker", decoder.wasmBytes);
+    assert.equal(ledger.peek("wasm:worker")!.totalBytes, WASM_ALLOWANCE_BYTES);
+    assert.equal(decoder.wasmBytes, failure === "WASM" ? 131072 : 65536);
+  });
+
+test("worker crash drains cancelled and pending jobs; disposed decoders never restart", async (t) => {
+  fakeWorker(t);
+  const decoder = new LodDecoder();
+  const worker = FakeWorker.last;
+  const node = fixture();
+  const abort = new AbortController();
+  const a = decoder.update(node, null, base, 64, abort.signal);
+  const b = decoder.update(node, null, base, 64, new AbortController().signal);
+  const checks = [
+    assert.rejects(a, { name: "AbortError" }),
+    assert.rejects(b, /crashed/),
+  ];
+  abort.abort();
+  worker.onerror({ message: "crashed" });
+  await Promise.all(checks);
+  decoder.retry();
+  const replacement = FakeWorker.last;
+  const pending = decoder.update(
+    node,
+    null,
+    base,
+    64,
+    new AbortController().signal,
+  );
+  const disposed = assert.rejects(pending, /disposed/);
+  decoder.destroy();
+  await disposed;
+  assert.equal(replacement.terminated, true);
+  const created = FakeWorker.created;
+  decoder.retry();
+  decoder.destroy();
+  assert.equal(FakeWorker.created, created);
+  assert.throws(
+    () => decoder.update(node, null, base, 64, new AbortController().signal),
+    /disposed/,
+  );
 });

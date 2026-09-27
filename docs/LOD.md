@@ -43,12 +43,17 @@ npm run dev
 Open `http://127.0.0.1:5173/?lod=/maps/prepared-lod/lod.json&players=off`.
 For a configured viewer, set `lod_url` relative to the application base path.
 An explicitly selected `map` URL retains the non-LOD reader. A prepared map
-carrying a live world identity requires a matching viewer binding; preparation
-alone does not create a publishing service. Configure `terrain.lod_url` to the same-origin
+carrying a world identity requires a matching viewer binding. For static
+snapshots, set `lod_identity` to the descriptor's `{ "world_id", "generation" }`;
+the native snapshot server and deployment generator emit it automatically.
+It applies only to the configured static `lod_url` and does not start polling.
+Preparation alone does not create a publishing service. Configure `terrain.lod_url` to the same-origin
 `api/v1/worlds/{world}/terrain/lod.json` route and match `terrain.world_id` and
 `terrain.generation` to the dataset. `terrain.url` retains the corresponding
 legacy manifest route. The top-level `lod_url` identifies the static snapshot;
-`?terrain=off` selects it without contacting the live terrain service.
+`?terrain=off` selects it without contacting the live terrain service. Outside
+the demo, live LOD polling starts only when the selected URL is the explicit
+`terrain.lod_url`, not merely because the descriptor carries a world identity.
 
 The synthetic fixture requires no Minecraft assets or private data:
 
@@ -112,6 +117,9 @@ GPU submission, and picking updates in the same main-thread turn. Camera,
 lighting and independent player state remain intact. Compatible catalog appends
 preserve existing IDs; changed descriptors or atlases trigger a coarse-first
 reconstruction without retaining incompatible terrain resources.
+Reconstruction carries the validated descriptor into the new view, preserving
+its revision fence even if the next server response is older. Device recovery
+also retains the accepted descriptor.
 
 The root revision in diagnostics is the adopted publication, not a claim that
 every resident tile has finished updating. Detail failures retain last-known
@@ -138,6 +146,8 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
   reported separately. Each instance has a 16 MiB allowance.
 - CPU picking and bounded metadata, transport reservations, GPU buffers/textures,
   canvas backing estimates and resources awaiting retirement stay charged.
+  Logical picking bytes and resident chunk-hash indexes are reported separately;
+  both contribute to the charged CPU capacity.
 - Material descriptors are fetched in pages needed by resident exact tiles and
   released when those tiles are evicted. A worker-generated dependency bitset
   avoids scanning surface columns on the UI thread.
@@ -191,6 +201,10 @@ bounded backoff. Hidden documents suspend new loading and resume when visible.
 Device loss cancels pending work and triggers one coarse-first reconstruction,
 preserving the camera, lighting and independent player layer. A second loss or a
 failed reconstruction requires an explicit Retry.
+Worker-module or decoder-WASM initialization failures reject pending jobs and
+release their loading reservations. Explicit Retry replaces a failed decoder
+without reloading the page; disposed decoders never restart, and replies from
+retired workers cannot enter the new view.
 
 ## Verification
 

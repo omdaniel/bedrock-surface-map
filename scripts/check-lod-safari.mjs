@@ -101,8 +101,14 @@ export function checkMemory(state) {
         .reduce((sum, e) => sum + e.totalBytes, 0),
     );
   assert.equal(logicalOccupancy.pickingBytes, state.lod.tiles * 131072);
+  assert.ok(
+    Number.isSafeInteger(logicalOccupancy.chunkIndexBytes) &&
+      logicalOccupancy.chunkIndexBytes >= 0 &&
+      logicalOccupancy.chunkIndexBytes <= state.lod.tiles * 2048,
+    "Invalid resident chunk-index occupancy",
+  );
   assert.equal(
-    logicalOccupancy.pickingBytes,
+    logicalOccupancy.pickingBytes + logicalOccupancy.chunkIndexBytes,
     memory.entries
       .filter((e) => e.id.startsWith("pick:"))
       .reduce((sum, e) => sum + e.capacityBytes, 0),

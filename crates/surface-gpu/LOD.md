@@ -23,8 +23,9 @@ renderer.set_transition(
   new Float32Array([newLevel, newX, newZ /* ... */]), progress);
 const sources = renderer.required_sources(
   topologyKeyTriples, cx, cz, physicalScale, width, height); // Int32Array triples
-renderer.render(cx, cz, physicalScale, width, height, grid, shadows,
+const presented = renderer.render(cx, cz, physicalScale, width, height, grid, shadows,
   elevation, azimuth, strength, vivid, relief, reliefWidth);
+const needsAnotherFrame = renderer.needs_frame();
 renderer.update_materials(startMaterialId, values); // bounded Float32Array range
 renderer.set_materials(values);                    // replace the full catalog
 renderer.grow_materials(materialCount);            // preserve existing GPU IDs
@@ -35,6 +36,32 @@ renderer.simulate_device_loss();
 renderer.dispose(); // idempotent explicit release, suppresses old-device events
 renderer.free(); // wasm-bindgen generated
 ```
+
+Browser `render` returns `true` only when it submits terrain drawing and presents
+the canvas. It returns `false` for a preparation-only submission, an idle call,
+or a deferred presentation (queue backpressure, an unavailable surface, or a
+zero-sized viewport). Neither result acknowledges GPU completion. When the
+requested camera, viewport, grid, lighting, cut and displayed dependencies are
+unchanged, queued work that does not change the presentation uses only GPU copy
+and compute commands: it acquires no canvas texture and runs no terrain or
+resolve pass. An idle call submits nothing. Visible surface replacements and
+fine-height changes that can affect displayed shadows or relief stay in the
+same submission as their presentation. Coarse height preparation can retain the
+current canvas until the affected displayed cache is relit. Navigation and
+lighting changes still draw available fallback content while refinement proceeds.
+Native `GpuLod::render`, which receives an explicit output view, retains its
+explicit presentation behavior; this automatic separation is the browser contract.
+
+Call `needs_frame()` after `render` to decide whether to request another frame
+for the latest requested view. It reports a dirty presentation, queued upload,
+or displayed coarse-cache preparation; it is false for a disposed renderer or
+without a nonzero requested viewport. It does not submit or poll the GPU, predict
+future view changes, or report in-flight work as a reason to redraw. Request a
+frame on actual input/content changes as well. Do not retry solely because
+`render` returned `false`, or sustain an idle RAF loop until the queue drains.
+Process `surface-lod-retired` notifications independently of frame scheduling
+to refresh allocation accounting and resume admission after asynchronous work
+completes, including after a preparation-only submission.
 
 `replace_surface` queues one complete tile with its matching height page.
 `patch_chunks` replaces 1–64 complete chunks in a resident level-zero tile;
@@ -112,8 +139,9 @@ original/vivid u16 RGB in current working space, signed mean/min/max heights,
 present/empty/unknown/water fractions and coverage flags. Level-zero height pages
 have one packed height/flags word; other levels have mean/flags plus min/max.
 
-Each successful `render` prepares at most one queued tile or height page, or
-relights one coarse tile when no upload was prepared. A coarse tile's initial
+Each `render` call that submits work prepares at most one queued tile or height
+page, or relights one coarse tile when no upload was prepared. This bound also
+applies to preparation-only submissions. A coarse tile's initial
 color preparation and lighting are part of that same tile operation. Lighting
 changes retain old shaded caches until each replacement is ready. No lighting
 change rebuilds every tile synchronously. Lighting epochs coalesce obsolete work:
@@ -177,9 +205,11 @@ allocation. Coarse cache status persists on subsequent draws. Missing or unknown
 height evidence
 keeps the known surface color and reports approximate lighting; it does not
 turn known ground into an unknown-surface checker. A root can therefore render
-while the caller admits its height pages. At most three submissions and three
-16-byte feedback readbacks are in flight through `render`; navigation never waits
-on the GPU queue.
+while the caller admits its height pages. Presentation and preparation-only
+work share the same three-pending-submission admission cap through `render`.
+At most three 16-byte feedback readbacks are in flight; preparation-only work
+does not issue a presentation-feedback readback. Navigation never waits on the
+GPU queue.
 
 ## Memory Contract
 
@@ -219,10 +249,19 @@ queued height uploads (including replacements), and the replacement reserve.
 It reports availability for new pages; a replacement may use the reserved slot.
 Admission also enforces this bound. GPU retirement uses monotonically increasing
 submission-completion serials; slots and old resources survive until completion.
-The callback captures only primitive shared state and dispatches `surface-lod-retired`.
+Every submission, including preparation-only work, registers the mandatory
+asynchronous `on_submitted_work_done` callback with the same serial ledger as
+presentation, atlas, material and removal work. The callback advances the
+completed serial; in the browser it also dispatches `surface-lod-retired` while
+the renderer is active. It captures only primitive shared state.
 Reading memory stats or the next render/admission reaps resources on the main
 thread. Completed feedback readbacks dispatch the same event. This also wakes the
-controller when rendering has otherwise stopped.
+controller when rendering has otherwise stopped. A successful queue submission,
+`has_tile`/`has_height`, an empty upload queue, or `needs_frame() == false` is not
+a completion acknowledgement and must not release quarantined slots or retired
+resources early. Native callers must drive device polling for completion and
+readback callbacks; the browser keeps completion asynchronous without blocking
+its input/render loop.
 
 Shadow traversal uses the same checked height lookup for current and parent
 nodes. Each ray retains the coverage checks and representative-leaf tests;
@@ -259,7 +298,10 @@ in the visible positive-opacity cut of the latest requested view, not off-cut
 or offscreen caches except the visible mixed-edge dependencies described above.
 `pending_submissions()` counts submissions awaiting completion. Keep upload
 reservations until preparation is acknowledged; a single outstanding controller
-upload can use an empty upload queue plus `has_tile`/`has_height` as its acknowledgement.
+upload can use an empty upload queue plus `has_tile`/`has_height` as its submission
+acknowledgement, including when `render` returns `false` after preparation-only
+work. This permits matching CPU residency/picking integration; actual GPU
+completion and retirement still require the asynchronous callback.
 Multiple overlapping revisions require controller serialization; no per-version
 acknowledgement API is provided. The final GPU allocation guard is 200,000,000 bytes.
 
@@ -284,3 +326,8 @@ Tests use only a generated checker atlas and synthetic height/color pages.
 Native validation is not a browser performance measurement. Chrome coarse/fine
 navigation, memory recordings and scheduling measurements belong to the parent
 controller integration gate.
+The focused `tests/lod-preparation.spec.ts` browser regression exercises unchanged
+height preparation, real view/lighting changes, atomic live picking integration,
+retirement notifications/accounting and idle scheduling with synthetic pages.
+Run it with `npx playwright test tests/lod-preparation.spec.ts`; full demo cold
+refinement is a separate acceptance gate.

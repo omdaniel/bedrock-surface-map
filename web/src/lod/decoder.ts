@@ -16,12 +16,9 @@ export type { ChunkRef } from "./decoder-data.ts";
 export type { DecodeResult } from "./decoder.worker";
 
 export class LodDecoder {
-  private readonly worker = new Worker(
-    new URL("./decoder.worker.ts", import.meta.url),
-    { type: "module" },
-  );
+  private worker: Worker | null = null;
   private sequence = 0;
-  private stopped = false;
+  private disposed = false;
   private readonly pending = new Map<
     number,
     {
@@ -34,9 +31,21 @@ export class LodDecoder {
   wasmBytes = 0;
   decodeMs = 0;
   constructor() {
-    this.worker.onmessage = ({ data }: MessageEvent<DecodeResult>) => {
+    this.startWorker();
+  }
+  private startWorker() {
+    const worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), {
+      type: "module",
+    });
+    this.worker = worker;
+    worker.onmessage = ({ data }: MessageEvent<DecodeResult>) => {
+      if (this.worker !== worker || this.disposed) return;
       this.wasmBytes = Math.max(this.wasmBytes, data.wasmBytes);
       this.decodeMs += data.decodeMs;
+      if (data.restartRequired) {
+        this.failWorker(worker, Error(data.error ?? "LOD decoder init failed"));
+        return;
+      }
       const entry = this.pending.get(data.id);
       if (!entry) return;
       this.pending.delete(data.id);
@@ -45,15 +54,28 @@ export class LodDecoder {
       else if (data.error) entry.reject(Error(data.error));
       else entry.resolve(data);
     };
-    this.worker.onerror = (event) => {
-      this.stopped = true;
-      this.worker.terminate();
-      for (const entry of this.pending.values()) {
-        entry.cleanup();
-        entry.reject(Error(event.message));
-      }
-      this.pending.clear();
+    worker.onerror = (event) => {
+      event.preventDefault?.();
+      this.failWorker(
+        worker,
+        Error(event.message || "LOD decoder worker failed"),
+      );
     };
+  }
+  private failWorker(worker: Worker, error: Error) {
+    if (this.worker !== worker) return;
+    this.worker = null;
+    worker.terminate();
+    for (const entry of this.pending.values()) {
+      entry.cleanup();
+      entry.reject(entry.signal.aborted ? entry.signal.reason : error);
+    }
+    this.pending.clear();
+  }
+  retry() {
+    // One replacement per explicit retry; a failed worker never respawns on load.
+    if (this.disposed || this.worker) return;
+    this.startWorker();
   }
   load(
     ref: ObjectRef,
@@ -99,12 +121,18 @@ export class LodDecoder {
     job: Omit<DecodeJob, "id"> | Omit<DecodeUpdateJob, "id">,
     signal: AbortSignal,
   ) {
-    if (this.stopped) throw Error("LOD decoder stopped");
+    if (this.disposed) throw Error("LOD decoder disposed");
+    const worker = this.worker;
+    if (!worker) throw Error("LOD decoder failed; Retry to restart");
     if (this.pending.size >= 2) throw Error("LOD decode concurrency limit");
     return new Promise<DecodeResult>((resolve, reject) => {
       const id = ++this.sequence;
       const cancel = () => {
-        this.worker.postMessage({ type: "cancel", id });
+        try {
+          worker.postMessage({ type: "cancel", id });
+        } catch (error) {
+          this.failWorker(worker, Error(String(error)));
+        }
         // Retain the slot until the worker acknowledges: cancellation is not deallocation.
       };
       signal.addEventListener("abort", cancel, { once: true });
@@ -115,7 +143,7 @@ export class LodDecoder {
         cleanup: () => signal.removeEventListener("abort", cancel),
       });
       try {
-        this.worker.postMessage({ ...job, id });
+        worker.postMessage({ ...job, id });
       } catch (error) {
         this.pending.delete(id);
         signal.removeEventListener("abort", cancel);
@@ -124,12 +152,8 @@ export class LodDecoder {
     });
   }
   destroy() {
-    this.stopped = true;
-    this.worker.terminate();
-    for (const entry of this.pending.values()) {
-      entry.cleanup();
-      entry.reject(Error("LOD decoder stopped"));
-    }
-    this.pending.clear();
+    this.disposed = true;
+    if (this.worker)
+      this.failWorker(this.worker, Error("LOD decoder disposed"));
   }
 }

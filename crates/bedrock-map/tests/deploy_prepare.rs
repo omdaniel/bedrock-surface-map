@@ -326,6 +326,42 @@ fn v2_deployment_preserves_existing_identity_and_configured_store_quota() {
         "/api/v1/worlds/fixture-world/terrain/lod.json"
     );
     assert_eq!(viewer["terrain"]["generation"], "fixture-generation");
+    assert_eq!(
+        viewer["lod_identity"],
+        json!({
+            "world_id":"fixture-world", "generation":"fixture-generation"
+        })
+    );
+}
+
+#[test]
+fn v2_snapshot_identity_is_emitted_without_enabling_terrain() {
+    let f = Fixture::new(false, true);
+    let lock = init::load(&f.root).unwrap().1;
+    assert!(lock.generation.is_none());
+    f.select_v2(&lock.world_id, "snapshot-generation");
+    let p = f.prepare().unwrap();
+    let viewer: Value = serde_json::from_slice(
+        &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        viewer["lod_identity"],
+        json!({
+            "world_id":lock.world_id, "generation":"snapshot-generation"
+        })
+    );
+    assert!(viewer["lod_url"].as_str().unwrap().starts_with("maps/"));
+    assert!(viewer.get("terrain").is_none());
+    assert_eq!(viewer["players"]["world_id"], lock.world_id);
+    assert!(viewer["players"].get("generation").is_none());
+    assert!(p.seed_files.is_empty());
+    assert!(!f.root.join("prepared/terrain").exists());
+    assert!(
+        !fs::read_to_string(f.root.join("prepared/gateway/Caddyfile"))
+            .unwrap()
+            .contains("/terrain/")
+    );
 }
 
 #[test]
@@ -731,6 +767,7 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         assert_eq!(config.get("players").is_some(), players);
         let static_lod = format!("maps/{}/lod.json", p.dataset_id);
         assert_eq!(config["lod_url"], static_lod);
+        assert!(config.get("lod_identity").is_none());
         assert!(f.root.join("prepared/public").join(&static_lod).is_file());
         assert!(
             p.immutable_files

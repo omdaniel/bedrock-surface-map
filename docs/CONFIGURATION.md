@@ -55,10 +55,17 @@ the default is `maps/world/manifest.json`. An explicit `?map=` overrides it.
 Live `terrain` and `players` bindings follow their respective guides.
 
 For the optional [static LOD viewer](LOD.md), `lod_url` selects a prepared
-`lod.json` relative to the application base path. `memory_budget_bytes` can
+`lod.json` relative to the application base path. For snapshots with a world
+identity, `lod_identity: { "world_id": "...", "generation": "..." }` must match
+that descriptor. This binding applies only to the configured static URL and
+does not enable polling. Both native config emitters derive it from the static
+descriptor, independently of enabled feeds. `memory_budget_bytes` can
 reduce its default 200,000,000-byte managed-memory ceiling; it cannot raise it.
 These options do not automatically convert a dataset or enable live LOD updates.
 The development server accepts `SURFACE_MAP` for the same offline selection.
+Its terrain proxy places the live LOD URL under `terrain.lod_url`; it does not
+use that URL as the static `lod_url`. `?terrain=off` falls back to `SURFACE_MAP`
+or the default offline map, while the independent player binding stays configured.
 
 The [packaged snapshot server](INSTALL.md) instead generates `viewer-config.json`
 from its selected offline dataset. Its state-directory `config.toml` configures

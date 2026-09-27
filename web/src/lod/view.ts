@@ -137,7 +137,8 @@ export class LodView {
   private cancellations = 0;
   private live: LodRootSource | null = null;
   private rootChanged: (() => void) | null = null;
-  private rebuildAppearance: (() => Promise<void>) | null = null;
+  private rebuildAppearance: ((root: LodManifest) => Promise<void>) | null =
+    null;
   private adoptingRoot = false;
   private changingTree = false;
   private pendingRoot: {
@@ -177,18 +178,23 @@ export class LodView {
     requestFrame: () => void,
     notify: (status: string) => void,
     limit = MEMORY_LIMIT_BYTES,
+    validatedRoot?: LodManifest,
   ) {
     if (url.origin !== location.origin)
       throw Error("LOD map must use the viewer origin");
     const ledger = new MemoryLedger(limit);
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(10000),
-      redirect: "error",
-      cache: "no-cache",
-    });
-    const raw = await readBytes(response, MAX_INDEX_BYTES);
     const base = new URL(".", url);
-    const root = parseManifest(JSON.parse(new TextDecoder().decode(raw)), base);
+    let root: LodManifest;
+    if (validatedRoot) root = parseManifest(validatedRoot, base);
+    else {
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(10000),
+        redirect: "error",
+        cache: "no-cache",
+      });
+      const raw = await readBytes(response, MAX_INDEX_BYTES);
+      root = parseManifest(JSON.parse(new TextDecoder().decode(raw)), base);
+    }
     if (!ledger.set("root", "cpu", MAX_INDEX_BYTES * 4 + 4096))
       throw Error("LOD root memory limit");
     const module = await init();
@@ -270,7 +276,7 @@ export class LodView {
   startLive(
     url: URL,
     changed: () => void,
-    rebuild: () => Promise<void>,
+    rebuild: (root: LodManifest) => Promise<void>,
     status: (state: LodFeedState) => void,
     source?: LodSnapshotSource,
   ) {
@@ -353,7 +359,7 @@ export class LodView {
         // application releases this view before a coarse-first reconstruction.
         if (!this.rebuildAppearance)
           throw Error("LOD appearance requires reconstruction");
-        await this.rebuildAppearance();
+        await this.rebuildAppearance(next);
       } else {
         if (next.material_count > this.root.material_count) {
           if (
@@ -462,6 +468,10 @@ export class LodView {
         ),
         pickingBytes: [...this.tiles.values()].reduce(
           (sum, tile) => sum + tile.pick.byteLength,
+          0,
+        ),
+        chunkIndexBytes: [...this.tiles.values()].reduce(
+          (sum, tile) => sum + tile.chunks.byteLength,
           0,
         ),
         heightSlots: this.heights.size,
@@ -1415,7 +1425,7 @@ export class LodView {
     this.accountGpu();
     if (
       this.submittedUpload ||
-      !rendered ||
+      this.renderer.needs_frame() ||
       this.renderer.pending_preparations()
     )
       this.requestFrame();
@@ -1485,6 +1495,8 @@ export class LodView {
     return null;
   }
   retry() {
+    if (this.disposed) return;
+    this.decoder.retry();
     this.failed.clear();
     this.live?.refresh();
     this.plan();

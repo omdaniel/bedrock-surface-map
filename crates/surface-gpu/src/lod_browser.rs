@@ -388,6 +388,9 @@ impl LodRenderer {
     pub fn pending_preparations(&self) -> u32 {
         self.gpu.pending_preparations() as u32
     }
+    pub fn needs_frame(&self) -> bool {
+        self.gpu.needs_frame()
+    }
     pub fn height_capacity(&self) -> u32 {
         self.gpu.height_capacity() as u32
     }
@@ -476,6 +479,28 @@ impl LodRenderer {
     ) -> Result<bool, JsValue> {
         self.ensure_active()?;
         if width == 0 || height == 0 {
+            return Ok(false);
+        }
+        if !self
+            .gpu
+            .frame(
+                None,
+                cx,
+                cz,
+                physical_scale,
+                width,
+                height,
+                grid,
+                shadows,
+                elevation,
+                azimuth,
+                strength,
+                vivid,
+                relief,
+                relief_width,
+            )
+            .map_err(js_error)?
+        {
             return Ok(false);
         }
         if self.config.width != width || self.config.height != height {

@@ -2212,6 +2212,170 @@ fn live_heights(level: u32, words: &[u32]) -> Vec<u32> {
     }
 }
 
+fn prepare_without_presentation(
+    gpu: &mut GpuLod,
+    out: &wgpu::Texture,
+    camera: [f64; 3],
+    grid: bool,
+    azimuth: f32,
+) -> bool {
+    gpu.frame(
+        None,
+        camera[0],
+        camera[1],
+        camera[2],
+        out.width(),
+        out.height(),
+        grid,
+        true,
+        45.,
+        azimuth,
+        0.55,
+        false,
+        0.5,
+        0.25,
+    )
+    .unwrap()
+}
+
+#[test]
+fn preparation_skips_unchanged_presentations_and_retires_through_the_frame_ledger() {
+    for level in [0, 1] {
+        let mut gpu = setup();
+        gpu.set_world([0, 0, 2048, 2048], 512).unwrap();
+        let key = Key::new(level, 0, 0).unwrap();
+        let words = if level == 0 {
+            detail(0, 1)
+        } else {
+            summary([65535, 0, 0], 0)
+        };
+        gpu.replace_surface(key, words.clone(), live_heights(level, &words))
+            .unwrap();
+        let out = output(&gpu, 32, 32);
+        let camera = [64., 64., 1.];
+        draw(&mut gpu, &out, camera, true, 0.5);
+        gpu.set_cut(unit_cut([key])).unwrap();
+        draw(&mut gpu, &out, camera, true, 0.5);
+        let baseline = pixels(&gpu, &out);
+        assert!(!gpu.needs_frame());
+        let before = gpu.submitted;
+        assert!(!prepare_without_presentation(
+            &mut gpu, &out, camera, false, 90.
+        ));
+        assert_eq!(gpu.submitted, before, "idle frames submit no work");
+        for z in [3, 4] {
+            let offcut = Key::new(level, 3, z).unwrap();
+            gpu.add_height(offcut, live_heights(level, &words)).unwrap();
+        }
+        for remaining in [1, 0] {
+            let before = gpu.submitted;
+            assert!(!prepare_without_presentation(
+                &mut gpu, &out, camera, false, 90.
+            ));
+            assert_eq!(
+                gpu.submitted,
+                before + 1,
+                "preparation uses the same serial ledger"
+            );
+            assert_eq!(gpu.pending_tiles(), remaining, "one job per frame");
+            assert!(gpu.pending_submissions() <= 3);
+            assert!(gpu.retiring_bytes() > 0);
+            assert_eq!(
+                pixels(&gpu, &out),
+                baseline,
+                "preparation leaves the output untouched"
+            );
+            gpu.device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .unwrap();
+        }
+        if level > 0 {
+            assert!(prepare_without_presentation(
+                &mut gpu, &out, camera, false, 90.
+            ));
+            draw(&mut gpu, &out, camera, true, 0.5);
+        }
+        assert_eq!(gpu.pending_preparations(), 0);
+        assert_eq!(gpu.retiring_bytes(), 0);
+        assert_eq!(gpu.pending_submissions(), 0);
+        assert_eq!(gpu.submission_stats().completed_serial, gpu.submitted);
+        assert!(!gpu.needs_frame());
+
+        if level == 0 {
+            gpu.add_height(key, live_heights(level, &words)).unwrap();
+            let before = gpu.submitted;
+            assert!(
+                prepare_without_presentation(&mut gpu, &out, camera, false, 90.),
+                "fine height dependencies need presentation"
+            );
+            assert_eq!(gpu.submitted, before);
+            assert_eq!(gpu.pending_tiles(), 1);
+            draw(&mut gpu, &out, camera, true, 0.5);
+            assert_eq!(gpu.submitted, before + 1);
+        }
+
+        let moved = [65., 64., 1.];
+        gpu.add_height(Key::new(level, 3, 5).unwrap(), live_heights(level, &words))
+            .unwrap();
+        assert!(prepare_without_presentation(
+            &mut gpu, &out, moved, false, 90.
+        ));
+        assert_eq!(
+            gpu.pending_tiles(),
+            1,
+            "navigation keeps preparation atomic with drawing"
+        );
+        draw(&mut gpu, &out, moved, true, 0.5);
+        if gpu.pending_preparations() > 0 {
+            draw(&mut gpu, &out, moved, true, 0.5);
+        }
+        assert!(
+            prepare_without_presentation(&mut gpu, &out, moved, true, 90.),
+            "grid invalidates presentation"
+        );
+        assert!(
+            prepare_without_presentation(&mut gpu, &out, moved, false, 180.),
+            "lighting invalidates presentation"
+        );
+        draw(&mut gpu, &out, moved, true, 0.5);
+
+        let replacement = if level == 0 {
+            detail(160, 2)
+        } else {
+            summary([0, 65535, 0], 160)
+        };
+        let heights = live_heights(level, &replacement);
+        let old_slot = gpu.heights[&key];
+        gpu.replace_surface(key, replacement.clone(), heights.clone())
+            .unwrap();
+        let before = gpu.submitted;
+        assert!(prepare_without_presentation(
+            &mut gpu, &out, moved, false, 90.
+        ));
+        assert_eq!(gpu.pending_tiles(), 1);
+        assert_eq!(
+            gpu.heights[&key], old_slot,
+            "visible replacement awaits its presentation submission"
+        );
+        assert_eq!(gpu.submitted, before);
+        draw(&mut gpu, &out, moved, true, 0.5);
+        assert_eq!(gpu.submitted, before + 1);
+        assert_ne!(gpu.heights[&key], old_slot);
+        assert_live_height(&gpu, key, &heights);
+        assert_eq!(
+            read(&gpu, &gpu.tiles[&key].data),
+            bytemuck::cast_slice::<u32, u8>(&replacement)
+        );
+        assert!(
+            pixels(&gpu, &out) != baseline,
+            "visible content changes update pixels at level {level}"
+        );
+        assert_eq!(gpu.retiring_bytes(), 0);
+        assert_eq!(gpu.pending_submissions(), 0);
+        assert!(!gpu.needs_frame());
+    }
+}
+
 fn assert_live_height(gpu: &GpuLod, key: Key, expected: &[u32]) {
     let snapshot = gpu.device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("bounded live height readback"),

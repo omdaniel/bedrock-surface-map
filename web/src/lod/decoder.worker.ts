@@ -37,8 +37,10 @@ export interface DecodeResult {
   wasmBytes: number;
   decodeMs: number;
   error?: string;
+  restartRequired?: boolean;
 }
-const ready = init();
+// Initialize inside the handled job so rejection cannot escape before a job arrives.
+let ready: ReturnType<typeof init> | undefined;
 const controllers = new Map<number, AbortController>();
 const downloads = new DecoderDownloads();
 let queue = Promise.resolve();
@@ -72,9 +74,11 @@ scope.onmessage = ({ data }) => {
     let decodeMs = 0;
     let memory: WebAssembly.Memory | undefined;
     try {
-      const module = await ready;
+      const module = await (ready ??= init());
       memory = module.memory;
       wasmBytes = module.memory.buffer.byteLength;
+      if (wasmBytes > 16 * 1024 * 1024)
+        throw Error("LOD decoder exceeds its WASM memory allowance");
       const input = await fetched;
       controller.signal.throwIfAborted();
       const native = (decode: () => Uint32Array) => {
@@ -177,6 +181,7 @@ scope.onmessage = ({ data }) => {
         wasmBytes: memory?.buffer.byteLength ?? wasmBytes,
         decodeMs,
         error: String(error),
+        restartRequired: !memory,
       });
     } finally {
       controllers.delete(data.id);

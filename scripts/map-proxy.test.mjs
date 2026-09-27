@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mapProxy } from "./map-proxy.mjs";
+import { configuredLodUrl } from "../web/src/config.ts";
 const config = {
   world: "test",
   generation: "generation",
@@ -30,7 +31,8 @@ test("operator configuration binds players and terrain on arbitrary private read
   assert.equal(result.players.world_id, result.terrain.world_id);
   assert.equal(result.players.generation, result.terrain.generation);
   assert.equal(result.players.url, "/api/v1/worlds/test/players");
-  assert.equal(result.lod_url, "/api/v1/worlds/test/terrain/lod.json");
+  assert.equal(result.terrain.lod_url, "/api/v1/worlds/test/terrain/lod.json");
+  assert.equal(result.lod_url, undefined);
 });
 test("terrain proxy allows only fixed destination and exact read routes", async () => {
   for (const terrainOrigin of [
@@ -85,8 +87,60 @@ test("terrain proxy allows only fixed destination and exact read routes", async 
       const c = JSON.parse(body);
       assert.equal(c.players, null);
       assert.equal(c.terrain.generation, "generation");
-      assert.equal(c.lod_url, "/api/v1/worlds/test/terrain/lod.json");
+      assert.equal(c.terrain.lod_url, "/api/v1/worlds/test/terrain/lod.json");
+      assert.equal(c.lod_url, undefined);
     }
+  }
+});
+
+test("terrain opt-out selects the offline map without a live LOD URL", async (t) => {
+  t.mock.method(globalThis, "fetch", () =>
+    assert.fail("unexpected upstream request"),
+  );
+  for (const players of [false, true]) {
+    const proxy = mapProxy({
+      ...config,
+      map: "maps/snapshot/manifest.json",
+      ...(players
+        ? { origin: "http://127.0.0.1:8110", fingerprint: "a".repeat(64) }
+        : {}),
+    });
+    let body;
+    await proxy(
+      { url: "/viewer-config.json", method: "GET" },
+      {
+        setHeader() {},
+        writeHead() {
+          return this;
+        },
+        end(value) {
+          body = value;
+        },
+      },
+      () => assert.fail("fallthrough"),
+    );
+    const value = JSON.parse(body);
+    assert.equal(value.map, "maps/snapshot/manifest.json");
+    assert.equal(
+      configuredLodUrl(value, new URLSearchParams()),
+      value.terrain.lod_url,
+    );
+    assert.equal(
+      configuredLodUrl(value, new URLSearchParams("terrain=off")),
+      undefined,
+    );
+    assert.equal(
+      configuredLodUrl(value, new URLSearchParams("players=off")),
+      value.terrain.lod_url,
+    );
+    assert.equal(
+      configuredLodUrl(
+        value,
+        new URLSearchParams("map=maps/other/manifest.json"),
+      ),
+      undefined,
+    );
+    assert.equal(Boolean(value.players), players);
   }
 });
 

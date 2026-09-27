@@ -54,6 +54,7 @@ function state() {
       },
       logicalOccupancy: {
         pickingBytes: 131072,
+        chunkIndexBytes: 0,
         surfaceBytes: 0,
         heightSlots: 0,
         heightSlotCapacity: 128,
@@ -120,6 +121,8 @@ test("memory accepts an operator budget and rejects overruns or inconsistent cha
     (s) => s.lod.memory.entries[0].totalBytes++,
     (s) => s.lod.memory.entries.push(s.lod.memory.entries[0]),
     (s) => s.lod.logicalOccupancy.pickingBytes++,
+    (s) => s.lod.logicalOccupancy.chunkIndexBytes++,
+    (s) => (s.lod.logicalOccupancy.chunkIndexBytes = -1),
     (s) => s.lod.logicalOccupancy.heightSlots++,
     (s) => (s.memory = NaN),
   ]) {
@@ -127,6 +130,21 @@ test("memory accepts an operator budget and rejects overruns or inconsistent cha
     mutate(value);
     assert.throws(() => checkMemory(value));
   }
+});
+
+test("live chunk indexes stay charged separately from exact picking records", () => {
+  const value = state();
+  value.lod.logicalOccupancy.chunkIndexBytes = 2048;
+  value.memory += 2048;
+  for (const field of ["totalBytes", "peakBytes", "capacityBytes"])
+    value.lod.memory[field] += 2048;
+  value.lod.memory.freeBytes -= 2048;
+  value.lod.memory.categories.cpu += 2048;
+  value.lod.memory.entries[0].totalBytes += 2048;
+  value.lod.memory.entries[0].capacityBytes += 2048;
+  checkMemory(value);
+  value.lod.logicalOccupancy.chunkIndexBytes++;
+  assert.throws(() => checkMemory(value));
 });
 
 function releasePair() {

@@ -1,6 +1,7 @@
 export interface ViewerConfiguration {
   map?: string;
   lod_url?: string;
+  lod_identity?: { world_id: string; generation: string };
   memory_budget_bytes?: number;
   players?: unknown;
   terrain?: {

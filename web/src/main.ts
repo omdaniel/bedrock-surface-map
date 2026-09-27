@@ -1019,7 +1019,8 @@ window.__map = {
   },
 };
 
-async function createLodView() {
+let lodRecoveryRoot: LodView["root"] | undefined;
+async function createLodView(validatedRoot = lodRecoveryRoot) {
   if (!lodSource) throw Error("LOD source is not configured");
   const { url, configuration } = lodSource;
   const view = await LodView.create(
@@ -1032,6 +1033,7 @@ async function createLodView() {
         message("");
     },
     configuration.memory_budget_bytes,
+    validatedRoot,
   );
   if (
     disposed ||
@@ -1039,9 +1041,14 @@ async function createLodView() {
       !(demo
         ? demo.world_id === view.root.world_id &&
           demo.generation === view.root.generation
-        : configuration.terrain &&
-          configuration.terrain.world_id === view.root.world_id &&
-          configuration.terrain.generation === view.root.generation))
+        : (configuration.terrain &&
+            configuration.terrain.world_id === view.root.world_id &&
+            configuration.terrain.generation === view.root.generation) ||
+          (configuration.lod_identity &&
+            configuration.lod_url &&
+            new URL(configuration.lod_url, appUrl(".")).href === url.href &&
+            configuration.lod_identity.world_id === view.root.world_id &&
+            configuration.lod_identity.generation === view.root.generation)))
   ) {
     view.destroy();
     throw Error(
@@ -1050,25 +1057,34 @@ async function createLodView() {
         : "No explicit live-terrain binding for this LOD map",
     );
   }
+  lodRecoveryRoot = view.root;
   if (
     view.root.world_id &&
-    new URLSearchParams(location.search).get("terrain") !== "off"
+    new URLSearchParams(location.search).get("terrain") !== "off" &&
+    (demo ||
+      (configuration.terrain?.lod_url &&
+        new URL(configuration.terrain.lod_url, appUrl(".")).href === url.href))
   ) {
     view.startLive(
       url,
       () => {
-        if (lod === view) manifest = view.manifest;
+        if (lod === view) {
+          manifest = view.manifest;
+          lodRecoveryRoot = view.root;
+        }
       },
-      async () => {
+      async (nextRoot) => {
         if (disposed || lod !== view) return;
         // A new appearance cannot share old coarse colors. Release its resources
         // before loading roots again; camera, lighting and player state stay put.
+        lodRecovering = true;
         window.__map.ready = false;
+        lodRecoveryRoot = nextRoot;
         view.destroy();
         lod = null;
         message("Loading terrain appearance...");
         try {
-          lod = await createLodView();
+          lod = await createLodView(nextRoot);
           manifest = lod.manifest;
           window.__map.ready = true;
           changed();
@@ -1076,6 +1092,8 @@ async function createLodView() {
           if (!disposed)
             message(`Terrain appearance unavailable: ${String(error)}`, true);
           throw error;
+        } finally {
+          lodRecovering = false;
         }
       },
       (state) => {
@@ -1095,6 +1113,7 @@ async function createLodView() {
 
 async function recoverLod(manual = false) {
   if (disposed || lodRecovering || !lodSource) return;
+  lodRecoveryRoot = lod?.root ?? lodRecoveryRoot;
   if (!manual && lodRecoveries >= 1) {
     lod?.destroy();
     lod = null;
