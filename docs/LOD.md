@@ -26,6 +26,12 @@ before immutable registration. `bedrock-map prepare-lod --state ./map-data
 the original stays unchanged. This command's `--max-output-bytes` controls its
 2 GiB default conversion budget. The source-level converter below also supports
 `--max-output-bytes` and a non-writing `--estimate` mode.
+`bedrock-map register --state ./map-data --snapshot /path/to/surface-snapshot`
+selects an existing verified v1 or v2 snapshot before conversion, including
+region-only exports. Native registration and seeding validate regional inputs
+without allocating a whole-world height field. Deployment preparation uses
+`terrain_store_limit_bytes` for its derived store, independently of conversion's
+output limit; see [deployment configuration](DEPLOYMENT.md#prepare).
 
 ```sh
 cargo run --release --locked -p surface-cli -- prepare-lod \
@@ -139,6 +145,9 @@ constrained-budget test. Raising this setting above the ceiling is rejected.
   are unavailable for ordinary cache filling.
 - Height pages use a fixed GPU arena with no CPU world-height pyramid. Empty
   slots remain charged as allocated capacity.
+- Shadow queries skip uniformly unknown height spans while preserving their
+  unknown status. Mixed spans still test known occluders; missing pages remain
+  availability failures. Unknown terrain is never treated as verified empty.
 - Shadow coverage includes each rendered or refining tile's full shaded area and
   its gutter, plus pinned roots. Intermediate levels needed only for metadata do
   not retain height pages. A finer cut waits for its required pages and mixed-edge

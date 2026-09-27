@@ -15,6 +15,9 @@ import {
   type NodeRef,
 } from "../web/src/lod/protocol.ts";
 import type { ObjectRef } from "../web/src/types.ts";
+import { captureLodFailure } from "./lod-evidence";
+
+test.afterEach(({ page }, info) => captureLodFailure(page, info));
 
 const FIXTURE = "/maps/lod-fixture/lod.json";
 const VIEWER = `/?lod=${FIXTURE}&players=off`;

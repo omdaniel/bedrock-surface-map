@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { PNG } from "pngjs";
 import { coveringTile } from "../web/src/lod/cut.ts";
+import { captureLodFailure } from "./lod-evidence";
 import {
   parseManifest,
   parseNode,
@@ -10,6 +11,7 @@ import {
 } from "../web/src/lod/protocol.ts";
 
 const directory = "web/public/maps/lod-sparse-small/";
+test.afterEach(({ page }, info) => captureLodFailure(page, info));
 const base = new URL("http://127.0.0.1/maps/lod-sparse-small/");
 const manifest = parseManifest(
   JSON.parse(readFileSync(`${directory}lod.json`, "utf8")),

@@ -79,17 +79,22 @@ fn ray_shadow(start:vec2f,y:f32)->f32 {
         let ray_y=y+distance*slope+0.0001;
         if ray_y>=p.bounds.x || any(position<draw.world.xy) || any(position>=draw.world.zw) {return 0.0;}
         let node=height_node(position,mip);let flags=node.x>>16u;
-        if (flags&36u)!=0u {
+        if (flags&32u)!=0u || ((flags&4u)!=0u && (flags&1u)!=0u) {
             if mip>0u {mip-=1u;continue;}
             if (flags&32u)!=0u {height_status|=1u;return 0.0;}
-            height_status|=2u;
         }
+        if (flags&4u)!=0u {height_status|=2u;}
         if (flags&1u)!=0u && f32(bitcast<i32>(node.y)>>16)/16.0>ray_y {
             if mip>0u {mip-=1u;continue;}
             if any(vec2i(floor(position))!=own) && signed_height(node.x)>ray_y {return 1.0;}
         } else if mip<7u {
             let parent=height_node(position,mip+1u);
-            if (parent.x&(36u<<16u))==0u && ((parent.x&65536u)==0u || f32(bitcast<i32>(parent.y)>>16)/16.0<=ray_y) {
+            let parent_flags=parent.x>>16u;
+            // An all-unavailable span has no retained occluders to test. Skip
+            // its cells, but preserve unknown status: this is not empty ground
+            // or a claim that its shadow is known. Mixed ground still descends.
+            if (parent_flags&32u)==0u && ((parent_flags&1u)==0u || ((parent_flags&4u)==0u && f32(bitcast<i32>(parent.y)>>16)/16.0<=ray_y)) {
+                if (parent_flags&4u)!=0u {height_status|=2u;}
                 mip+=1u;continue;
             }
         }

@@ -263,6 +263,125 @@ fn additive_unknown_does_not_reveal_parent() {
 }
 
 #[test]
+fn unknown_shadow_spans_prune_without_becoming_verified_empty() {
+    let mut gpu = setup();
+    gpu.set_world([0, 0, 128, 128], 4800).unwrap();
+    let out = output(&gpu, 16, 16);
+    let height_code = include_str!("../lod_height.wgsl");
+    assert_eq!(height_code.matches("let epsilon=0.0001;").count(), 1);
+    let code = format!(
+        "{}\nvar<private> ray_steps:u32;\n{}\n{}",
+        crate::APPEARANCE_SHADER,
+        height_code.replace("let epsilon=0.0001;", "ray_steps+=1u;let epsilon=0.0001;"),
+        r#"
+@group(0) @binding(0) var<uniform> p:Params;
+@group(1) @binding(0) var<uniform> draw:Draw;
+@group(1) @binding(1) var<storage,read_write> result:array<vec4f>;
+@compute @workgroup_size(1) fn check() {
+    height_status=0u;ray_steps=0u;
+    let shade=ray_shadow(vec2f(0.5,64.5),0.0);
+    result[0]=vec4f(shade,f32(height_status),f32(ray_steps),0.0);
+}
+"#
+    );
+    let pipeline = crate::compute_pipeline(&gpu.device, "unknown-span oracle", &code, "check");
+    let params: [f32; 20] = [
+        0., 0., 1., 16., 16., 0., 1., 1., 300., 0., 0., 0., 0.55, 0., 1., 0., 0., 0.25, 0., 0.,
+    ];
+    let uniform = buffer(
+        &gpu.device,
+        "test light",
+        bytemuck::cast_slice(&params),
+        wgpu::BufferUsages::UNIFORM,
+    );
+    let anchor = buffer(
+        &gpu.device,
+        "test anchor",
+        bytemuck::bytes_of(&DrawUniform {
+            origin: [0.; 4],
+            key: [0; 4],
+            world: [0., 0., 128., 128.],
+            edges: [0.; 4],
+            corners: [0.; 4],
+        }),
+        wgpu::BufferUsages::UNIFORM,
+    );
+    let result = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 16,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let group0 = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            entry(0, &uniform),
+            entry(4, &gpu.page_table),
+            entry(5, &gpu.nodes),
+        ],
+    });
+    let group1 = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[entry(0, &anchor), entry(1, &result)],
+    });
+    let query = |gpu: &GpuLod| {
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group0, &[]);
+            pass.set_bind_group(1, &group1, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        gpu.queue.submit([encoder.finish()]);
+        let bytes = read(gpu, &result);
+        let values: &[f32] = bytemuck::cast_slice(&bytes);
+        (values[0], values[1] as u32, values[2] as u32)
+    };
+    let key = Key::new(0, 0, 0).unwrap();
+    gpu.add_height(key, vec![(4 << 16) | 32768; SAMPLES])
+        .unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let (shade, status, steps) = query(&gpu);
+    assert_eq!(shade, 0.);
+    assert_eq!(
+        status, 2,
+        "unavailable terrain is still unknown, never verified empty"
+    );
+    assert!(
+        steps <= 16,
+        "uniform unknown span must not be visited cell by cell: {steps}"
+    );
+
+    let mut mixed = vec![(4 << 16) | 32768; SAMPLES];
+    for z in 0..128 {
+        mixed[z * 128 + 64] = (1 << 16) | 2048;
+    }
+    gpu.add_height(key, mixed).unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let (shade, status, _) = query(&gpu);
+    assert_eq!(
+        shade, 1.,
+        "known occluders inside mixed spans cannot be pruned"
+    );
+    assert_eq!(status, 2);
+
+    gpu.add_height(key, vec![(2 << 16) | 32768; SAMPLES])
+        .unwrap();
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let (shade, status, _) = query(&gpu);
+    assert_eq!(shade, 0.);
+    assert_eq!(status, 0, "verified empty is distinct from unknown");
+    gpu.remove_height(key);
+    draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+    let (shade, status, _) = query(&gpu);
+    assert_eq!(shade, 0.);
+    assert_eq!(status, 1, "missing pages remain an availability failure");
+}
+
+#[test]
 fn gpu_height_hierarchy_and_exact_page_boundary_shadows() {
     let mut gpu = setup();
     let out = output(&gpu, 64, 64);

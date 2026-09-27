@@ -1,5 +1,8 @@
 import { test, expect, type Page } from "@playwright/test";
 import { PNG } from "pngjs";
+import { captureLodFailure } from "./lod-evidence";
+
+test.afterEach(({ page }, info) => captureLodFailure(page, info));
 
 async function ready(page: Page) {
   await expect

@@ -11,19 +11,22 @@ const url =
     : "http://127.0.0.1:5180/bedrock-surface-map/");
 const output = ".local/demo-evidence";
 await mkdir(output, { recursive: true });
+const localSoftware = process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
 const browser = await chromium.launch({
-  channel: process.env.CI ? undefined : "chrome",
-  headless: !process.env.CI,
-  args: process.env.CI
-    ? [
-        "--enable-unsafe-webgpu",
-        "--enable-features=Vulkan",
-        "--use-angle=vulkan",
-        "--use-vulkan=swiftshader",
-        "--use-webgpu-adapter=swiftshader",
-        "--disable-vulkan-surface",
-      ]
-    : [],
+  channel: process.env.CI || localSoftware ? undefined : "chrome",
+  headless: localSoftware || !process.env.CI,
+  args: localSoftware
+    ? ["--use-angle=swiftshader", "--enable-unsafe-webgpu"]
+    : process.env.CI
+      ? [
+          "--enable-unsafe-webgpu",
+          "--enable-features=Vulkan",
+          "--use-angle=vulkan",
+          "--use-vulkan=swiftshader",
+          "--use-webgpu-adapter=swiftshader",
+          "--disable-vulkan-surface",
+        ]
+      : [],
 });
 let activePage;
 try {
@@ -47,6 +50,10 @@ try {
   page.on("request", (r) => requests.push(r.url()));
   await page.clock.install();
   await page.goto(url);
+  // Freeze the scenario before refinement: software adapters may take longer
+  // than the first terrain event to finish loading the initial exact cut.
+  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
+  await page.getByRole("button", { name: "Restart demo", exact: true }).click();
   await page.waitForFunction(
     () =>
       window.__map?.ready &&
@@ -56,7 +63,6 @@ try {
     { timeout: 90000 },
   );
   await page.waitForSelector(".player-marker");
-  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
   await page.waitForTimeout(2400);
   const initial = await page.evaluate(() => window.__map.state());
   const initialHttpBodyBytes = (await Promise.all(responses)).reduce(
@@ -261,16 +267,16 @@ try {
   await writeFile(`${output}/chrome.json`, JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
-  console.error(
-    "Demo failure state:",
-    await activePage
-      ?.evaluate(() => ({
-        hidden: document.hidden,
-        time: document.querySelector("#demo-time")?.textContent,
-        map: window.__map?.state(),
-      }))
-      .catch(() => "page unavailable"),
-  );
+  const failure = await activePage
+    ?.evaluate(() => ({
+      hidden: document.hidden,
+      time: document.querySelector("#demo-time")?.textContent,
+      map: window.__map?.state(),
+    }))
+    .catch(() => "page unavailable");
+  const evidence = JSON.stringify(failure ?? "no active page", null, 2);
+  await writeFile(`${output}/failure.json`, evidence);
+  console.error("Demo failure state:", evidence);
   await activePage
     ?.screenshot({ path: `${output}/failure.png`, timeout: 5000 })
     .catch(() => {});

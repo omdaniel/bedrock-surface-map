@@ -259,6 +259,38 @@ try {
         } finally {
           await unsupported.close();
         }
+      } catch (error) {
+        const diagnostic = await page
+          .evaluate(() => {
+            const state = window.__map?.state();
+            return {
+              ready: window.__map?.ready,
+              visibility: document.visibilityState,
+              message: document.querySelector("#message")?.textContent,
+              draws: state?.draws,
+              pending: state?.pending,
+              renderPending: state?.renderPending,
+              lod: state?.lod && {
+                tiles: state.lod.tiles,
+                cut: state.lod.cut,
+                activeKind: state.lod.activeKind,
+                queuedUpload: state.lod.queuedUpload,
+                preparations: state.lod.preparations,
+                gpuProgress: state.lod.gpuProgress,
+                failures: state.lod.failures,
+                memory: {
+                  totalBytes: state.lod.memory.totalBytes,
+                  peakBytes: state.lod.memory.peakBytes,
+                  freeBytes: state.lod.memory.freeBytes,
+                },
+              },
+            };
+          })
+          .catch((cause) => ({ error: String(cause) }));
+        console.error(
+          JSON.stringify({ mount: basePath, diagnostic, errors, failures }),
+        );
+        throw error;
       } finally {
         await page.close();
         if (child) {

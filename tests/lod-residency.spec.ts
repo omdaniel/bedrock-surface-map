@@ -1,6 +1,7 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { PNG } from "pngjs";
+import { captureLodFailure } from "./lod-evidence";
 import {
   parseManifest,
   parseNode,
@@ -260,17 +261,7 @@ async function holdFirstDetail(page: Page) {
 
 test.describe("LOD bounded residency over repeated navigation", () => {
   test.setTimeout(180_000);
-  test.afterEach(async ({ page }, info) => {
-    if (info.status !== info.expectedStatus && !page.isClosed()) {
-      const value = await page
-        .evaluate(() => window.__map?.state())
-        .catch(() => null);
-      await info.attach("lod-residency-state", {
-        body: Buffer.from(JSON.stringify(value, null, 2)),
-        contentType: "application/json",
-      });
-    }
-  });
+  test.afterEach(({ page }, info) => captureLodFailure(page, info));
 
   test("repeated lighting and zoom reversals drain retirement and stop terrain frames", async ({
     page,
