@@ -11,10 +11,18 @@ test("CI shards preserve browser assertions, timeouts and one-worker resource is
   assert.equal(config.retries, base.retries);
   assert.equal(config.workers, 1);
   assert.equal(config.fullyParallel, true);
-  assert.equal(config.use.viewport, base.use.viewport);
+  const softwareGpu =
+    Boolean(process.env.CI) || process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
+  assert.deepEqual(
+    config.use.viewport,
+    softwareGpu ? { width: 960, height: 720 } : base.use.viewport,
+  );
   assert.equal(config.use.deviceScaleFactor, base.use.deviceScaleFactor);
   if (process.env.SURFACE_CI_LOCAL_SOFTWARE !== "1")
-    assert.deepEqual(config.use, base.use);
+    assert.deepEqual(config.use, {
+      ...base.use,
+      viewport: config.use.viewport,
+    });
   assert.equal(config.reporter[0][0], "line");
   assert.equal(config.reporter[1][0], "json");
 });

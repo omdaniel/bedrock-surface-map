@@ -12,9 +12,13 @@ const url =
 const output = ".local/demo-evidence";
 await mkdir(output, { recursive: true });
 const localSoftware = process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
+const softwareGpu = Boolean(process.env.CI || localSoftware);
+const viewport = softwareGpu
+  ? { width: 960, height: 720 }
+  : { width: 1440, height: 1000 };
 // Software-GPU cold refinement verifies correctness, not hardware frame rate.
-// Keep it bounded and report wall time separately from the simulated clock.
-const coldTimeout = process.env.CI || localSoftware ? 180000 : 90000;
+// Keep it bounded and report wall time separately from playback.
+const coldTimeout = softwareGpu ? 180000 : 90000;
 const browser = await chromium.launch({
   channel: process.env.CI || localSoftware ? undefined : "chrome",
   headless: localSoftware || !process.env.CI,
@@ -34,7 +38,7 @@ const browser = await chromium.launch({
 let activePage;
 try {
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 1000 },
+    viewport,
     deviceScaleFactor: 1,
   });
   activePage = page;
@@ -208,7 +212,8 @@ try {
   );
   const result = {
     verification: {
-      softwareGpu: Boolean(process.env.CI || localSoftware),
+      softwareGpu,
+      viewport,
       coldTimeoutMs: coldTimeout,
       coldRefinementMs,
     },
@@ -225,7 +230,7 @@ try {
   // Exercise reduced-motion playback and real pointer input independently of
   // the paused stage captures above, using the same native browser timers.
   const ui = await browser.newPage({
-    viewport: { width: 1280, height: 800 },
+    viewport: softwareGpu ? viewport : { width: 1280, height: 800 },
     deviceScaleFactor: 1,
     reducedMotion: "reduce",
   });

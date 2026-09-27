@@ -27,6 +27,12 @@ for completed GPU work and inspect pixels; a submitted draw alone is not proof
 of visible output. CI does not use private worlds, Mojang textures or homelab
 credentials. It does not measure native Mac or iPad GPU performance.
 
+Software-GPU browser and full-demo pixel checks use a 960x720 default viewport
+at DPR 1 to bound raster work; explicit resize, mobile and DPR cases retain their
+own dimensions. Native demo verification uses 1440x1000. Reports include the
+viewport; neither substitutes for the controlled 1920x1080 hardware navigation
+benchmark.
+
 Browser CI uses six single-worker shards and audits discovery so every test runs
 exactly once. Repeated lighting/zoom and 21-view residency workloads allow six
 minutes on a software adapter; sparse-view settling allows one minute per view.
@@ -34,6 +40,8 @@ Native-browser limits remain three minutes for each repeated workload and
 30 seconds per sparse view.
 These bounded correctness waits preserve all navigation, coverage, retirement
 and memory assertions; they are not frame-rate targets.
+Failure-recovery tests check camera input immediately, then allow up to 15 seconds
+for a software-GPU draw; native-browser draws retain their three-second limit.
 
 ## Offline Import
 

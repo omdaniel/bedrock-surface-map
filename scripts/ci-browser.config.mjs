@@ -5,6 +5,8 @@ import base from "../playwright.config.ts";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const output = resolve(root, "test-results/ci-browser");
+const softwareGpu =
+  Boolean(process.env.CI) || process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
 
 export default defineConfig({
   ...base,
@@ -22,6 +24,8 @@ export default defineConfig({
   ],
   use: {
     ...base.use,
+    // Pixel correctness is separate from full-resolution native-GPU acceptance.
+    ...(softwareGpu ? { viewport: { width: 960, height: 720 } } : {}),
     // The Linux Vulkan flags cannot select a WebGPU adapter on macOS. This
     // opt-in local reproduction uses the native package smoke's software path.
     ...(process.env.SURFACE_CI_LOCAL_SOFTWARE === "1"

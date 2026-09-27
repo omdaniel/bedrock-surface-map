@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const directory = resolve(".local/terrain-large");
+// These legacy admission fixtures require this footprint to exceed their limit.
+test.use({ viewport: { width: 1280, height: 800 } });
 
 test("sun elevation refuses an oversized shadow window and navigation recovers", async ({
   page,

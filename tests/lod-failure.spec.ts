@@ -240,9 +240,16 @@ async function recovered(page: Page, anchor: { x: number; z: number }) {
 async function responsiveCoarse(page: Page, anchor: { x: number; z: number }) {
   const before = await page.evaluate(() => window.__map.state());
   await page.evaluate(() => window.__map.pan(8, -5));
+  const input = await page.evaluate(() => window.__map.state());
+  expect(input.cx).toBeCloseTo(before.cx + 8);
+  expect(input.cz).toBeCloseTo(before.cz - 5);
+  expect(input.scale).toBeCloseTo(6);
   await expect
     .poll(() => page.evaluate(() => window.__map.state().draws), {
-      timeout: 3000,
+      timeout:
+        process.env.CI || process.env.SURFACE_CI_LOCAL_SOFTWARE === "1"
+          ? 15_000
+          : 3000,
     })
     .toBeGreaterThan(before.draws);
   const state = await page.evaluate(() => window.__map.state());
