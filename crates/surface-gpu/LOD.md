@@ -224,9 +224,9 @@ Reading memory stats or the next render/admission reaps resources on the main
 thread. Completed feedback readbacks dispatch the same event. This also wakes the
 controller when rendering has otherwise stopped.
 
-Shadow traversal resolves a height page once per step and shares its address
-between the current node and its parent. Each ray retains the coverage checks
-and representative-leaf tests; page maxima only prune traversal.
+Shadow traversal uses the same checked height lookup for current and parent
+nodes. Each ray retains the coverage checks and representative-leaf tests;
+page maxima only prune traversal.
 
 The opt-in native diagnostic compares exact rays and query/step counts against
 the legacy height-tree shader on the generated 1,024-square synthetic fixture:

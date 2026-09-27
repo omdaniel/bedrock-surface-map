@@ -82,15 +82,7 @@ fn ray_shadow(start:vec2f,y:f32)->f32 {
         let position=start+direction*(distance+epsilon);
         let ray_y=y+distance*slope+0.0001;
         if ray_y>=p.bounds.x || any(position<draw.world.xy) || any(position>=draw.world.zw) {return 0.0;}
-        // Resolve the page once: both hierarchy levels contain this position.
-        let delta=vec2i(floor(position/128.0));
-        let key=draw.key.yz+delta;
-        let slot=page_slot(key,u32(draw.key.x));
-        let local=vec2u(clamp(floor(position-vec2f(delta)*128.0),vec2f(0),vec2f(127)));
-        var node:vec2u;
-        if slot<0 {node=ancestor_absence(key,local,mip);}
-        else {node=page_node(slot,local,mip);}
-        let flags=node.x>>16u;
+        let node=height_node(position,mip);let flags=node.x>>16u;
         if (flags&32u)!=0u || ((flags&4u)!=0u && (flags&1u)!=0u) {
             if mip>0u {mip-=1u;continue;}
             if (flags&32u)!=0u {height_status|=1u;return 0.0;}
@@ -100,9 +92,7 @@ fn ray_shadow(start:vec2f,y:f32)->f32 {
             if mip>0u {mip-=1u;continue;}
             if any(vec2i(floor(position))!=own) && signed_height(node.x)>ray_y {return 1.0;}
         } else if mip<7u {
-            var parent:vec2u;
-            if slot<0 {parent=ancestor_absence(key,local,mip+1u);}
-            else {parent=page_node(slot,local,mip+1u);}
+            let parent=height_node(position,mip+1u);
             let parent_flags=parent.x>>16u;
             // An all-unavailable span has no retained occluders to test. Skip
             // its cells, but preserve unknown status: this is not empty ground

@@ -249,6 +249,12 @@ The Chrome harness records actual rAF cadence separately from its pan-input cap;
 video and screenshots may affect timing. Reports, screenshots and recordings
 stay under `.local/`. Physical iPad acceptance is separate from desktop layouts.
 
+The release usability target is at least 30 submitted terrain frames per second
+during controlled reference navigation, with responsive input and the unchanged
+200,000,000-byte managed memory ceiling. Submitted frames are not a measurement
+of physical presentation. Higher frame rates remain a profiling target, not a
+promise for every browser, dataset or device.
+
 For a matched rebuilt-main/LOD comparison on an independently configured 60 Hz
 display, serve both frozen builds and supply their loopback URLs:
 
