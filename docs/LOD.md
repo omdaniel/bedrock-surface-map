@@ -42,8 +42,11 @@ npm run dev
 
 Open `http://127.0.0.1:5173/?lod=/maps/prepared-lod/lod.json&players=off`.
 For a configured viewer, set `lod_url` relative to the application base path.
-An explicitly selected `map` URL retains the non-LOD reader. A prepared map
-carrying a world identity requires a matching viewer binding. For static
+An explicitly selected `map` URL retains the non-LOD reader. A snapshot
+exceeding that reader's allocation limits requires conversion; the viewer
+shows the `surface-cli prepare-lod` command and `lod_url` configuration guidance
+before requesting regional data.
+A prepared map carrying a world identity requires a matching viewer binding. For static
 snapshots, set `lod_identity` to the descriptor's `{ "world_id", "generation" }`;
 the native snapshot server and deployment generator emit it automatically.
 It applies only to the configured static `lod_url` and does not start polling.
