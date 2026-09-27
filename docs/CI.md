@@ -15,6 +15,9 @@ Prototype Checks runs non-GPU workspace tests in parallel and runs every
 devices on the software Vulkan runner and keeps the active fixture identifiable
 in driver-failure logs. Native GPU correctness and software browser checks remain
 separate gates; neither establishes real-hardware frame-rate performance.
+The generated HTTPS browser harness retries startup once only for Chromium's
+`ERR_NETWORK_CHANGED` before the application exists and without a JavaScript
+failure. It does not retry initialized-map or gameplay/update failures.
 
 Configure these protected GitLab variables before enabling its jobs:
 

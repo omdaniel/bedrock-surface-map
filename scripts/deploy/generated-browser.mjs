@@ -6,6 +6,39 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
+export async function openGeneratedMap(page, url, consoleMessages, errors) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const messageStart = consoleMessages.length;
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForFunction(
+        () =>
+          window.__map?.ready &&
+          window.__map.state().lod?.tiles > 0 &&
+          window.__map.state().cached > 0 &&
+          window.__map.state().pending === 0 &&
+          window.__map.state().draws > 0,
+        undefined,
+        { timeout: 30_000 },
+      );
+      return;
+    } catch (error) {
+      const changed =
+        String(error).includes("net::ERR_NETWORK_CHANGED") ||
+        consoleMessages
+          .slice(messageStart)
+          .some((message) => message.includes("net::ERR_NETWORK_CHANGED"));
+      if (
+        attempt !== 0 ||
+        !changed ||
+        errors.length ||
+        (await page.evaluate(() => Boolean(window.__map)))
+      )
+        throw error;
+    }
+  }
+}
+
 export async function verifyGeneratedBrowser({
   port,
   ca,
@@ -73,19 +106,11 @@ export async function verifyGeneratedBrowser({
           consoleMessages.push(message.text());
       });
       try {
-        await page.goto(`${origin}${suffix}`, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await page.waitForFunction(
-          () =>
-            window.__map?.ready &&
-            window.__map.state().lod?.tiles > 0 &&
-            window.__map.state().cached > 0 &&
-            window.__map.state().pending === 0 &&
-            window.__map.state().draws > 0,
-          undefined,
-          { timeout: 30_000 },
+        await openGeneratedMap(
+          page,
+          `${origin}${suffix}`,
+          consoleMessages,
+          errors,
         );
         await page.evaluate(() => {
           const map = window.__map,
