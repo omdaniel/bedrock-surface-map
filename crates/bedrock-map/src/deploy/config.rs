@@ -2,6 +2,21 @@ use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 
+pub const DEFAULT_TERRAIN_STORE_LIMIT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+pub const MAX_TERRAIN_STORE_LIMIT_BYTES: u64 = i64::MAX as u64;
+
+pub fn default_terrain_store_limit_bytes() -> u64 {
+    DEFAULT_TERRAIN_STORE_LIMIT_BYTES
+}
+
+pub fn validate_terrain_store_limit(limit: u64) -> Result<()> {
+    ensure!(
+        (1..=MAX_TERRAIN_STORE_LIMIT_BYTES).contains(&limit),
+        "E_CONFIG_INVALID: terrain_store_limit_bytes must be a positive signed-64-bit byte count"
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -11,6 +26,9 @@ pub struct Config {
     pub ingest_bind: Ipv4Addr,
     pub bds_source_ipv4: Ipv4Addr,
     pub world_id: Option<String>,
+    pub generation: Option<String>,
+    #[serde(default = "default_terrain_store_limit_bytes")]
+    pub terrain_store_limit_bytes: u64,
     #[serde(default)]
     pub features: Features,
     #[serde(default)]
@@ -109,6 +127,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        validate_terrain_store_limit(self.terrain_store_limit_bytes)?;
         ensure!(
             self.schema_version == 1,
             "E_CONFIG_SCHEMA: unsupported deployment schema"
@@ -156,6 +175,14 @@ impl Config {
             "E_CONFIG_INVALID: invalid world_id"
         );
         ensure!(
+            self.generation
+                .as_deref()
+                .is_none_or(|generation| self.features.terrain
+                    && self.world_id.is_some()
+                    && surface_core::terrain::valid_id(generation)),
+            "E_CONFIG_INVALID: generation requires terrain, an explicit world_id, and a bounded terrain identity"
+        );
+        ensure!(
             (4..=16).contains(&self.terrain_pack.view_distance)
                 && (1..=4).contains(&self.terrain_pack.scan_budget_ms),
             "E_CONFIG_INVALID: terrain_pack requires view_distance 4-16 and scan_budget_ms 1-4"
@@ -189,8 +216,65 @@ mod tests {
         assert!(!c.features.terrain);
         assert_eq!(c.ports.players, 18081);
         assert_eq!(c.terrain_pack, TerrainPack::default());
+        assert_eq!(
+            c.terrain_store_limit_bytes,
+            DEFAULT_TERRAIN_STORE_LIMIT_BYTES
+        );
         assert!(Config::parse(&input().replace("players=true", "players=false")).is_err());
         assert!(Config::parse(&(input() + "misspelling=true\n")).is_err());
+    }
+    #[test]
+    fn terrain_store_quota_is_positive_bounded_and_round_trips() {
+        for limit in [
+            1,
+            DEFAULT_TERRAIN_STORE_LIMIT_BYTES,
+            8 * 1024 * 1024 * 1024,
+            MAX_TERRAIN_STORE_LIMIT_BYTES,
+        ] {
+            let text = input().replace(
+                "[features]",
+                &format!("terrain_store_limit_bytes={limit}\n[features]"),
+            );
+            let c = Config::parse(&text).unwrap();
+            assert_eq!(c.terrain_store_limit_bytes, limit);
+            assert_eq!(Config::parse(&toml::to_string(&c).unwrap()).unwrap(), c);
+        }
+        for value in [
+            "0",
+            "-1",
+            "1.5",
+            "'2147483648'",
+            "true",
+            "9223372036854775808",
+        ] {
+            let text = input().replace(
+                "[features]",
+                &format!("terrain_store_limit_bytes={value}\n[features]"),
+            );
+            assert!(Config::parse(&text).is_err(), "{value}");
+        }
+        let mut c = Config::parse(&input()).unwrap();
+        c.terrain_store_limit_bytes = u64::MAX;
+        assert!(c.validate().is_err());
+    }
+    #[test]
+    fn existing_generation_requires_explicit_terrain_world_identity() {
+        let text = input()
+            .replace(
+                "[features]",
+                "world_id='fixture-world'\ngeneration='fixture-generation'\n[features]",
+            )
+            .replace("players=true", "terrain=true");
+        let c = Config::parse(&text).unwrap();
+        assert_eq!(c.generation.as_deref(), Some("fixture-generation"));
+        assert_eq!(Config::parse(&toml::to_string(&c).unwrap()).unwrap(), c);
+        assert!(Config::parse(&text.replace("world_id='fixture-world'\n", "")).is_err());
+        assert!(Config::parse(&text.replace("terrain=true", "players=true")).is_err());
+        for generation in ["", "../other", "with space", &"a".repeat(81)] {
+            let mut invalid = c.clone();
+            invalid.generation = Some(generation.into());
+            assert!(invalid.validate().is_err());
+        }
     }
     #[test]
     fn terrain_pack_settings_are_explicit_and_bounded() {

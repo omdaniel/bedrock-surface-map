@@ -9,6 +9,7 @@ pub mod dataset;
 pub mod deploy;
 pub mod doctor;
 pub mod health;
+pub mod preparation;
 pub mod resources;
 pub mod server;
 pub mod state;

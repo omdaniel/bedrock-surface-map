@@ -3,6 +3,7 @@ import { PNG } from "pngjs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 const fixture = "/?map=/maps/fixture/manifest.json";
 async function setAzimuth(
   page: import("@playwright/test").Page,
@@ -42,6 +43,35 @@ function colors(bytes: Buffer) {
     }
   return unique;
 }
+for (const limit of ["extent", "region count"])
+  test(`oversized legacy snapshot gives LOD conversion guidance before allocation: ${limit}`, async ({
+    page,
+  }) => {
+    const source = JSON.parse(
+      readFileSync("web/public/maps/fixture/manifest.json", "utf8"),
+    );
+    if (limit === "extent") source.bounds = [-8192, -8192, 8192, 8192];
+    else source.regions = Array(4097).fill(source.regions[0]);
+    const assets: string[] = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (/\/maps\/fixture\/(assets|heights|regions)\//.test(path))
+        assets.push(path);
+    });
+    await page.route(
+      (url) => url.pathname === "/maps/fixture/manifest.json",
+      (route) => route.fulfill({ json: source }),
+    );
+    await page.goto(fixture);
+    await expect(page.locator("#message-text")).toContainText(
+      "surface-cli prepare-lod --map <manifest.json> --output <directory>",
+    );
+    await expect(page.locator("#message-text")).toContainText("set lod_url");
+    await expect(page.locator("#retry")).toBeVisible();
+    expect(await page.evaluate(() => window.__map.ready)).toBe(false);
+    expect(assets).toEqual([]);
+    expect(await page.evaluate(() => window.__map.state().cached)).toBe(0);
+  });
 test("synthetic pixels, picking, navigation, idle, toggles, resize and device recovery", async ({
   page,
 }) => {

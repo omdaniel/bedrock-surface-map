@@ -52,6 +52,15 @@ impl Fixture {
         Self::with_access(terrain, players, false)
     }
     fn with_access(terrain: bool, players: bool, public_access: bool) -> Self {
+        Self::with_options(terrain, players, public_access, None, None)
+    }
+    fn with_options(
+        terrain: bool,
+        players: bool,
+        public_access: bool,
+        quota: Option<u64>,
+        identity: Option<(&str, &str)>,
+    ) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("deploy");
         let source = State::new(temp.path().join("snapshot")).unwrap();
@@ -166,7 +175,13 @@ impl Fixture {
         } else {
             ""
         };
-        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\n[terrain_pack]\nview_distance=4\nscan_budget_ms=4\n{viewer}")).unwrap();
+        let quota = quota
+            .map(|limit| format!("terrain_store_limit_bytes={limit}\n"))
+            .unwrap_or_default();
+        let identity = identity
+            .map(|(world, generation)| format!("world_id='{world}'\ngeneration='{generation}'\n"))
+            .unwrap_or_default();
+        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n{quota}{identity}[features]\nterrain={terrain}\nplayers={players}\n[terrain_pack]\nview_distance=4\nscan_budget_ms=4\n{viewer}")).unwrap();
         init::initialize(
             &root,
             &config,
@@ -193,6 +208,224 @@ impl Fixture {
             terrain.then_some(self.assets.as_path()),
         )
     }
+    fn select_v2(&self, world: &str, generation: &str) {
+        let active = self.source.active_validated().unwrap().unwrap();
+        let input = self.source.registered(&active.dataset_id).unwrap().unwrap();
+        let export = self._temp.path().join("v2-export");
+        let mut store =
+            surface_sync::store::Store::open(&export, world, generation, 1 << 30).unwrap();
+        store.seed(&input, None, None).unwrap();
+        let manifest = store.manifest().unwrap();
+        fs::write(
+            export.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let files = bedrock_map::dataset::validate_inventory(&export).unwrap();
+        let operation = self.source.operation("prepare-lod").unwrap();
+        let public = operation.path().join("public");
+        fs::create_dir_all(&public).unwrap();
+        for path in files {
+            let destination = public.join(&path);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(export.join(path), destination).unwrap();
+        }
+        let registered = std::process::Command::new(env!("CARGO_BIN_EXE_bedrock-map"))
+            .args(["--json", "--state"])
+            .arg(&self.source.root)
+            .args(["register", "--snapshot"])
+            .arg(&public)
+            .arg("--replace-active")
+            .output()
+            .unwrap();
+        assert!(
+            registered.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&registered.stdout),
+            String::from_utf8_lossy(&registered.stderr)
+        );
+        assert_eq!(
+            self.source
+                .active_validated()
+                .unwrap()
+                .unwrap()
+                .source_sha256,
+            active.source_sha256
+        );
+    }
+}
+
+#[test]
+fn v2_deployment_preserves_existing_identity_and_configured_store_quota() {
+    let quota = 8 * 1024 * 1024 * 1024;
+    let f = Fixture::with_options(
+        true,
+        true,
+        false,
+        Some(quota),
+        Some(("fixture-world", "fixture-generation")),
+    );
+    let lock = init::load(&f.root).unwrap().1;
+    assert_eq!(lock.generation.as_deref(), Some("fixture-generation"));
+    f.select_v2(&lock.world_id, lock.generation.as_deref().unwrap());
+    let initial = f.source.active_validated().unwrap().unwrap();
+    let unprepared = inventory(&f.source.root);
+    let prepare_lod = |budget: &str| {
+        std::process::Command::new(env!("CARGO_BIN_EXE_bedrock-map"))
+            .args(["--json", "--state"])
+            .arg(&f.source.root)
+            .args([
+                "prepare-lod",
+                "--replace-active",
+                "--max-output-bytes",
+                budget,
+            ])
+            .output()
+            .unwrap()
+    };
+    assert!(!prepare_lod("1").status.success());
+    assert_eq!(inventory(&f.source.root), unprepared);
+    assert_eq!(
+        f.source.active_validated().unwrap().unwrap().dataset_id,
+        initial.dataset_id
+    );
+    let prepared = prepare_lod("2147483648");
+    assert!(
+        prepared.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&prepared.stdout),
+        String::from_utf8_lossy(&prepared.stderr)
+    );
+    let selected = f.source.active_validated().unwrap().unwrap();
+    assert_ne!(selected.dataset_id, initial.dataset_id);
+    assert_eq!(selected.source_sha256, initial.source_sha256);
+    let before = inventory(&f.source.root);
+    let p = f.prepare().unwrap();
+    assert_eq!(p.terrain_store_limit_bytes, quota);
+    assert_eq!(p.world_id, lock.world_id);
+    assert_eq!(p.generation, lock.generation);
+    let common = fs::read(f.resources.root.join("provenance/common-manifest.json")).unwrap();
+    launch::validate_marker(&p, &"a".repeat(40), &common).unwrap();
+    let command = launch::terrain_command(&p).unwrap();
+    let args: Vec<_> = command.get_args().map(|s| s.to_str().unwrap()).collect();
+    assert!(args.windows(2).any(|a| a == ["--limit", "8589934592"]));
+    assert!(
+        args.windows(2)
+            .any(|a| a == ["--generation", "fixture-generation"])
+    );
+    assert_eq!(prepare::load(&f.root).unwrap(), p);
+    assert_eq!(f.prepare().unwrap(), p);
+    assert_eq!(inventory(&f.source.root), before);
+    launch::validate_store(&f.root.join("prepared/terrain/current.sqlite3"), &p).unwrap();
+    let viewer: Value = serde_json::from_slice(
+        &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        viewer["terrain"]["lod_url"],
+        "/api/v1/worlds/fixture-world/terrain/lod.json"
+    );
+    assert_eq!(viewer["terrain"]["generation"], "fixture-generation");
+    assert_eq!(
+        viewer["lod_identity"],
+        json!({
+            "world_id":"fixture-world", "generation":"fixture-generation"
+        })
+    );
+}
+
+#[test]
+fn v2_snapshot_identity_is_emitted_without_enabling_terrain() {
+    let f = Fixture::new(false, true);
+    let lock = init::load(&f.root).unwrap().1;
+    assert!(lock.generation.is_none());
+    f.select_v2(&lock.world_id, "snapshot-generation");
+    let p = f.prepare().unwrap();
+    let viewer: Value = serde_json::from_slice(
+        &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        viewer["lod_identity"],
+        json!({
+            "world_id":lock.world_id, "generation":"snapshot-generation"
+        })
+    );
+    assert!(viewer["lod_url"].as_str().unwrap().starts_with("maps/"));
+    assert!(viewer.get("terrain").is_none());
+    assert_eq!(viewer["players"]["world_id"], lock.world_id);
+    assert!(viewer["players"].get("generation").is_none());
+    assert!(p.seed_files.is_empty());
+    assert!(!f.root.join("prepared/terrain").exists());
+    assert!(
+        !fs::read_to_string(f.root.join("prepared/gateway/Caddyfile"))
+            .unwrap()
+            .contains("/terrain/")
+    );
+}
+
+#[test]
+fn v2_deployment_rejects_snapshot_generation_mismatch_before_publication() {
+    let f = Fixture::new(true, false);
+    let lock = init::load(&f.root).unwrap().1;
+    f.select_v2(&lock.world_id, "other-generation");
+    let before = inventory(&f.source.root);
+    assert!(
+        f.prepare()
+            .unwrap_err()
+            .to_string()
+            .contains("snapshot world/generation")
+    );
+    assert!(!f.root.join("prepared").exists());
+    assert_eq!(inventory(&f.source.root), before);
+}
+
+#[test]
+fn terrain_store_quota_failure_leaves_no_published_preparation() {
+    let f = Fixture::with_options(true, false, false, Some(1), None);
+    let before = inventory(&f.source.root);
+    assert!(
+        f.prepare()
+            .unwrap_err()
+            .to_string()
+            .contains("capacity exceeded")
+    );
+    assert!(!f.root.join("prepared").exists());
+    assert!(!fs::read_dir(f.root.join("work")).unwrap().any(|e| {
+        e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("prepare-")
+    }));
+    assert_eq!(inventory(&f.source.root), before);
+}
+
+#[test]
+fn missing_preparation_quota_defaults_to_two_gib() {
+    let f = Fixture::new(true, false);
+    let p = f.prepare().unwrap();
+    let marker = f.root.join("prepared/preparation.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&marker).unwrap()).unwrap();
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove("terrain_store_limit_bytes");
+    fs::write(&marker, serde_json::to_vec(&value).unwrap()).unwrap();
+    assert_eq!(prepare::load(&f.root).unwrap(), p);
+    assert_eq!(p.terrain_store_limit_bytes, 2 * 1024 * 1024 * 1024);
+    let mut invalid = p;
+    invalid.terrain_store_limit_bytes = 0;
+    assert!(launch::terrain_command(&invalid).is_err());
+    let common = fs::read(f.resources.root.join("provenance/common-manifest.json")).unwrap();
+    assert!(launch::validate_marker(&invalid, &"a".repeat(40), &common).is_err());
+    invalid.terrain_store_limit_bytes = 8 * 1024 * 1024 * 1024;
+    fs::write(&marker, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    assert!(
+        prepare::load(&f.root)
+            .unwrap_err()
+            .to_string()
+            .contains("quota differs")
+    );
 }
 fn asset_fixture(path: &Path) {
     let mut archive = zip::ZipWriter::new(fs::File::create(path).unwrap());
@@ -453,8 +686,11 @@ fn active_live_store_and_changed_assets_refuse_another_prepare() {
     let prepared = f.prepare().unwrap();
     let database = f.root.join("prepared/terrain/current.sqlite3");
     let db = rusqlite::Connection::open(&database).unwrap();
-    db.execute("UPDATE meta SET value='1' WHERE key='observation'", [])
-        .unwrap();
+    db.execute(
+        "UPDATE meta SET value=CAST(value AS INTEGER)+1 WHERE key='observation'",
+        [],
+    )
+    .unwrap();
     drop(db);
     let live = inventory(&f.root.join("prepared/terrain"));
     assert!(f.prepare().is_err());
@@ -515,7 +751,13 @@ fn firewall_recipe_is_scoped_syntactically_valid_and_never_automatically_applied
 #[test]
 fn feature_combinations_match_mounts_routes_and_world_module_ids() {
     for (terrain, players) in [(true, false), (false, true), (true, true)] {
-        let f = Fixture::new(terrain, players);
+        let f = Fixture::with_options(
+            terrain,
+            players,
+            false,
+            None,
+            terrain.then_some(("world-80818082", "fixture-generation")),
+        );
         let p = f.prepare().unwrap();
         let config: Value = serde_json::from_slice(
             &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
@@ -523,6 +765,40 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         .unwrap();
         assert_eq!(config.get("terrain").is_some(), terrain);
         assert_eq!(config.get("players").is_some(), players);
+        let static_lod = format!("maps/{}/lod.json", p.dataset_id);
+        assert_eq!(config["lod_url"], static_lod);
+        assert!(config.get("lod_identity").is_none());
+        assert!(f.root.join("prepared/public").join(&static_lod).is_file());
+        assert!(
+            p.immutable_files
+                .contains_key(&format!("public/{static_lod}"))
+        );
+        if terrain {
+            assert_eq!(
+                config["terrain"]["lod_url"],
+                format!("/api/v1/worlds/{}/terrain/lod.json", p.world_id)
+            );
+            let db = rusqlite::Connection::open_with_flags(
+                f.root.join("prepared/terrain/current.sqlite3"),
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .unwrap();
+            let encoded: String = db
+                .query_row(
+                    "SELECT value FROM meta WHERE key='lod_manifest'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let lod: surface_core::lod::LodManifest = serde_json::from_str(&encoded).unwrap();
+            lod.validate().unwrap();
+            assert_eq!(lod.world_id.as_deref(), Some(p.world_id.as_str()));
+            assert_eq!(Some(lod.generation), p.generation);
+            assert!(p.seed_files.contains_key("current.sqlite3"));
+            for root in lod.roots {
+                assert_eq!(p.seed_files.get(&root.index.url), Some(&root.index.sha256));
+            }
+        }
         if players {
             assert_eq!(config["players"]["source_sha256"], p.source_sha256);
             assert_eq!(config["players"]["poll_interval_ms"], 100);
@@ -533,8 +809,21 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         assert_eq!(compose["services"].get("players").is_some(), players);
         let caddy = fs::read_to_string(f.root.join("prepared/gateway/Caddyfile")).unwrap();
         assert_eq!(caddy.contains("terrain:8111"), terrain);
+        assert_eq!(caddy.contains("manifest\\.json|lod\\.json|status"), terrain);
         assert_eq!(caddy.contains("players:8110"), players);
-        assert!(!caddy.contains("8081") && !caddy.contains("8082") && !caddy.contains("ingest"));
+        let upstreams: Vec<_> = caddy
+            .lines()
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                (words.next() == Some("reverse_proxy")).then(|| words.next().unwrap())
+            })
+            .collect();
+        let expected: Vec<_> = [(players, "players:8110"), (terrain, "terrain:8111")]
+            .into_iter()
+            .filter_map(|(enabled, address)| enabled.then_some(address))
+            .collect();
+        assert_eq!(upstreams, expected);
+        assert!(!caddy.contains("ingest"));
         for service in compose["services"].as_object().unwrap().values() {
             assert!(service.get("depends_on").is_none());
             assert_eq!(service["read_only"], true);

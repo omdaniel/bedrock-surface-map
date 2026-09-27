@@ -3,7 +3,7 @@
 The public site is a static demonstration, not a live view of an operator's server.
 It uses the production renderer, codecs, picking, player layer and chunk-update
 path. A small source adapter supplies fictional player snapshots and selects
-precomputed terrain manifests. No global fetch interception or backend is used.
+precomputed LOD manifests. No global fetch interception or backend is used.
 
 ## Dataset and Playback
 
@@ -20,7 +20,10 @@ precomputed terrain manifests. No global fetch interception or backend is used.
 The source manifest in [sources/demo.json](../sources/demo.json) pins the release,
 checksum, export recipe, bounds and snapshot provenance. The packet contains a
 bounded gzip-compressed JSON dictionary of base64 files, decoded only at build
-time. The browser fetches normal same-origin objects, not the packet or Git LFS.
+time. Preparation derives four LOD stages with shared content-addressed objects
+from the approved surface snapshots. The browser fetches normal same-origin
+objects, not the packet or Git LFS. Playback uses the same memory ledger,
+refinement, height pages and incremental terrain adoption as live LOD maps.
 
 ## Reproduce an Approved Export
 
@@ -38,7 +41,8 @@ contacts a game server or reads the source texture atlas. Source archive and imp
 world data remain private; changes require a fresh reviewed release and checksum.
 Do not overwrite an already published version with different bytes.
 
-For public-build reproduction, no private input or Rust exporter is needed:
+For public-build reproduction, use the pinned Rust toolchain and Node dependencies.
+No private input or raw-world exporter is needed:
 
 ```sh
 npm run demo:prepare
@@ -58,7 +62,8 @@ Other screenshots remain ignored. No production player names appear in this medi
 GitHub Pages uses the existing CI workflow. PRs run checks without publishing;
 successful pushes to main publish only `.local/demo-dist`, with pinned Pages
 actions and restricted deployment permissions. The artifact audit checks every
-dataset file against the reviewed packet, rejects extra files and private markers,
+source file against the reviewed packet, validates the complete derived LOD graph,
+rejects unreferenced files and private markers,
 and verifies the poster and demo-only configuration. The site is independently
 hosted at <https://omdaniel.github.io/bedrock-surface-map/> with trusted HTTPS.
 
@@ -73,6 +78,15 @@ expansion bounds. `scripts/check-demo.mjs` exercises two timeline loops,
 monotonic restart, player-only idle rendering, center/follow, manual follow
 cancellation, pause, mobile layout, reduced motion and the missing-WebGPU poster.
 Terrain changes use the same decoder, picking and shadow-update path as live maps.
+Browser checks use native timers for rendering and two complete playback loops;
+clock unit tests cover ordering, restart and visibility deterministically. Playback
+pauses during each settled terrain-stage inspection.
+Software-GPU checks allow up to 180 seconds for each settled terrain revision and
+record cold-refinement wall time independently of the simulated timeline. Native
+Chrome allows 90 seconds for cold refinement and 30 seconds for subsequent
+revisions. A settled revision includes completed GPU submissions and drained
+retirement, not just completed downloads. These bounded correctness waits are not
+hardware performance targets; pixel, picking and update assertions remain required.
 
 Run the built-site check and artifact audit above before publication. Inspect
 desktop/mobile screenshots for fictional labels, visible controls and matching

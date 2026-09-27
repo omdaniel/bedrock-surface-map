@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { verifyServedLod } from "./verify-common.mjs";
 
 const archive = process.argv[2];
 if (!archive) throw Error("usage: smoke.mjs <archive>");
@@ -148,18 +149,15 @@ try {
     });
     child.once("error", reject);
   });
-  const [html, config, health] = await Promise.all([
+  const [html, health, lod] = await Promise.all([
     fetch(url, { signal: AbortSignal.timeout(5000) }),
-    fetch(new URL("viewer-config.json", url), {
-      signal: AbortSignal.timeout(5000),
-    }),
     fetch(new URL("api/v1/health/ready", url), {
       signal: AbortSignal.timeout(5000),
     }),
+    verifyServedLod(url),
   ]);
   if (
     !html.ok ||
-    !config.ok ||
     !health.ok ||
     !(await html.text()).includes("Bedrock Surface Map")
   )
@@ -206,6 +204,7 @@ try {
       generated_world_import: imported,
       corruption_refused: Boolean(imported),
       readiness_url: url,
+      lod,
     }),
   );
 } finally {

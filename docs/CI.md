@@ -10,6 +10,15 @@ successful CI does not create a version tag or a GitHub Release. Deployment CI
 also validates both native archives; publication requires the protected manual
 pipeline below.
 
+Prototype Checks runs non-GPU workspace tests in parallel and runs every
+`surface-gpu` fixture with `--test-threads=1 --nocapture`. This isolates test
+devices on the software Vulkan runner and keeps the active fixture identifiable
+in driver-failure logs. Native GPU correctness and software browser checks remain
+separate gates; neither establishes real-hardware frame-rate performance.
+The generated HTTPS browser harness retries startup once only for Chromium's
+`ERR_NETWORK_CHANGED` before the application exists and without a JavaScript
+failure. It does not retry initialized-map or gameplay/update failures.
+
 Configure these protected GitLab variables before enabling its jobs:
 
 - `BEDROCK_MAP_RELEASE_IMAGE`: a pinned image containing Node 26.8.1, Rust

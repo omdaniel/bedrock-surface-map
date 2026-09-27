@@ -10,6 +10,7 @@ import { verifyGeneratedBrowser } from "./generated-browser.mjs";
 import { generatedProducer } from "./generated-producer.mjs";
 import { firewallVantages } from "./generated-firewall.mjs";
 import { fixtureTransport } from "./generated-transport.mjs";
+import { waitForJson } from "./generated-readiness.mjs";
 import { operatorBundle } from "../release/operator-bundle.mjs";
 import { sha256 } from "../release/oci.mjs";
 
@@ -74,7 +75,7 @@ async function waitFor(callback) {
   }
   throw error;
 }
-function https(port, path, authenticated = true) {
+function https(port, path, authenticated = true, signal) {
   return new Promise((resolveResponse, reject) => {
     const req = httpsRequest(
       {
@@ -84,6 +85,7 @@ function https(port, path, authenticated = true) {
         path,
         ca,
         timeout: 5000,
+        signal,
         headers: {
           host: "map.example.test",
           ...(authenticated
@@ -113,10 +115,18 @@ function https(port, path, authenticated = true) {
       },
     );
     req.on("error", reject);
-    req.on("timeout", () => req.destroy(Error("HTTPS fixture timeout")));
+    req.on("timeout", () =>
+      req.destroy(
+        Object.assign(Error("HTTPS fixture timeout"), { code: "ETIMEDOUT" }),
+      ),
+    );
     req.end();
   });
 }
+const readyJson = (port, path) =>
+  waitForJson((signal) => https(port, path, true, signal), {
+    label: `GET ${path}`,
+  });
 try {
   docker(
     "run",
@@ -340,18 +350,9 @@ try {
   assert.equal(viewer.players.world_id, marker.world_id);
   const playerPath = viewer.players.url;
   const terrainStatus = `/api/v1/worlds/${marker.world_id}/terrain/status`;
-  const terrainManifest = await waitFor(async () => {
-    const response = await https(port, viewer.terrain.url);
-    assert.equal(response.status, 200);
-    return JSON.parse(response.body);
-  });
+  const terrainManifest = await readyJson(port, viewer.terrain.url);
   assert.ok(terrainManifest.regions.length > 0);
-  await waitFor(async () =>
-    assert.equal(
-      JSON.parse((await https(port, playerPath)).body).status,
-      "starting",
-    ),
-  );
+  assert.equal((await readyJson(port, playerPath)).status, "starting");
   for (const name of ["terrain", "players"])
     await waitFor(async () =>
       assert.equal(inspect(name).State.Health.Status, "healthy"),
@@ -405,12 +406,12 @@ try {
   assert.equal((await https(port, terrainStatus)).status, 200);
   assert.equal((await https(port, playerPath)).status, 502);
   compose("start", "players");
-  await waitFor(async () =>
-    assert.equal(
-      JSON.parse((await https(port, playerPath)).body).status,
-      "starting",
-    ),
+  assert.equal(
+    inspect("players").State.Running,
+    true,
+    "players container must be running after compose start",
   );
+  assert.equal((await readyJson(port, playerPath)).status, "starting");
   compose("stop", "-t", "5");
   for (const name of ["gateway", "terrain", "players"])
     assert.equal(inspect(name).State.ExitCode, 0);
@@ -422,13 +423,7 @@ try {
   // Docker can assign a different ephemeral host port when restarting a stopped
   // container. The supported deployment uses fixed ports; this fixture does not.
   port = inspect("gateway").NetworkSettings.Ports["443/tcp"][0].HostPort;
-  await waitFor(async () =>
-    assert.equal((await https(port, viewer.terrain.url)).status, 200),
-  );
-  assert.deepEqual(
-    JSON.parse((await https(port, viewer.terrain.url)).body),
-    terrainManifest,
-  );
+  assert.deepEqual(await readyJson(port, viewer.terrain.url), terrainManifest);
   assert.ok(stable.equals(await readFile(markerPath)));
   assert.ok(
     certificate.equals(
@@ -437,10 +432,7 @@ try {
       ),
     ),
   );
-  assert.equal(
-    JSON.parse((await https(port, playerPath)).body).status,
-    "starting",
-  );
+  assert.equal((await readyJson(port, playerPath)).status, "starting");
   const logs = compose("logs", "--no-color");
   assert.ok([...tokens, password].every((secret) => !logs.includes(secret)));
   const producer = generatedProducer({

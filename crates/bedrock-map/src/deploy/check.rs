@@ -311,6 +311,13 @@ pub async fn check(
                             marker.dataset_id
                         )),
                     ),
+                    (
+                        format!("/maps/{}/lod.json", marker.dataset_id),
+                        root.join(format!(
+                            "prepared/public/maps/{}/lod.json",
+                            marker.dataset_id
+                        )),
+                    ),
                 ] {
                     if config.viewer.access == Access::Password {
                         ensure!(
@@ -343,6 +350,39 @@ pub async fn check(
                             && manifest["generation"] == serde_json::json!(lock.generation),
                         "live terrain store identity differs"
                     );
+                    let prefix = format!("/api/v1/worlds/{}/terrain/", lock.world_id);
+                    let (status, body) = response(
+                        &client,
+                        &config,
+                        &format!("{prefix}lod.json"),
+                        password,
+                        surface_core::lod::MAX_DESCRIPTOR_BYTES,
+                    )
+                    .await?;
+                    ensure!(status == 200, "live LOD publication is unavailable");
+                    let lod: surface_core::lod::LodManifest = serde_json::from_slice(&body)?;
+                    lod.validate()?;
+                    ensure!(
+                        lod.world_id.as_deref() == Some(lock.world_id.as_str())
+                            && Some(&lod.generation) == lock.generation.as_ref(),
+                        "live LOD store identity differs"
+                    );
+                    for reference in &lod.roots {
+                        let (status, bytes) = response(
+                            &client,
+                            &config,
+                            &format!("{prefix}{}", reference.index.url),
+                            password,
+                            surface_core::lod::MAX_NODE_BYTES,
+                        )
+                        .await?;
+                        ensure!(
+                            status == 200
+                                && bytes.len() == reference.index.bytes
+                                && files::digest(&bytes) == reference.index.sha256,
+                            "live LOD root index is unavailable or changed"
+                        );
+                    }
                 }
                 Ok(())
             };

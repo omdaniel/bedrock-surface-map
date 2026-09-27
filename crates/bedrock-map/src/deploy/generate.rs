@@ -6,7 +6,8 @@ use super::{
 use crate::{resources::Resources, state::ActiveDataset};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, io::Read, path::Path};
+use surface_core::lod::{LodManifest, MAX_DESCRIPTOR_BYTES};
 
 fn bind(source: &str, target: &str, writable: bool) -> Value {
     json!({"type":"bind","source":source,"target":target,"read_only":!writable,"bind":{"create_host_path":false}})
@@ -102,11 +103,16 @@ pub fn compose(config: &Config, lock: &Lock) -> Result<Vec<u8>> {
     )?)
 }
 
-pub fn viewer(config: &Config, lock: &Lock, dataset: &ActiveDataset) -> Value {
-    let mut viewer = json!({"map":format!("maps/{}/manifest.json",dataset.dataset_id)});
+pub fn viewer(config: &Config, lock: &Lock, dataset: &ActiveDataset, lod: &LodManifest) -> Value {
+    let mut viewer = json!({"map":format!("maps/{}/manifest.json",dataset.dataset_id),
+        "lod_url":format!("maps/{}/lod.json",dataset.dataset_id)});
+    if let Some(world_id) = &lod.world_id {
+        viewer["lod_identity"] = json!({"world_id":world_id,"generation":lod.generation});
+    }
     if config.features.terrain {
         viewer["terrain"] = json!({"world_id":lock.world_id,"generation":lock.generation,
-        "url":format!("/api/v1/worlds/{}/terrain/manifest.json",lock.world_id)});
+        "url":format!("/api/v1/worlds/{}/terrain/manifest.json",lock.world_id),
+        "lod_url":format!("/api/v1/worlds/{}/terrain/lod.json",lock.world_id)});
     }
     if config.features.players {
         viewer["players"] = json!({"world_id":lock.world_id,"source_sha256":dataset.source_sha256,
@@ -173,7 +179,7 @@ pub fn gateway(
             format!("path /api/v1/worlds/{}/players", lock.world_id)
         } else {
             format!(
-                "path_regexp terrain ^/api/v1/worlds/{}/terrain/(manifest\\.json|status|objects/[a-f0-9]{{64}}\\.(zst|json|png|txt))$",
+                "path_regexp terrain ^/api/v1/worlds/{}/terrain/(manifest\\.json|lod\\.json|status|objects/[a-f0-9]{{64}}\\.(zst|json|png|txt))$",
                 lock.world_id
             )
         };
@@ -191,9 +197,14 @@ pub fn write_projection(
     dataset: &ActiveDataset,
     resources: &Resources,
 ) -> Result<()> {
+    let mut bytes = Vec::new();
+    fs::File::open(root.join(format!("public/maps/{}/lod.json", dataset.dataset_id)))?
+        .take(MAX_DESCRIPTOR_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let lod = LodManifest::decode(&bytes)?;
     files::write_new(
         &root.join("public/viewer-config.json"),
-        &serde_json::to_vec_pretty(&viewer(config, lock, dataset))?,
+        &serde_json::to_vec_pretty(&viewer(config, lock, dataset, &lod))?,
     )?;
     files::mkdir(&root.join("gateway"))?;
     let mut web = files::inventory(&resources.web())?;

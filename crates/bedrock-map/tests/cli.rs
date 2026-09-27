@@ -99,6 +99,57 @@ impl Drop for Server {
 }
 
 #[test]
+fn prepare_lod_derives_a_new_registration_and_preserves_the_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state");
+    let resources = package(temp.path());
+    let state = bedrock_map::state::State::new(path.clone()).unwrap();
+    state.init().unwrap();
+    let staged = state.staging().join("old-snapshot/public");
+    surface_cli::create_synthetic_fixture(&staged).unwrap();
+    let source = format!(
+        "{:x}",
+        Sha256::digest(fs::read(staged.join("manifest.json")).unwrap())
+    );
+    let old = state
+        .register_staged_dataset(&staged, source, false)
+        .unwrap();
+    let original = state.registered(&old.dataset_id).unwrap().unwrap();
+    let before = fs::read(original.join("manifest.json")).unwrap();
+    let mut limited = command(&path, &resources);
+    limited.args(["prepare-lod", "--replace-active", "--max-output-bytes", "1"]);
+    assert_eq!(output(limited, 1)["ok"], false);
+    assert_eq!(
+        state.active_validated().unwrap().unwrap().dataset_id,
+        old.dataset_id
+    );
+    assert!(!original.join("lod.json").exists());
+
+    let mut cmd = command(&path, &resources);
+    cmd.args(["prepare-lod", "--replace-active"]);
+    let result = output(cmd, 0);
+    assert_eq!(result["source_dataset"], old.dataset_id);
+    assert_ne!(result["dataset"], old.dataset_id);
+    let selected = state.active_validated().unwrap().unwrap();
+    let converted = state.registered(&selected.dataset_id).unwrap().unwrap();
+    assert!(converted.join("lod.json").is_file());
+    assert!(!original.join("lod.json").exists());
+    assert_eq!(before, fs::read(original.join("manifest.json")).unwrap());
+    assert_eq!(old.source_sha256, selected.source_sha256);
+
+    let mut repeat = command(&path, &resources);
+    repeat.args(["prepare-lod", "--replace-active"]);
+    assert_eq!(output(repeat, 0)["dataset"], selected.dataset_id);
+    assert!(fs::read_dir(state.staging()).unwrap().all(|entry| {
+        !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with("prepare-lod")
+    }));
+}
+
+#[test]
 fn doctor_reports_failures_and_probes_only_a_real_ready_service() {
     let temp = tempfile::tempdir().unwrap();
     let state = temp.path().join("state with spaces é");

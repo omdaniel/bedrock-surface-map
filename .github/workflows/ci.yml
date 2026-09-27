@@ -9,9 +9,11 @@ concurrency:
   group: checks-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
-  synthetic:
+  prepare-synthetic:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      browser-inputs-ready: ${{ steps.browser-inputs.outputs.ready }}
     env:
       CARGO_TERM_COLOR: always
       XDG_RUNTIME_DIR: /tmp
@@ -30,7 +32,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warnings
-      - run: cargo test --workspace --locked
+      - run: cargo test --workspace --exclude surface-gpu --locked
+      - name: Verify native GPU fixtures with one test device at a time
+        run: cargo test -p surface-gpu --locked -- --test-threads=1 --nocapture
       - name: Install SHA-verified wasm-bindgen 0.2.127
         run: |
           curl -fL --retry 3 --max-time 180 https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/wasm-bindgen.tgz"
@@ -41,6 +45,7 @@ jobs:
       - run: npm run secrets:check
       - run: npm run format:check
       - run: npm run config:test
+      - run: node --test scripts/ci-browser.test.mjs
       - run: npm run release:test
       - run: npm run build
       - run: npm run tracking:build
@@ -48,10 +53,31 @@ jobs:
       - run: npm run terrain:build
       - run: npm run terrain:test
       - run: npm run demo:test
+      - run: npm run lod:test
       - run: cargo run --locked -p surface-cli -- fixture
+      - run: cargo run --locked -p surface-cli -- lod-fixture --output web/public/maps/lod-fixture
+      - run: cargo run --locked -p surface-cli -- lod-fixture --sparse-small --output web/public/maps/lod-sparse-small
       - run: node scripts/terrain-fixture.mjs
+      - run: cargo run --locked -p surface-sync --example lod_catalog_fixture
+      - name: Verify exact browser shard coverage
+        run: node scripts/check-ci-shards.mjs 6
+      - name: Bundle generated synthetic browser inputs
+        run: >-
+          tar -cf "$RUNNER_TEMP/ci-browser-inputs.tar"
+          web/pkg web/public/maps/fixture web/public/maps/lod-fixture
+          web/public/maps/lod-sparse-small .local/terrain-fixture .local/terrain-large
+          .local/lod-catalog-fixture
+      - name: Preserve generated browser inputs from this checkout
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synthetic-browser-inputs-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-browser-inputs.tar
+          if-no-files-found: error
+          retention-days: 1
+      - name: Mark verified browser inputs available
+        id: browser-inputs
+        run: echo 'ready=true' >> "$GITHUB_OUTPUT"
       - run: npx playwright install --with-deps chromium
-      - run: xvfb-run -a -s '-screen 0 1280x900x24' npm test
       - run: npm run demo:build
       - run: DEMO_SELF_SERVE=1 xvfb-run -a -s '-screen 0 1920x1200x24' node scripts/check-demo.mjs
       - run: node scripts/audit-demo.mjs
@@ -64,6 +90,62 @@ jobs:
         with:
           path: .local/demo-dist
       # No raw world imports, Mojang downloads or homelab credentials.
+  browser:
+    needs: prepare-synthetic
+    # Run independent assertions even if the later demo check fails. The
+    # synthetic aggregate still requires the entire preparation job to pass.
+    if: always() && !cancelled() && needs.prepare-synthetic.outputs.browser-inputs-ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    env:
+      XDG_RUNTIME_DIR: /tmp
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: '26.8.1'
+          cache: npm
+      - run: npm ci
+      - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 xvfb xauth
+      - run: npx playwright install --with-deps chromium
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: synthetic-browser-inputs-${{ github.sha }}
+          path: ${{ runner.temp }}/ci-browser-inputs
+      - run: tar -xf "$RUNNER_TEMP/ci-browser-inputs/ci-browser-inputs.tar"
+      - name: Browser correctness (shard ${{ matrix.shard }}/6)
+        run: >-
+          xvfb-run -a -s '-screen 0 1280x900x24'
+          npx playwright test --config scripts/ci-browser.config.mjs --shard=${{ matrix.shard }}/6
+      - name: Preserve browser timings, screenshots and failure context
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synthetic-browser-${{ matrix.shard }}-${{ github.sha }}
+          path: |
+            test-results/
+            .local/ci-browser-results.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
+  synthetic:
+    # Preserve the existing required check: all assertions on all shards gate it.
+    if: always()
+    needs: [prepare-synthetic, browser]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Require preparation and every browser shard to pass
+        env:
+          PREPARATION_RESULT: ${{ needs.prepare-synthetic.result }}
+          BROWSER_RESULT: ${{ needs.browser.result }}
+        run: |
+          test "$PREPARATION_RESULT" = success
+          test "$BROWSER_RESULT" = success
   native-amd64:
     runs-on: ubuntu-24.04
     timeout-minutes: 90

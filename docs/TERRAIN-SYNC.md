@@ -62,6 +62,11 @@ A fixed-destination HTTPS proxy exposes only approved GET/HEAD routes.
 
 Every service command requires an explicit world ID and dataset generation via
 `--world`/`TERRAIN_WORLD_ID` and `--generation`/`TERRAIN_GENERATION`.
+`seed --map /path/to/surface-snapshot` reads verified v1 regional exports or v2
+current-state snapshots one region at a time, without a global height array.
+V2 world/generation identities must match the store. Sparse snapshot bounds
+are retained. Seeding an existing store requires a recorded reconciliation
+boundary so accepted newer live observations, including unchanged ones, win.
 The [operator configuration reference](CONFIGURATION.md#server-services-and-packs)
 covers listener addresses, secret files, pack variables and the diagnostic packs'
 required `allow_test_probe: true` opt-in on disposable worlds.

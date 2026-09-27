@@ -1,5 +1,11 @@
 struct HeightTree { levels:array<vec4u,32>, data:array<f32> }
 
+fn relief_neighbor(at:vec2i,fallback:f32)->f32 {
+    if any(at<vec2i(0)) || any(at>=vec2i(p.bounds.zw)) {return fallback;}
+    let y=maximum_height(0u,vec2u(at));
+    return select(y,fallback,y< -900000.0);
+}
+
 fn maximum_height(level:u32, cell:vec2u)->f32 {
     let info=heights.levels[level];
     return heights.data[info.x+cell.y*info.y+cell.x];

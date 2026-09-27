@@ -45,6 +45,7 @@ pub fn read_router(app: App) -> Router {
             "/api/v1/worlds/{world}/terrain/manifest.json",
             get(manifest),
         )
+        .route("/api/v1/worlds/{world}/terrain/lod.json", get(lod_manifest))
         .route("/api/v1/worlds/{world}/terrain/objects/{name}", get(object))
         .with_state(app)
 }
@@ -133,9 +134,36 @@ async fn manifest(
             .await
             .ok()
             .flatten();
-    match result {
-        Some(value) => {
-            let bytes = serde_json::to_vec(&value).unwrap();
+    manifest_response(
+        result.map(|value| serde_json::to_vec(&value).unwrap()),
+        &headers,
+    )
+}
+
+async fn lod_manifest(
+    State(app): State<App>,
+    Path(world): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if world != app.world {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let bytes = tokio::task::spawn_blocking(move || {
+        app.store
+            .lock()
+            .ok()
+            .and_then(|store| store.lod_manifest().ok())
+            .and_then(|manifest| manifest.encode().ok())
+    })
+    .await
+    .ok()
+    .flatten();
+    manifest_response(bytes, &headers)
+}
+
+fn manifest_response(bytes: Option<Vec<u8>>, headers: &HeaderMap) -> Response {
+    match bytes {
+        Some(bytes) => {
             let tag = format!("\"{}\"", hash(&bytes));
             let mut r = if headers
                 .get(header::IF_NONE_MATCH)

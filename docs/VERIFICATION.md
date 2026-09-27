@@ -27,6 +27,22 @@ for completed GPU work and inspect pixels; a submitted draw alone is not proof
 of visible output. CI does not use private worlds, Mojang textures or homelab
 credentials. It does not measure native Mac or iPad GPU performance.
 
+Software-GPU browser and full-demo pixel checks use a 960x720 default viewport
+at DPR 1 to bound raster work; explicit resize, mobile and DPR cases retain their
+own dimensions. Native demo verification uses 1440x1000. Reports include the
+viewport; neither substitutes for the controlled 1920x1080 hardware navigation
+benchmark.
+
+Browser CI uses six single-worker shards and audits discovery so every test runs
+exactly once. Repeated lighting/zoom and 21-view residency workloads allow six
+minutes on a software adapter; sparse-view settling allows one minute per view.
+Native-browser limits remain three minutes for each repeated workload and
+30 seconds per sparse view.
+These bounded correctness waits preserve all navigation, coverage, retirement
+and memory assertions; they are not frame-rate targets.
+Failure-recovery tests check camera input immediately, then allow up to 15 seconds
+for a software-GPU draw; native-browser draws retain their three-second limit.
+
 ## Offline Import
 
 Use a consistent archive and the [import commands](IMPORT.md). Record its hash
@@ -82,11 +98,13 @@ device pixel ratio, refresh preference and cold/warm cache conditions with resul
 | First populated frame  | Frontend initialization to the animation frame after completion of the first populated GPU draw; excludes preceding module transfer and physical scanout |
 | Navigation p50/p95/max | Animation-frame intervals while submitting controlled-pan draws, not GPU execution timestamps                                                            |
 | Worker decode time     | Accumulated transport decoding, separate from download and first-visible latency                                                                         |
-| Accounted map memory   | Resident map resources, not total browser/driver RSS or transient allocation peaks                                                                       |
+| Accounted map memory   | Charged LOD CPU/GPU capacity, committed WASM and loading/retirement reservations, with a separate high-water mark; not total browser/driver RSS          |
 | Transfer size          | State whether bytes are encoded network transfer, response bodies or the complete published artifact                                                     |
 
-The rendering target is smooth 60 FPS at 1920x1080, DPR 1, after loading, not a
-guarantee across devices or scenes. Do not infer a speed advantage over another
+The initial usability target is 30 FPS at 1920x1080, DPR 1, after loading, with
+responsive navigation; it is not a guarantee across devices or scenes. Submitted
+draws and animation-frame cadence do not independently establish physically
+presented frame rates. Do not infer a speed advantage over another
 renderer without equivalent input, workload, settings and hardware. Live-feed
 acceptance and active-update performance use the separate
 [terrain and player checklist](TERRAIN-ACCEPTANCE.md).
@@ -94,10 +112,13 @@ acceptance and active-update performance use the separate
 ## Limits to Check
 
 Biome interpolation, complex models, water layers and canopy shading are
-top-surface approximations. Overview filtering is per region. Very wide live
-views can exceed the 256 MiB logical map budget and require zooming in; there is
-no separate overview-only residency tier. Offline and live height coverage differ
-as described in [Format and Rendering](FORMAT.md).
+top-surface approximations. The [LOD hierarchy](LOD.md) retains coarse summaries
+independently of exact tiles and adapts detail for wide views within a
+200,000,000-byte application-managed ceiling, including loading and retirement
+reservations. This is not a whole-browser memory limit. Large snapshots without
+LOD require conversion before viewing; legacy regional overview filtering does
+not independently release exact data. Surface and height coverage are described
+in [Format and Rendering](FORMAT.md).
 
 Player and terrain feeds require explicit configuration. The public demo uses
 simulated activity, not a live server. The viewer has no built-in account system;

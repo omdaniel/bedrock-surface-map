@@ -11,27 +11,48 @@ const url =
     : "http://127.0.0.1:5180/bedrock-surface-map/");
 const output = ".local/demo-evidence";
 await mkdir(output, { recursive: true });
+const localSoftware = process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
+const softwareGpu = Boolean(process.env.CI || localSoftware);
+const viewport = softwareGpu
+  ? { width: 960, height: 720 }
+  : { width: 1440, height: 1000 };
+// Software-GPU cold refinement verifies correctness, not hardware frame rate.
+// Keep it bounded and report wall time separately from playback.
+const coldTimeout = softwareGpu ? 180000 : 90000;
 const browser = await chromium.launch({
-  channel: process.env.CI ? undefined : "chrome",
-  headless: !process.env.CI,
-  args: process.env.CI
-    ? [
-        "--enable-unsafe-webgpu",
-        "--enable-features=Vulkan",
-        "--use-angle=vulkan",
-        "--use-vulkan=swiftshader",
-        "--use-webgpu-adapter=swiftshader",
-        "--disable-vulkan-surface",
-      ]
-    : [],
+  channel: process.env.CI || localSoftware ? undefined : "chrome",
+  headless: localSoftware || !process.env.CI,
+  args: localSoftware
+    ? ["--use-angle=swiftshader", "--enable-unsafe-webgpu"]
+    : process.env.CI
+      ? [
+          "--enable-unsafe-webgpu",
+          "--enable-features=Vulkan",
+          "--use-angle=vulkan",
+          "--use-vulkan=swiftshader",
+          "--use-webgpu-adapter=swiftshader",
+          "--disable-vulkan-surface",
+        ]
+      : [],
 });
 let activePage;
 try {
   const page = await browser.newPage({
-    viewport: { width: 1440, height: 1000 },
+    viewport,
     deviceScaleFactor: 1,
   });
   activePage = page;
+  const pauseScenario = async () => {
+    // Pause production immediately, without waiting for a busy GPU compositor.
+    // Real pointer/keyboard playback is exercised in the native-timer context.
+    await page
+      .getByRole("button", { name: "Pause demo", exact: true })
+      .evaluate((button) => button.click());
+    assert.equal(
+      await page.locator("#demo-play").getAttribute("aria-label"),
+      "Play demo",
+    );
+  };
   const errors = [],
     requests = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -45,19 +66,40 @@ try {
     ),
   );
   page.on("request", (r) => requests.push(r.url()));
-  await page.clock.install();
+  const coldStarted = performance.now();
   await page.goto(url);
-  await page.waitForFunction(
-    () =>
-      window.__map?.ready &&
-      window.__map.state().cached > 0 &&
-      window.__map.state().pending === 0,
-    {},
-    { timeout: 90000 },
-  );
-  await page.waitForSelector(".player-marker");
+  // Freeze the scenario before refinement: software adapters may take longer
+  // than the first terrain event to finish loading the initial exact cut.
   await page.getByRole("button", { name: "Pause demo", exact: true }).click();
-  await page.waitForTimeout(2400);
+  await page.getByRole("button", { name: "Restart demo", exact: true }).click();
+  const settledRevision = (
+    minimum,
+    timeout = process.env.CI || localSoftware ? 180000 : 30000,
+  ) =>
+    page.waitForFunction(
+      (revision) => {
+        const state = window.__map?.state();
+        const lod = state?.lod;
+        return (
+          window.__map?.ready &&
+          state.cached > 0 &&
+          lod?.live?.revision >= revision &&
+          state.pending === 0 &&
+          state.renderPending === false &&
+          lod.pending === 0 &&
+          lod.activeKind === null &&
+          lod.queuedUpload === false &&
+          lod.preparations === 0 &&
+          lod.gpuPending === 0 &&
+          lod.retiringBytes === 0
+        );
+      },
+      minimum,
+      { timeout },
+    );
+  await settledRevision(0, coldTimeout);
+  const coldRefinementMs = performance.now() - coldStarted;
+  await page.waitForSelector(".player-marker");
   const initial = await page.evaluate(() => window.__map.state());
   const initialHttpBodyBytes = (await Promise.all(responses)).reduce(
     (a, b) => a + b,
@@ -72,9 +114,9 @@ try {
       box.x + box.width / 2 + 1,
       box.y + box.height / 2 + 1,
     );
-    assert.equal(
-      await page.locator("#block-pos").innerText(),
-      `-106 / ${height} / -52`,
+    assert.deepEqual(
+      (await page.locator("#block-pos").innerText()).split("/").map(Number),
+      [-106, height, -52],
     );
     assert.equal(await page.locator("#block-name").textContent(), material);
   };
@@ -97,7 +139,7 @@ try {
   await page.screenshot({ path: `${output}/desktop.png` });
   const draws = (await page.evaluate(() => window.__map.state())).draws;
   await page.getByRole("button", { name: "Play demo", exact: true }).click();
-  await page.clock.fastForward(5000);
+  await page.waitForTimeout(5000);
   await page.waitForTimeout(400);
   assert.equal(
     (await page.evaluate(() => window.__map.state())).draws,
@@ -105,11 +147,9 @@ try {
     "player-only redraw",
   );
   const pos = await page.locator(".player-detail").first().innerText();
-  await page.clock.fastForward(11000);
-  await page.waitForTimeout(1000);
-  await page.waitForFunction(
-    () => window.__map.state().terrain.changedChunks > 0,
-  );
+  await page.waitForTimeout(11000);
+  await pauseScenario();
+  await settledRevision(initial.lod.live.revision + 1);
   const built = await page.evaluate(() => window.__map.state());
   await pickSite(67, "oak planks");
   const builtPixels = PNG.sync.read(await page.locator("canvas").screenshot());
@@ -122,10 +162,12 @@ try {
     pos,
   );
   await page.screenshot({ path: `${output}/construction.png` });
-  await page.clock.fastForward(16000);
-  await page.waitForTimeout(1000);
+  await page.getByRole("button", { name: "Play demo", exact: true }).click();
+  await page.waitForTimeout(16000);
+  await pauseScenario();
+  await settledRevision(built.lod.live.revision + 1);
   const opened = await page.evaluate(() => window.__map.state());
-  assert.ok(opened.terrain.revision > built.terrain.revision);
+  assert.ok(opened.lod.live.revision > built.lod.live.revision);
   await pickSite(64, "sand");
   const openedPixels = PNG.sync.read(await page.locator("canvas").screenshot());
   assert.ok(
@@ -133,19 +175,26 @@ try {
     "removal changes terrain pixels",
   );
   await page.screenshot({ path: `${output}/removal.png` });
+  await page.getByRole("button", { name: "Play demo", exact: true }).click();
   for (let n = 0; n < 6; n++) {
-    await page.clock.fastForward(15000);
+    await page.waitForTimeout(15000);
     await page.waitForTimeout(300);
   }
+  // Stop producing replacements before requiring transport/GPU quiescence.
+  await pauseScenario();
+  await page.locator("canvas").screenshot({ path: `${output}/looped.png` });
+  await settledRevision(9);
   const looped = await page.evaluate(() => window.__map.state());
-  assert.ok(looped.terrain.revision >= 9, "two loops");
+  assert.ok(looped.lod.live.revision >= 9, "two loops");
   await page.getByRole("button", { name: "Restart demo", exact: true }).click();
-  await page.clock.fastForward(2100);
+  await page.waitForTimeout(2100);
   await page.waitForTimeout(500);
+  await settledRevision(looped.lod.live.revision + 1);
   assert.ok(
-    (await page.evaluate(() => window.__map.state())).terrain.revision >
-      looped.terrain.revision,
+    (await page.evaluate(() => window.__map.state())).lod.live.revision >
+      looped.lod.live.revision,
   );
+  await page.getByRole("button", { name: "Play demo", exact: true }).click();
   // Exercise keyboard playback as well as the pointer controls above.
   await page.getByRole("button", { name: "Pause demo", exact: true }).focus();
   await page.keyboard.press("Enter");
@@ -154,7 +203,7 @@ try {
     "Play demo",
   );
   const paused = await page.locator("#demo-time").innerText();
-  await page.clock.fastForward(20000);
+  await page.waitForTimeout(20000);
   assert.equal(await page.locator("#demo-time").innerText(), paused);
   const transfer = await page.evaluate(() =>
     performance
@@ -162,6 +211,12 @@ try {
       .reduce((n, r) => n + r.encodedBodySize, 0),
   );
   const result = {
+    verification: {
+      softwareGpu,
+      viewport,
+      coldTimeoutMs: coldTimeout,
+      coldRefinementMs,
+    },
     initialHttpBodyBytes,
     initial,
     built,
@@ -172,10 +227,10 @@ try {
   };
   await page.close();
 
-  // Test real-time input in a separate context with native timers. Fast-forwarded
-  // requestAnimationFrame scheduling must not drive compositor actionability.
+  // Exercise reduced-motion playback and real pointer input independently of
+  // the paused stage captures above, using the same native browser timers.
   const ui = await browser.newPage({
-    viewport: { width: 1280, height: 800 },
+    viewport: softwareGpu ? viewport : { width: 1280, height: 800 },
     deviceScaleFactor: 1,
     reducedMotion: "reduce",
   });
@@ -186,7 +241,7 @@ try {
   await ui.waitForFunction(
     () => window.__map?.ready && window.__map.state().pending === 0,
     {},
-    { timeout: 90000 },
+    { timeout: coldTimeout },
   );
   await ui.waitForSelector(".player-marker");
   await ui.getByRole("button", { name: "Follow Rowan", exact: true }).click();
@@ -259,16 +314,16 @@ try {
   await writeFile(`${output}/chrome.json`, JSON.stringify(result, null, 2));
   console.log(JSON.stringify(result, null, 2));
 } catch (error) {
-  console.error(
-    "Demo failure state:",
-    await activePage
-      ?.evaluate(() => ({
-        hidden: document.hidden,
-        time: document.querySelector("#demo-time")?.textContent,
-        map: window.__map?.state(),
-      }))
-      .catch(() => "page unavailable"),
-  );
+  const failure = await activePage
+    ?.evaluate(() => ({
+      hidden: document.hidden,
+      time: document.querySelector("#demo-time")?.textContent,
+      map: window.__map?.state(),
+    }))
+    .catch(() => "page unavailable");
+  const evidence = JSON.stringify(failure ?? "no active page", null, 2);
+  await writeFile(`${output}/failure.json`, evidence);
+  console.error("Demo failure state:", evidence);
   await activePage
     ?.screenshot({ path: `${output}/failure.png`, timeout: 5000 })
     .catch(() => {});

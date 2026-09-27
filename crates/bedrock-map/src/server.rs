@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -128,11 +129,30 @@ fn viewer_config(app: &App, request: &Request) -> Result<Response> {
         .state
         .active_validated()?
         .context("E_NO_DATASET: no selected dataset")?;
-    json_response_with_request(
-        serde_json::json!({"map": format!("maps/{}/manifest.json", active.dataset_id)}),
-        request.headers(),
-        "no-store",
-    )
+    let mut config =
+        serde_json::json!({"map": format!("maps/{}/manifest.json", active.dataset_id)});
+    let inventory = app
+        .state
+        .registered_inventory(&active.dataset_id)?
+        .context("registered dataset is unavailable")?;
+    if let Some(expected) = inventory.get(Path::new("lod.json")) {
+        let public = app.state.datasets().join(&active.dataset_id).join("public");
+        let mut bytes = Vec::new();
+        fs::File::open(resolve_child(&public, "lod.json")?)?
+            .take(surface_core::lod::MAX_DESCRIPTOR_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            format!("{:x}", Sha256::digest(&bytes)) == *expected,
+            "registered LOD descriptor changed"
+        );
+        let lod = surface_core::lod::LodManifest::decode(&bytes)?;
+        config["lod_url"] = format!("maps/{}/lod.json", active.dataset_id).into();
+        if let Some(world_id) = lod.world_id {
+            config["lod_identity"] =
+                serde_json::json!({"world_id":world_id,"generation":lod.generation});
+        }
+    }
+    json_response_with_request(config, request.headers(), "no-store")
 }
 
 fn resolve_child(root: &Path, relative: &str) -> Result<PathBuf> {
@@ -432,6 +452,7 @@ mod tests {
         let viewer: serde_json::Value =
             serde_json::from_str(&config.text().await.unwrap()).unwrap();
         assert!(viewer["map"].as_str().unwrap().starts_with("maps/"));
+        assert!(viewer.get("lod_url").is_none());
         let old_url = format!(
             "http://{address}/map/maps/{}/manifest.json",
             first.dataset_id
@@ -446,6 +467,8 @@ mod tests {
             &replacement,
         );
         fs::write(replacement.join("assets/NOTICE.txt"), "replacement fixture").unwrap();
+        crate::preparation::ensure_lod(&replacement, crate::preparation::DEFAULT_LOD_MAX_BYTES)
+            .unwrap();
         let second = state
             .register_staged_dataset(&replacement, "d".repeat(64), true)
             .unwrap();
@@ -470,6 +493,35 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains(&second.dataset_id)
+        );
+        let lod_path = current["lod_url"].as_str().unwrap();
+        assert!(current.get("lod_identity").is_none());
+        assert!(current.get("terrain").is_none());
+        assert_eq!(lod_path, format!("maps/{}/lod.json", second.dataset_id));
+        let descriptor = client
+            .get(format!("http://{address}/map/{lod_path}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(descriptor.status(), StatusCode::OK);
+        assert_eq!(
+            descriptor.headers()[header::CACHE_CONTROL],
+            "public, max-age=31536000, immutable"
+        );
+        let lod: surface_core::lod::LodManifest =
+            serde_json::from_str(&descriptor.text().await.unwrap()).unwrap();
+        let object = client
+            .get(format!(
+                "http://{address}/map/maps/{}/{}",
+                second.dataset_id, lod.roots[0].index.url
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(object.status(), StatusCode::OK);
+        assert_eq!(
+            object.bytes().await.unwrap().len(),
+            lod.roots[0].index.bytes
         );
         let notice = format!(
             "http://{address}/map/maps/{}/assets/NOTICE.txt",
@@ -526,6 +578,99 @@ mod tests {
                 .unwrap()
                 .status(),
             StatusCode::NOT_FOUND
+        );
+        let export = temporary.path().join("v2-export");
+        let seed = temporary.path().join("v2-seed");
+        copy_tree(
+            &state.registered(&first.dataset_id).unwrap().unwrap(),
+            &seed,
+        );
+        let mut seed_manifest: surface_core::MapManifest =
+            serde_json::from_slice(&fs::read(seed.join("manifest.json")).unwrap()).unwrap();
+        seed_manifest.source_sha256 = format!("{:x}", Sha256::digest(b"synthetic server snapshot"));
+        for material in seed_manifest.materials.iter_mut().skip(1) {
+            material.key =
+                serde_json::json!([format!("minecraft:{}", material.name.to_lowercase()), {}])
+                    .to_string();
+        }
+        seed_manifest.catalog_version = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&seed_manifest.materials).unwrap())
+        );
+        fs::write(
+            seed.join("manifest.json"),
+            serde_json::to_vec(&seed_manifest).unwrap(),
+        )
+        .unwrap();
+        let mut store = surface_sync::store::Store::open(
+            &export,
+            "snapshot-world",
+            "snapshot-generation",
+            1 << 30,
+        )
+        .unwrap();
+        store.seed(&seed, None, None).unwrap();
+        let manifest = store.manifest().unwrap();
+        fs::write(
+            export.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        let operation = state.operation("prepare-lod").unwrap();
+        let public = operation.path().join("public");
+        fs::create_dir_all(&public).unwrap();
+        for path in crate::dataset::validate_inventory(&export).unwrap() {
+            let destination = public.join(&path);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(export.join(path), destination).unwrap();
+        }
+        crate::preparation::ensure_lod(&public, crate::preparation::DEFAULT_LOD_MAX_BYTES).unwrap();
+        let snapshot = state
+            .register_staged_dataset(
+                &public,
+                manifest["source_sha256"].as_str().unwrap().into(),
+                true,
+            )
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_str(
+            &client
+                .get(format!("http://{address}/map/viewer-config.json"))
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            config["lod_url"],
+            format!("maps/{}/lod.json", snapshot.dataset_id)
+        );
+        assert_eq!(
+            config["lod_identity"],
+            serde_json::json!({
+                "world_id":"snapshot-world", "generation":"snapshot-generation"
+            })
+        );
+        assert!(config.get("terrain").is_none());
+        assert!(config.get("players").is_none());
+        fs::write(
+            state
+                .datasets()
+                .join(&snapshot.dataset_id)
+                .join("public/lod.json"),
+            b"{}",
+        )
+        .unwrap();
+        assert_ne!(
+            client
+                .get(format!("http://{address}/map/viewer-config.json"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
         );
         task.abort();
     }

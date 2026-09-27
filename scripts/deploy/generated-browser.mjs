@@ -6,6 +6,45 @@ import { join } from "node:path";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
 
+export async function openGeneratedMap(page, url, consoleMessages, errors) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const messageStart = consoleMessages.length;
+    try {
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      await page.waitForFunction(
+        () =>
+          window.__map?.ready &&
+          window.__map.state().lod?.tiles > 0 &&
+          window.__map.state().cached > 0 &&
+          window.__map.state().pending === 0 &&
+          window.__map.state().draws > 0,
+        undefined,
+        { timeout: 30_000 },
+      );
+      return;
+    } catch (error) {
+      const changed =
+        String(error).includes("net::ERR_NETWORK_CHANGED") ||
+        consoleMessages
+          .slice(messageStart)
+          .some((message) => message.includes("net::ERR_NETWORK_CHANGED"));
+      if (
+        attempt !== 0 ||
+        !changed ||
+        errors.length ||
+        (await page.evaluate(() => {
+          const map = window.__map;
+          const state = map?.state();
+          return Boolean(
+            map?.ready || state?.lod || state?.cached > 0 || state?.draws > 0,
+          );
+        }))
+      )
+        throw error;
+    }
+  }
+}
+
 export async function verifyGeneratedBrowser({
   port,
   ca,
@@ -64,27 +103,35 @@ export async function verifyGeneratedBrowser({
     for (const suffix of ["/", "/?terrain=off", "/?players=off"]) {
       const page = await context.newPage();
       const requests = [],
+        failedRequests = [],
+        failedResponses = [],
         errors = [],
         consoleMessages = [];
       page.on("request", (request) => requests.push(request.url()));
+      page.on("requestfailed", (request) =>
+        failedRequests.push({
+          url: request.url(),
+          error: request.failure()?.errorText,
+        }),
+      );
+      page.on("response", (response) => {
+        if (response.status() >= 400)
+          failedResponses.push({
+            url: response.url(),
+            status: response.status(),
+          });
+      });
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
         if (["error", "warning"].includes(message.type()))
           consoleMessages.push(message.text());
       });
       try {
-        await page.goto(`${origin}${suffix}`, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await page.waitForFunction(
-          () =>
-            window.__map?.ready &&
-            window.__map.state().cached > 0 &&
-            window.__map.state().pending === 0 &&
-            window.__map.state().draws > 0,
-          undefined,
-          { timeout: 30_000 },
+        await openGeneratedMap(
+          page,
+          `${origin}${suffix}`,
+          consoleMessages,
+          errors,
         );
         await page.evaluate(() => {
           const map = window.__map,
@@ -95,7 +142,8 @@ export async function verifyGeneratedBrowser({
         await page.waitForFunction(
           () =>
             window.__map.state().pending === 0 &&
-            !window.__map.state().terrain?.busy &&
+            !window.__map.state().renderPending &&
+            window.__map.state().lod?.level === 0 &&
             window.__map.state().firstVisible !== null,
           undefined,
           { timeout: 20_000 },
@@ -110,9 +158,11 @@ export async function verifyGeneratedBrowser({
         await page
           .locator("#inspect")
           .waitFor({ state: "visible", timeout: 10_000 });
-        assert.equal(
-          await page.locator("#block-pos").textContent(),
-          "-9 / 65 / -9",
+        assert.deepEqual(
+          (await page.locator("#block-pos").textContent())
+            .split("/")
+            .map(Number),
+          [-9, 65, -9],
         );
         assert.match(await page.locator("#block-name").textContent(), /grass/i);
         const pixels = PNG.sync.read(await canvas.screenshot());
@@ -137,7 +187,7 @@ export async function verifyGeneratedBrowser({
         const state = await page.evaluate(() => window.__map.state());
         assert.equal(state.failures.length, 0);
         assert.equal(
-          Boolean(state.terrain),
+          Boolean(state.lod?.live),
           features.terrain && !suffix.includes("terrain=off"),
         );
         if (!features.players || suffix.includes("players=off"))
@@ -162,13 +212,14 @@ export async function verifyGeneratedBrowser({
           await producer.negativeChecks();
           const change = async (height, material, expectedName) => {
             const before = await page.evaluate(
-              () => window.__map.state().terrain.revision,
+              () => window.__map.state().lod.live.revision,
             );
             await producer.terrain(material, height);
             await page.waitForFunction(
               (revision) =>
-                !window.__map.state().terrain?.busy &&
-                window.__map.state().terrain?.revision > revision,
+                window.__map.state().pending === 0 &&
+                !window.__map.state().renderPending &&
+                window.__map.state().lod?.live?.revision > revision,
               before,
               { timeout: 20_000 },
             );
@@ -177,13 +228,21 @@ export async function verifyGeneratedBrowser({
               bounds.y + bounds.height / 2,
             );
             await page.waitForFunction(
-              ({ height, material }) =>
-                document.querySelector("#block-pos")?.textContent ===
-                  `-9 / ${height} / -9` &&
-                document
-                  .querySelector("#block-name")
-                  ?.textContent?.toLowerCase()
-                  .includes(material),
+              ({ height, material }) => {
+                const position = document
+                  .querySelector("#block-pos")
+                  ?.textContent?.split("/")
+                  .map(Number);
+                return (
+                  position?.[0] === -9 &&
+                  position[1] === height &&
+                  position[2] === -9 &&
+                  document
+                    .querySelector("#block-name")
+                    ?.textContent?.toLowerCase()
+                    .includes(material)
+                );
+              },
               { height, material: expectedName },
               { timeout: 20_000 },
             );
@@ -264,7 +323,7 @@ export async function verifyGeneratedBrowser({
           picking: "-9 / 65 / -9",
           material: "grass",
           distinct_pixel_colors: colors.size,
-          terrain_live_binding: Boolean(state.terrain),
+          terrain_live_binding: Boolean(state.lod?.live),
           terrain_draws: state.draws,
           protocol,
           adapter: await page.evaluate(async () => {
@@ -293,6 +352,8 @@ export async function verifyGeneratedBrowser({
                 path: suffix,
                 errors,
                 consoleMessages,
+                failedRequests,
+                failedResponses,
                 state: await page.evaluate(() => ({
                   map: window.__map?.state(),
                   message: document.querySelector("#message")?.textContent,

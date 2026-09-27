@@ -1,4 +1,8 @@
-use super::{config::Features, files, generate, init, release::Release};
+use super::{
+    config::{Features, default_terrain_store_limit_bytes, validate_terrain_store_limit},
+    files, generate, init,
+    release::Release,
+};
 use crate::{assets, dataset, resources::Resources, state::State};
 use anyhow::{Context, Result, ensure};
 use fs2::FileExt;
@@ -18,6 +22,8 @@ pub struct Preparation {
     pub dataset_id: String,
     pub source_sha256: String,
     pub asset_sha256: Option<String>,
+    #[serde(default = "default_terrain_store_limit_bytes")]
+    pub terrain_store_limit_bytes: u64,
     pub immutable_files: BTreeMap<String, String>,
     pub seed_files: BTreeMap<String, String>,
 }
@@ -58,11 +64,12 @@ pub fn prepare(
     let input = source
         .registered(&dataset.dataset_id)?
         .context("E_NO_DATASET: snapshot is unavailable")?;
-    let manifest = dataset::validate(&input)?;
+    let manifest = dataset::validate_snapshot(&input)?;
     ensure!(
         manifest.source_sha256 == dataset.source_sha256,
         "E_RESOURCE_MISMATCH: snapshot source fingerprint mismatch"
     );
+    check_stream_identity(&manifest, &lock.world_id, lock.generation.as_deref())?;
     let inventory: BTreeMap<_, _> = source
         .registered_inventory(&dataset.dataset_id)?
         .context("E_NO_DATASET: snapshot inventory unavailable")?
@@ -107,7 +114,8 @@ pub fn prepare(
     fs::create_dir_all(output.join("public/maps").join(&dataset.dataset_id))?;
     let copied = output.join("public/maps").join(&dataset.dataset_id);
     files::copy_inventory(&input, &copied, &inventory)?;
-    dataset::validate(&copied)?;
+    dataset::validate_snapshot(&copied)?;
+    crate::preparation::ensure_lod(&copied, crate::preparation::DEFAULT_LOD_MAX_BYTES)?;
     if let Some(asset) = asset {
         let library = staging.path().join("library");
         files::mkdir(&library)?;
@@ -122,10 +130,19 @@ pub fn prepare(
             &state,
             &lock.world_id,
             lock.generation.as_deref().unwrap(),
-            2 * 1024 * 1024 * 1024,
+            config.terrain_store_limit_bytes,
         )?;
         store.seed(&copied, Some(&library), None)?;
-        drop(store);
+        let shared = std::sync::Arc::new(std::sync::Mutex::new(store));
+        let mut publisher = surface_sync::lod_publish::Publisher::open(shared.clone())?;
+        while publisher.step()? != surface_sync::lod_publish::Step::Idle {}
+        shared
+            .lock()
+            .map_err(|_| anyhow::anyhow!("terrain preparation lock"))?
+            .lod_manifest()?
+            .validate()?;
+        drop(publisher);
+        drop(shared);
     }
     generate::write_projection(&output, root, &config, &lock, &dataset, resources)?;
     // Source selection and release inputs must still match after all long work.
@@ -150,6 +167,7 @@ pub fn prepare(
         dataset_id: dataset.dataset_id,
         source_sha256: dataset.source_sha256,
         asset_sha256,
+        terrain_store_limit_bytes: config.terrain_store_limit_bytes,
         immutable_files,
         seed_files,
     };
@@ -223,6 +241,7 @@ pub fn load(root: &Path) -> Result<Preparation> {
         &dir.join("preparation.json"),
         8 * 1024 * 1024,
     )?)?;
+    validate_terrain_store_limit(record.terrain_store_limit_bytes)?;
     ensure!(
         record.schema_version == 1
             && files::valid_hash(&record.dataset_id, 64)
@@ -241,16 +260,36 @@ pub fn load(root: &Path) -> Result<Preparation> {
         "E_RESOURCE_MISMATCH: preparation identity mismatch"
     );
     ensure!(
+        record.terrain_store_limit_bytes == config.terrain_store_limit_bytes,
+        "E_RESOURCE_MISMATCH: prepared terrain store quota differs from deployment configuration"
+    );
+    ensure!(
         immutable_inventory(&dir)? == record.immutable_files,
         "E_RESOURCE_MISMATCH: immutable preparation files differ"
     );
     let snapshot = dir.join("public/maps").join(&record.dataset_id);
-    let validated = dataset::validate(&snapshot)?;
+    let validated = dataset::validate_snapshot(&snapshot)?;
     ensure!(
         validated.source_sha256 == record.source_sha256,
         "E_RESOURCE_MISMATCH: prepared fingerprint differs"
     );
+    check_stream_identity(&validated, &record.world_id, record.generation.as_deref())?;
     Ok(record)
+}
+
+fn check_stream_identity(
+    snapshot: &dataset::SnapshotIdentity,
+    world: &str,
+    generation: Option<&str>,
+) -> Result<()> {
+    if snapshot.format_version == 2 {
+        ensure!(
+            snapshot.world_id.as_deref() == Some(world)
+                && generation.is_none_or(|g| snapshot.generation.as_deref() == Some(g)),
+            "E_RESOURCE_MISMATCH: snapshot world/generation differs from deployment identity"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]

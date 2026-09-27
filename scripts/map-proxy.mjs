@@ -19,7 +19,12 @@ export function mapProxy(options) {
           url: `/api/v1/worlds/${world}/players`,
         }
       : null,
-    terrain: { world_id: world, generation, url: `${prefix}manifest.json` },
+    terrain: {
+      world_id: world,
+      generation,
+      url: `${prefix}manifest.json`,
+      lod_url: `${prefix}lod.json`,
+    },
   });
   return async (req, res, next) => {
     if (req.url === "/viewer-config.json") {
@@ -54,7 +59,7 @@ export function mapProxy(options) {
     }
     const suffix = req.url.slice(prefix.length);
     if (
-      !/^(manifest\.json|status|objects\/[a-f0-9]{64}\.(json|zst|png|txt))$/.test(
+      !/^(manifest\.json|lod\.json|status|objects\/[a-f0-9]{64}\.(json|zst|png|txt))$/.test(
         suffix,
       )
     ) {

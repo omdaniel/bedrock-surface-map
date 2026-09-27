@@ -17,8 +17,14 @@ import { bindSunDial } from "./sun-dial";
 import { PlayerLayer } from "./players";
 import { TerrainClient, type LiveRoot } from "./terrain";
 import { boundedBytes } from "./http";
-import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
+import {
+  appUrl,
+  configuredLodUrl,
+  loadConfiguration,
+  type ViewerConfiguration,
+} from "./config";
 import { DemoPlayback } from "./demo";
+import { LodView, type LodCamera } from "./lod/view";
 import {
   MAP_CACHE_BYTES,
   REGION_BYTES,
@@ -79,6 +85,10 @@ const main = canvas.parentElement!;
 app.insertBefore($("message"), main);
 let manifest: Manifest;
 let renderer: Renderer;
+let lod: LodView | null = null;
+let lodSource: { url: URL; configuration: ViewerConfiguration } | null = null;
+let lodRecovering = false;
+let lodRecoveries = 0;
 let base: URL;
 let terrain: TerrainClient | null = null;
 let demo: DemoPlayback | null = null;
@@ -121,9 +131,7 @@ const pending = new Map<
     reject: (e: Error) => void;
   }
 >();
-const worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), {
-  type: "module",
-});
+let worker: Worker | undefined;
 const playerLayer = new PlayerLayer({
   main,
   nav: document.querySelector("nav")!,
@@ -135,7 +143,7 @@ const playerLayer = new PlayerLayer({
     height: main.clientHeight,
   }),
   center: (x, z, close) => {
-    if (!renderer) return;
+    if (!renderer && !lod) return;
     const targetScale = close ? Math.max(scale, 3) : scale;
     if (cx === x && cz === z && targetScale === scale) return;
     cx = x;
@@ -144,6 +152,7 @@ const playerLayer = new PlayerLayer({
     changed();
   },
   covered: (x, z) => {
+    if (lod) return lod.inspect(x, z)?.present ?? null;
     const rx = Math.floor(x / 256),
       rz = Math.floor(z / 256),
       r = cache.get(`${rx},${rz}`);
@@ -159,24 +168,31 @@ const playerLayer = new PlayerLayer({
     return r.pick[ix * 2] !== -32768;
   },
 });
-worker.onmessage = ({ data: r }: MessageEvent<DecodeReply>) => {
-  const p = pending.get(r.id);
-  if (!p) return;
-  pending.delete(r.id);
-  totalDecode += r.decodeMs ?? 0;
-  if (r.error) p.reject(new Error(r.error));
-  else p.resolve(r.data!);
-};
-worker.onerror = (e) => {
-  for (const p of pending.values()) p.reject(new Error(e.message));
-  pending.clear();
-  message(e.message, true);
-};
+function legacyWorker() {
+  if (worker) return worker;
+  worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), {
+    type: "module",
+  });
+  worker.onmessage = ({ data: r }: MessageEvent<DecodeReply>) => {
+    const p = pending.get(r.id);
+    if (!p) return;
+    pending.delete(r.id);
+    totalDecode += r.decodeMs ?? 0;
+    if (r.error) p.reject(new Error(r.error));
+    else p.resolve(r.data!);
+  };
+  worker.onerror = (e) => {
+    for (const p of pending.values()) p.reject(new Error(e.message));
+    pending.clear();
+    message(e.message, true);
+  };
+  return worker;
+}
 function decode(request: Omit<DecodeRequest, "id">) {
   return new Promise<Uint32Array | Float32Array>((resolve, reject) => {
     const id = ++sequence;
     pending.set(id, { resolve, reject });
-    worker.postMessage({ ...request, id });
+    legacyWorker().postMessage({ ...request, id });
   });
 }
 function asset(path: string) {
@@ -213,6 +229,7 @@ function visible(r: RegionRef) {
   );
 }
 function memory() {
+  if (lod) return lod.ledger.snapshot().totalBytes;
   return renderer
     ? renderer.gpu_bytes() +
         renderer.cpu_bytes() +
@@ -300,6 +317,7 @@ function loadRegions() {
 }
 function updateStatus() {
   if (!manifest) return;
+  if (lod) return;
   const wanted = manifest.regions.filter(visible);
   const ready = wanted.filter((r) => cache.has(key(r))).length;
   $("load-state").textContent =
@@ -317,6 +335,12 @@ function updateStatus() {
     message("");
 }
 function updateMetrics() {
+  if (lod) {
+    const state = lod.stats;
+    $("metrics").textContent =
+      `LOD ${state.level} / target ${state.targetLevel}\nTiles ${state.tiles} / height pages ${state.heights}\nManaged memory ${(state.memory.totalBytes / 1e6).toFixed(1)} MB\nPeak ${(state.memory.peakBytes / 1e6).toFixed(1)} MB\nReserved ${(state.memory.reservedBytes / 1e6).toFixed(1)} MB\nRetiring ${(state.retiringBytes / 1e6).toFixed(1)} MB\nWASM main / worker ${(state.mainWasmBytes / 1e6).toFixed(1)} / ${(state.workerWasmBytes / 1e6).toFixed(1)} MB\nFirst terrain ${state.firstVisible?.toFixed(0) ?? "—"} ms\nUploads ${state.tileUploads} / canceled ${state.cancellations}\nFrames drawn ${draws}`;
+    return;
+  }
   if (!renderer) return;
   $("metrics").textContent =
     `Cached regions  ${cache.size}\nMap memory      ${(memory() / 1048576).toFixed(1)} MiB\nWorker decode   ${totalDecode.toFixed(0)} ms\nFirst region    ${firstVisible?.toFixed(0) ?? "—"} ms\nFrames drawn    ${draws}`;
@@ -331,42 +355,81 @@ function updateScale() {
   el.querySelector("span")!.textContent = `${blocks.toLocaleString()} blocks`;
 }
 function requestDraw() {
-  if (frameQueued || !renderer || disposed) return;
+  if (frameQueued || (!renderer && !lod) || disposed) return;
   if (terrain && !terrain.covers(viewport(), elevation)) return;
   frameQueued = true;
   requestAnimationFrame(() => {
     frameQueued = false;
+    if (disposed || (!renderer && !lod)) return;
     try {
-      const dpr = Math.min(devicePixelRatio, 2);
+      const dpr = mapDpr();
       const w = Math.round(main.clientWidth * dpr),
         h = Math.round(main.clientHeight * dpr);
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
       }
-      renderer.render(
-        cx,
-        cz,
-        scale * dpr,
-        w,
-        h,
-        grid,
-        sun,
-        elevation,
-        azimuth,
-        shadowStrength,
-        vivid,
-        reliefStrength,
-        reliefWidth,
-      );
-      draws++;
+      if (lod) {
+        if (
+          lod.draw(
+            lodCamera(),
+            grid,
+            shadowStrength,
+            vivid,
+            reliefStrength,
+            reliefWidth,
+          )
+        )
+          draws++;
+      } else {
+        renderer.render(
+          cx,
+          cz,
+          scale * dpr,
+          w,
+          h,
+          grid,
+          sun,
+          elevation,
+          azimuth,
+          shadowStrength,
+          vivid,
+          reliefStrength,
+          reliefWidth,
+        );
+        draws++;
+      }
       playerLayer.project();
       updateScale();
       updateMetrics();
     } catch (e) {
-      message(String(e), true);
+      if (!lodRecovering) message(String(e), true);
     }
   });
+}
+function mapDpr() {
+  return lod
+    ? Math.min(
+        devicePixelRatio,
+        2,
+        Math.sqrt(
+          12_000_000 / Math.max(1, main.clientWidth * main.clientHeight * 4),
+        ),
+      )
+    : Math.min(devicePixelRatio, 2);
+}
+function lodCamera(): LodCamera {
+  return {
+    cx,
+    cz,
+    scale,
+    width: main.clientWidth,
+    height: main.clientHeight,
+    dpr: mapDpr(),
+    elevation,
+    azimuth,
+    shadows: sun,
+  };
 }
 function fixedMapBytes() {
   return (
@@ -404,6 +467,12 @@ function admitView(resized: boolean) {
   return true;
 }
 function changed(resized = false) {
+  if (lod) {
+    lod.setCamera(lodCamera());
+    playerLayer.project();
+    requestDraw();
+    return;
+  }
   if (!renderer || !manifest || !admitView(resized)) return;
   for (const c of cache.values())
     if (visible(c.ref)) c.last = performance.now();
@@ -610,7 +679,7 @@ function zoom(
   playerLayer.manualNavigation();
   const wx = cx + (x - main.clientWidth / 2) / scale,
     wz = cz + (y - main.clientHeight / 2) / scale;
-  scale = Math.max(0.025, Math.min(80, scale * factor));
+  scale = Math.max(lod ? 1e-6 : 0.025, Math.min(80, scale * factor));
   cx = wx - (x - main.clientWidth / 2) / scale;
   cz = wz - (y - main.clientHeight / 2) / scale;
   changed();
@@ -627,6 +696,17 @@ function inspect(x: number, y: number) {
     wz = Math.floor(cz + (y - main.clientHeight / 2) / scale);
   $("coordinates").textContent =
     `X ${wx.toLocaleString()}   Z ${wz.toLocaleString()}`;
+  if (lod) {
+    const result = lod.inspect(wx, wz);
+    $("inspect").hidden = !result?.present;
+    if (result?.present) {
+      $("block-name").textContent = result.name;
+      $("block-pos").textContent =
+        `${wx} / ${result.height.toFixed(2)} / ${wz}`;
+      $("block-detail").textContent = result.detail;
+    }
+    return;
+  }
   const r = cache.get(`${Math.floor(wx / 256)},${Math.floor(wz / 256)}`);
   const ix = (((wz % 256) + 256) % 256) * 256 + (((wx % 256) + 256) % 256);
   const h = r?.pick[ix * 2];
@@ -771,6 +851,15 @@ $("stats").onclick = () => {
   updateMetrics();
 };
 $("retry").onclick = () => {
+  if (lodSource && (!lod || lod.renderer.is_lost())) {
+    void recoverLod(true);
+    return;
+  }
+  if (lod) {
+    lod.retry();
+    changed();
+    return;
+  }
   if (renderer?.is_lost()) {
     location.reload();
     return;
@@ -790,6 +879,7 @@ new ResizeObserver(() => {
   });
 }).observe(main);
 document.addEventListener("visibilitychange", () => {
+  lod?.visibility();
   if (terrainTimer) clearTimeout(terrainTimer);
   if (!document.hidden) {
     requestDraw();
@@ -801,12 +891,15 @@ window.addEventListener("pagehide", () => {
   demo?.destroy();
   disposed = true;
   if (terrainTimer) clearTimeout(terrainTimer);
-  worker.terminate();
+  worker?.terminate();
+  lod?.destroy();
   renderer?.free();
 });
-window.addEventListener("surface-device-lost", () =>
-  message("GPU device lost. Reload the map.", true),
-);
+window.addEventListener("surface-device-lost", () => {
+  if (lodSource) {
+    if (!lodRecovering && lod?.renderer.is_lost()) void recoverLod();
+  } else message("GPU device lost. Reload the map.", true);
+});
 window.addEventListener("surface-frame-ready", () =>
   requestAnimationFrame(() => {
     if (firstVisible === null) {
@@ -873,6 +966,7 @@ declare global {
   }
 }
 function mapState() {
+  const lodState = lod?.stats ?? null;
   return {
     cx,
     cz,
@@ -884,14 +978,17 @@ function mapState() {
     vivid,
     reliefStrength,
     reliefWidth,
-    cached: cache.size,
-    pending: active,
+    cached: lodState?.tiles ?? cache.size,
+    pending: lodState?.pending ?? active,
     renderPending: frameQueued || resizeQueued,
-    failures: [...failures],
+    failures: lodState?.failures ?? [...failures],
     memory: memory(),
     draws,
-    firstVisible,
+    firstVisible: lodState?.firstVisible ?? firstVisible,
     totalDecode,
+    lod: lodState,
+    lodRecovering,
+    lodRecoveries,
     terrain: terrain
       ? {
           revision: terrain.root.revision,
@@ -911,7 +1008,8 @@ window.__map = {
   zoom,
   measure,
   loseDevice: () => {
-    renderer.simulate_device_loss();
+    if (lod) lod.renderer.simulate_device_loss();
+    else renderer.simulate_device_loss();
   },
   pan: (x, z) => {
     playerLayer.manualNavigation();
@@ -920,6 +1018,128 @@ window.__map = {
     changed();
   },
 };
+
+let lodRecoveryRoot: LodView["root"] | undefined;
+async function createLodView(validatedRoot = lodRecoveryRoot) {
+  if (!lodSource) throw Error("LOD source is not configured");
+  const { url, configuration } = lodSource;
+  const view = await LodView.create(
+    url,
+    canvas,
+    requestDraw,
+    (status) => {
+      $("load-state").textContent = status;
+      if (lod?.firstVisible !== null && lod?.firstVisible !== undefined)
+        message("");
+    },
+    configuration.memory_budget_bytes,
+    validatedRoot,
+  );
+  if (
+    disposed ||
+    (view.root.world_id &&
+      !(demo
+        ? demo.world_id === view.root.world_id &&
+          demo.generation === view.root.generation
+        : (configuration.terrain &&
+            configuration.terrain.world_id === view.root.world_id &&
+            configuration.terrain.generation === view.root.generation) ||
+          (configuration.lod_identity &&
+            configuration.lod_url &&
+            new URL(configuration.lod_url, appUrl(".")).href === url.href &&
+            configuration.lod_identity.world_id === view.root.world_id &&
+            configuration.lod_identity.generation === view.root.generation)))
+  ) {
+    view.destroy();
+    throw Error(
+      disposed
+        ? "Viewer stopped"
+        : "No explicit live-terrain binding for this LOD map",
+    );
+  }
+  lodRecoveryRoot = view.root;
+  if (
+    view.root.world_id &&
+    new URLSearchParams(location.search).get("terrain") !== "off" &&
+    (demo ||
+      (configuration.terrain?.lod_url &&
+        new URL(configuration.terrain.lod_url, appUrl(".")).href === url.href))
+  ) {
+    view.startLive(
+      url,
+      () => {
+        if (lod === view) {
+          manifest = view.manifest;
+          lodRecoveryRoot = view.root;
+        }
+      },
+      async (nextRoot) => {
+        if (disposed || lod !== view) return;
+        // A new appearance cannot share old coarse colors. Release its resources
+        // before loading roots again; camera, lighting and player state stay put.
+        lodRecovering = true;
+        window.__map.ready = false;
+        lodRecoveryRoot = nextRoot;
+        view.destroy();
+        lod = null;
+        message("Loading terrain appearance...");
+        try {
+          lod = await createLodView(nextRoot);
+          manifest = lod.manifest;
+          window.__map.ready = true;
+          changed();
+        } catch (error) {
+          if (!disposed)
+            message(`Terrain appearance unavailable: ${String(error)}`, true);
+          throw error;
+        } finally {
+          lodRecovering = false;
+        }
+      },
+      (state) => {
+        if (lod !== view) return;
+        const element = document.querySelector<HTMLElement>(".local-state")!;
+        element.textContent = demo ? "Simulated terrain" : `Terrain ${state}`;
+        const publication = view.stats.live?.publication;
+        element.title = publication
+          ? `Last reported LOD revision lag: ${publication.revision_lag}; pending: ${publication.pending_age_ms === null ? "none" : `${(publication.pending_age_ms / 1000).toFixed(1)}s`}${publication.reason ? `; ${publication.reason}` : ""}`
+          : "Terrain publication status unavailable";
+      },
+      demo ?? undefined,
+    );
+  }
+  return view;
+}
+
+async function recoverLod(manual = false) {
+  if (disposed || lodRecovering || !lodSource) return;
+  lodRecoveryRoot = lod?.root ?? lodRecoveryRoot;
+  if (!manual && lodRecoveries >= 1) {
+    lod?.destroy();
+    lod = null;
+    window.__map.ready = false;
+    message("GPU device lost again. Retry to reconstruct the map.", true);
+    return;
+  }
+  lodRecovering = true;
+  lodRecoveries++;
+  window.__map.ready = false;
+  // Release the lost device and terminate its decoder before reserving a new
+  // coarse-first renderer. Camera, lighting and the independent player layer stay.
+  lod?.destroy();
+  lod = null;
+  message("Reconstructing terrain after GPU device loss...");
+  try {
+    lod = await createLodView();
+    manifest = lod.manifest;
+    window.__map.ready = true;
+    changed();
+  } catch (error) {
+    if (!disposed) message(`GPU recovery failed: ${String(error)}`, true);
+  } finally {
+    lodRecovering = false;
+  }
+}
 
 async function boot() {
   const params = new URLSearchParams(location.search);
@@ -947,7 +1167,39 @@ async function boot() {
   }
   if (demoMode) {
     demo = new DemoPlayback();
-    await demo.initialize(appUrl(configuration.demo!.scenario));
+    await demo.initialize(
+      appUrl(configuration.demo!.scenario),
+      configuration.demo!.lod_stages?.map(appUrl),
+    );
+  }
+  const lodUrl = demo?.lodUrl?.href ?? configuredLodUrl(configuration, params);
+  if (lodUrl) {
+    lodSource = { url: new URL(lodUrl, appUrl(".")), configuration };
+    lod = await createLodView();
+    manifest = lod.manifest;
+    $("app").querySelector(".identity strong")!.textContent = manifest.name;
+    document.querySelector(".subtitle")!.textContent = demo
+      ? "OVERWORLD / DEMO"
+      : "OVERWORLD / SURFACE LOD";
+    window.__map.ready = true;
+    if (demo) {
+      [cx, cz, scale] = demo.camera;
+      demo.mount();
+      playerLayer.configureDemo(demo);
+      changed();
+      return;
+    }
+    fit();
+    if (params.get("players") === "off") playerLayer.disableForView();
+    else
+      void playerLayer.configure(
+        manifest.source_sha256,
+        lod.root.world_id
+          ? { world_id: lod.root.world_id, generation: lod.root.generation }
+          : undefined,
+        configuration,
+      );
+    return;
   }
   const url = new URL(
     (demo ? appUrl(configuration.demo!.scenario).href : params.get("map")) ??
@@ -1001,7 +1253,6 @@ async function boot() {
     ) ||
     !Array.isArray(manifest.regions) ||
     !manifest.regions.length ||
-    manifest.regions.length > (terrain ? 65536 : 4096) ||
     !Array.isArray(manifest.materials) ||
     !manifest.materials.length ||
     manifest.materials.length > 65536 ||
@@ -1010,15 +1261,18 @@ async function boot() {
     !manifest.spawn.every(Number.isFinite)
   )
     throw new Error("Unsupported or empty map manifest");
+  const conversionRequired =
+    "This snapshot requires LOD preparation. Run surface-cli prepare-lod --map <manifest.json> --output <directory>, then set lod_url to the resulting lod.json.";
+  if (manifest.regions.length > (terrain ? 65536 : 4096))
+    throw new Error(
+      terrain ? "Unsupported or empty map manifest" : conversionRequired,
+    );
   $("app").querySelector(".identity strong")!.textContent = manifest.name;
   const width = manifest.bounds[2] - manifest.bounds[0],
     height = manifest.bounds[3] - manifest.bounds[1];
-  if (
-    width <= 0 ||
-    height <= 0 ||
-    (!terrain && width * height > 16 * 1024 * 1024)
-  )
-    throw new Error("Map bounds exceed the prototype limit");
+  if (width <= 0 || height <= 0) throw new Error("Invalid map bounds");
+  if (!terrain && width * height > 16 * 1024 * 1024)
+    throw new Error(conversionRequired);
   const ids = new Set<string>();
   for (const r of manifest.regions) {
     const k = key(r);

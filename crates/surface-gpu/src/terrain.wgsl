@@ -14,13 +14,6 @@ struct Vertex { @builtin(position) position:vec4f, @location(0) local:vec2f }
     let pixel=(world-p.camera.xy)*p.camera.z;
     var v:Vertex;v.position=vec4f(pixel.x*2.0/p.camera.w,-pixel.y*2.0/p.screen.x,0,1);v.local=local;return v;
 }
-fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
-    let m=materials[id];
-    let lod=clamp(log2(32.0/p.camera.z),0.0,2.0);
-    let tex=textureSampleLevel(atlas,atlas_sampler,m.uv.xy+uv*m.uv.zw,lod);
-    let c=mix(m.average,tex,smoothstep(2.0,12.0,p.camera.z));
-    return tint_color(m,c,tint,p.lighting.y);
-}
 @fragment fn fs(v:Vertex)->@location(0) vec4f {
     let q=clamp(vec2u(v.local),vec2u(0),vec2u(255));let c=cells[q.y*256u+q.x];
     let fractional=fract(v.local);let footprint=fwidth(v.local);
@@ -30,16 +23,7 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
         if col.a<0.005{discard;}return vec4f(col.rgb/max(col.a,0.001),col.a);
     }
     if c.covered!=1u {discard;}
-    var col=material_color(c.material,c.tint,fractional);
-    if c.depth>0u {
-        let support=material_color(c.support,c.tint,fractional).rgb;
-        let water=water_color(p.lighting.y);
-        col=vec4f(mix(support,water,1.0-exp(-f32(c.depth)*0.16))*mix(vec3f(0.85),vec3f(1.1),col.rgb),1.0);
-    } else {
-        let m=materials[c.material];let base=tint_color(m,m.average,c.tint,p.lighting.y).rgb;
-        col=vec4f(mix(base*0.7,col.rgb,col.a),1.0);
-    }
-    if c.overlay!=0u {let over=material_color(c.overlay,c.tint,fractional);col=vec4f(mix(col.rgb,over.rgb,over.a*0.65),1.0);}
+    var col=fine_color(c,fractional);
     let at=origin.xy+vec2f(q)-p.bounds.xy;
     let lo=max(vec2f(0),fractional-footprint*0.5);
     let hi=min(vec2f(1),fractional+footprint*0.5);

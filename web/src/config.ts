@@ -1,8 +1,29 @@
 export interface ViewerConfiguration {
   map?: string;
+  lod_url?: string;
+  lod_identity?: { world_id: string; generation: string };
+  memory_budget_bytes?: number;
   players?: unknown;
-  terrain?: { url: string; world_id: string; generation: string };
-  demo?: { scenario: string; poster: string };
+  terrain?: {
+    url: string;
+    lod_url?: string;
+    world_id: string;
+    generation: string;
+  };
+  demo?: { scenario: string; poster: string; lod_stages?: string[] };
+}
+export function configuredLodUrl(
+  configuration: ViewerConfiguration,
+  params: URLSearchParams,
+) {
+  return (
+    params.get("lod") ??
+    (!params.has("map")
+      ? ((params.get("terrain") !== "off"
+          ? configuration.terrain?.lod_url
+          : undefined) ?? configuration.lod_url)
+      : undefined)
+  );
 }
 export function appUrl(path: string) {
   // The packaged viewer can be mounted at either `/` or a subpath without a

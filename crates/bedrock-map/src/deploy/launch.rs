@@ -1,4 +1,8 @@
-use super::{config::identifier, files, prepare::Preparation};
+use super::{
+    config::{identifier, validate_terrain_store_limit},
+    files,
+    prepare::Preparation,
+};
 use anyhow::{Result, ensure};
 use std::{fs, path::Path, process::Command};
 
@@ -10,6 +14,7 @@ pub enum Service {
 }
 
 pub fn validate_marker(marker: &Preparation, commit: &str, common: &[u8]) -> Result<()> {
+    validate_terrain_store_limit(marker.terrain_store_limit_bytes)?;
     ensure!(
         marker.schema_version == 1
             && marker.commit == commit
@@ -21,7 +26,7 @@ pub fn validate_marker(marker: &Preparation, commit: &str, common: &[u8]) -> Res
             && marker
                 .generation
                 .as_ref()
-                .is_none_or(|g| files::valid_hash(g, 64)),
+                .is_none_or(|g| surface_core::terrain::valid_id(g)),
         "E_RESOURCE_MISMATCH: missing or incompatible preparation marker"
     );
     Ok(())
@@ -94,23 +99,7 @@ pub fn run(service: Service) -> Result<()> {
                 "E_CONFIG_INVALID: terrain is disabled"
             );
             validate_store(Path::new("/state/current.sqlite3"), &marker)?;
-            let mut cmd = Command::new("/opt/bedrock-map/libexec/surface-sync");
-            cmd.args([
-                "--state",
-                "/state",
-                "--world",
-                &marker.world_id,
-                "--generation",
-                marker.generation.as_deref().unwrap(),
-                "serve",
-                "--token-file",
-                "/run/secrets/terrain.token",
-                "--ingest",
-                "0.0.0.0:8082",
-                "--read",
-                "0.0.0.0:8111",
-            ]);
-            cmd
+            terrain_command(&marker)?
         }
         Service::Players => {
             ensure!(
@@ -135,4 +124,31 @@ pub fn run(service: Service) -> Result<()> {
     {
         anyhow::bail!("E_CONFIG_INVALID: runtime launch requires Unix")
     }
+}
+
+pub fn terrain_command(marker: &Preparation) -> Result<Command> {
+    validate_terrain_store_limit(marker.terrain_store_limit_bytes)?;
+    let generation = marker
+        .generation
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("E_CONFIG_INVALID: missing terrain generation"))?;
+    let mut cmd = Command::new("/opt/bedrock-map/libexec/surface-sync");
+    cmd.args([
+        "--state",
+        "/state",
+        "--world",
+        &marker.world_id,
+        "--generation",
+        generation,
+        "--limit",
+        &marker.terrain_store_limit_bytes.to_string(),
+        "serve",
+        "--token-file",
+        "/run/secrets/terrain.token",
+        "--ingest",
+        "0.0.0.0:8082",
+        "--read",
+        "0.0.0.0:8111",
+    ]);
+    Ok(cmd)
 }

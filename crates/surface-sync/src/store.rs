@@ -1,5 +1,6 @@
+use crate::lod_queue::{self, ChangedChunk};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -12,7 +13,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use surface_core::{
-    MapManifest, Material, SurfaceRegion, decode_region, decompress, encode_live_region,
+    Material, SurfaceRegion, decompress, encode_live_region,
     terrain::{MaterialSpec, SurfaceChunk, TerrainObservation, valid_id},
 };
 
@@ -62,14 +63,14 @@ pub struct Store {
     pub connection: Connection,
     pub root: PathBuf,
     pub limit: u64,
-    used: Cell<u64>,
-    data_version: Cell<i64>,
+    pub(crate) used: Cell<u64>,
+    pub(crate) data_version: Cell<i64>,
 }
 
-struct Objects<'a> {
-    root: &'a Path,
-    used: &'a Cell<u64>,
-    limit: u64,
+pub(crate) struct Objects<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) used: &'a Cell<u64>,
+    pub(crate) limit: u64,
 }
 impl std::ops::Deref for Objects<'_> {
     type Target = Path;
@@ -78,7 +79,7 @@ impl std::ops::Deref for Objects<'_> {
     }
 }
 impl Objects<'_> {
-    fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
+    pub(crate) fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
         let version = db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))?;
         if version != previous.get() {
             let used = fs::read_dir(self.root.join("objects"))?
@@ -96,15 +97,15 @@ impl Objects<'_> {
     }
 }
 
-fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
+pub(crate) fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
     let value: String = db.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))?;
     Ok(serde_json::from_str(&value)?)
 }
-fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
+pub(crate) fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
     db.execute("INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(value)?])?;
     Ok(())
 }
-fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
+pub(crate) fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
     let sha256 = hash(bytes);
     let name = format!("{sha256}.{extension}");
     let path = root.join("objects").join(&name);
@@ -231,10 +232,12 @@ fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
 }
 
 fn save_chunk(
-    db: &Connection,
+    db: &Transaction<'_>,
     root: &Objects<'_>,
     c: &SurfaceChunk,
     observed: u64,
+    queue_revision: u64,
+    queued_ms: u64,
 ) -> Result<bool> {
     c.validate(65536, false)?;
     let packed = zstd::encode_all(c.encode()?.as_slice(), 3)?;
@@ -247,7 +250,21 @@ fn save_chunk(
         )
         .optional()?;
     db.execute("INSERT INTO chunks(cx,cz,hash,bytes,observed) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(cx,cz) DO UPDATE SET hash=excluded.hash,bytes=excluded.bytes,observed=excluded.observed",params![c.cx,c.cz,reference.sha256,reference.bytes as i64,observed as i64])?;
-    Ok(old.as_deref() != Some(reference.sha256.as_str()))
+    let changed = old.as_deref() != Some(reference.sha256.as_str());
+    if changed {
+        lod_queue::enqueue(
+            db,
+            &ChangedChunk {
+                cx: c.cx,
+                cz: c.cz,
+                sha256: reference.sha256,
+                bytes: reference.bytes,
+                observation_revision: queue_revision,
+                now_ms: queued_ms,
+            },
+        )?;
+    }
+    Ok(changed)
 }
 
 fn publish_region(db: &Connection, root: &Objects<'_>, rx: i32, rz: i32) -> Result<()> {
@@ -329,6 +346,15 @@ fn publish_root(
     set_meta(db, "revision", &(revision + 1))?;
     let mut regions = Vec::new();
     let mut bounds = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+    let seed_bounds: Option<String> = db
+        .query_row("SELECT value FROM meta WHERE key='seed_bounds'", [], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    if let Some(seed_bounds) = seed_bounds {
+        bounds = serde_json::from_str(&seed_bounds)?;
+        surface_core::lod::validate_bounds(bounds)?;
+    }
     let mut range = [i16::MAX, i16::MIN];
     let mut s = db.prepare("SELECT rx,rz,data,index_ref FROM regions ORDER BY rz,rx")?;
     let rows = s.query_map([], |r| {
@@ -371,7 +397,7 @@ impl Store {
             "invalid configured identity"
         );
         fs::create_dir_all(root.join("objects"))?;
-        let db = Connection::open(root.join("current.sqlite3"))?;
+        let mut db = Connection::open(root.join("current.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(10))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-8192;
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -407,6 +433,9 @@ impl Store {
                 && meta::<String>(&db, "generation")? == generation,
             "dataset identity mismatch; use a new state directory for another generation"
         );
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        lod_queue::install(&tx)?;
+        tx.commit()?;
         let used = fs::read_dir(root.join("objects"))?.try_fold(0u64, |n, e| -> Result<u64> {
             Ok(n.saturating_add(e?.metadata()?.len()))
         })?;
@@ -484,7 +513,7 @@ impl Store {
         for source in &observation.chunks {
             let mut chunk = source.clone();
             chunk.remap(&ids)?;
-            if save_chunk(&tx, &objects, &chunk, accepted)? {
+            if save_chunk(&tx, &objects, &chunk, accepted, accepted, now)? {
                 dirty.insert((chunk.cx.div_euclid(16), chunk.cz.div_euclid(16)));
             }
         }
@@ -532,26 +561,29 @@ impl Store {
         library: Option<&Path>,
         boundary: Option<&Boundary>,
     ) -> Result<Value> {
-        let manifest: MapManifest = serde_json::from_slice(&fs::read(map.join("manifest.json"))?)?;
-        ensure!(
-            manifest.format_version == 1,
-            "seed requires a verified offline manifest"
-        );
+        let manifest = crate::seed::Snapshot::load(map)?;
+        if let Some((world, generation)) = &manifest.identity {
+            ensure!(
+                *world == meta::<String>(&self.connection, "world_id")?
+                    && *generation == meta::<String>(&self.connection, "generation")?,
+                "seed snapshot world/generation mismatch"
+            );
+        }
         self.ensure_space()?;
         let initial = meta::<Value>(&self.connection, "manifest").is_err();
         ensure!(
             initial || boundary.is_some(),
             "existing dataset requires a reconciliation boundary"
         );
-        let (templates, atlas_path) = if let Some(lib) = library {
+        let (templates, atlas_bytes) = if let Some(lib) = library {
             let data: Value = serde_json::from_slice(&fs::read(lib.join("library.json"))?)?;
             let templates: Vec<Material> = serde_json::from_value(data["materials"].clone())?;
             (
                 templates,
-                lib.join(data["atlas"].as_str().context("atlas path")?),
+                fs::read(lib.join(data["atlas"].as_str().context("atlas path")?))?,
             )
         } else {
-            (manifest.materials.clone(), map.join(&manifest.atlas))
+            (manifest.materials.clone(), manifest.atlas.clone())
         };
         let objects = Objects {
             root: &self.root,
@@ -562,7 +594,7 @@ impl Store {
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         objects.refresh(&tx, &self.data_version)?;
-        let atlas = object(&objects, &fs::read(atlas_path)?, "png")?;
+        let atlas = object(&objects, &atlas_bytes, "png")?;
         if let Some(b) = boundary {
             let recorded: Boundary = meta(&tx, "boundary")?;
             ensure!(
@@ -576,6 +608,7 @@ impl Store {
         if initial {
             set_meta(&tx, "name", &manifest.name)?;
             set_meta(&tx, "spawn", &manifest.spawn)?;
+            set_meta(&tx, "seed_bounds", &manifest.bounds)?;
             set_meta(&tx, "atlas", &atlas)?;
             for template in templates {
                 tx.execute(
@@ -603,27 +636,17 @@ impl Store {
         let mut changed = 0;
         let mut skipped = 0;
         let mut checked = 0;
-        for reference in &manifest.regions {
-            ensure!(
-                Path::new(&reference.url)
-                    .components()
-                    .all(|c| matches!(c, std::path::Component::Normal(_))),
-                "unsafe import asset path"
-            );
-            let packed = fs::read(map.join(&reference.url))?;
-            ensure!(
-                hash(&packed) == reference.sha256,
-                "import checksum mismatch"
-            );
-            let region = decode_region(&decompress(&packed, surface_core::MAX_DECOMPRESSED)?)?;
-            ensure!(
-                region.rx == reference.rx && region.rz == reference.rz,
-                "region coordinate mismatch"
-            );
+        let accepted = meta::<u64>(&tx, "observation")?
+            .checked_add(1)
+            .context("observation revision exhausted")?;
+        let queued_ms = now_ms();
+        for index in 0..manifest.regions() {
+            let region = manifest.region(map, index)?;
             for z in 0..16 {
                 for x in 0..16 {
                     let mut chunk =
                         SurfaceChunk::from_region(&region, region.rx * 16 + x, region.rz * 16 + z)?;
+                    chunk.validate(manifest.materials.len(), false)?;
                     if chunk.columns.iter().all(|c| c[0] == 0) {
                         continue;
                     }
@@ -640,7 +663,14 @@ impl Store {
                         continue;
                     }
                     chunk.remap(&ids)?;
-                    if save_chunk(&tx, &objects, &chunk, boundary.map_or(0, |b| b.observation))? {
+                    if save_chunk(
+                        &tx,
+                        &objects,
+                        &chunk,
+                        boundary.map_or(0, |b| b.observation),
+                        accepted,
+                        queued_ms,
+                    )? {
                         dirty.insert((region.rx, region.rz));
                         changed += 1;
                     }
@@ -648,6 +678,10 @@ impl Store {
             }
         }
         ensure!(checked > 0, "empty repair import");
+        manifest.verify_unchanged(map)?;
+        // Repair order is distinct from the backup observation fence stored on
+        // each chunk. Newer live observations still win over backup contents.
+        set_meta(&tx, "observation", &accepted)?;
         publish_root(&tx, &objects, &dirty, false)?;
         let mut published: Value = meta(&tx, "manifest")?;
         published["source_sha256"] = json!(manifest.source_sha256);
@@ -658,6 +692,11 @@ impl Store {
     }
     pub fn manifest(&self) -> Result<Value> {
         meta(&self.connection, "manifest")
+    }
+    pub fn lod_manifest(&self) -> Result<surface_core::lod::LodManifest> {
+        let manifest: surface_core::lod::LodManifest = meta(&self.connection, "lod_manifest")?;
+        manifest.validate()?;
+        Ok(manifest)
     }
     /// Correct descriptors atomically while retaining every published ID and
     /// chunk hash. Existing clients adopt the new catalog on their next poll.
@@ -720,7 +759,7 @@ impl Store {
             "live"
         };
         Ok(
-            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2"}),
+            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2","lod":crate::lod_publish::health(&self.connection,now)?}),
         )
     }
     pub fn disable(&self, disabled: bool, reason: &str) -> Result<()> {
@@ -774,6 +813,14 @@ impl Store {
             collect(&serde_json::from_str(&index)?, &mut reachable);
         }
         drop(s);
+        lod_queue::visit_references(&tx, |_, reference| {
+            reachable.insert(format!("{}.zst", reference.sha256));
+            Ok(())
+        })?;
+        crate::lod_publish::visit_pins(&tx, |value| {
+            collect(value, &mut reachable);
+            Ok(())
+        })?;
         let mut removed = 0;
         let mut used = 0u64;
         for entry in fs::read_dir(self.root.join("objects"))? {

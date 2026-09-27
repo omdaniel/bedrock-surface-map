@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use surface_sync::{
     http::{App, ingest_router, read_router},
+    lod_publish::Publisher,
     store::{Boundary, Store, now_ms},
 };
 
@@ -98,6 +99,8 @@ async fn main() -> Result<()> {
             let app = App::new(store, token.trim().as_bytes().to_vec(), args.world)?;
             let a = tokio::net::TcpListener::bind(ingest).await?;
             let b = tokio::net::TcpListener::bind(read).await?;
+            let publisher = Publisher::open(app.store.clone())?;
+            tokio::spawn(publisher.run());
             let gc = app.store.clone();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));

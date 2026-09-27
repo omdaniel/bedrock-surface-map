@@ -5,6 +5,8 @@
 //! extraction and material preparation have a single implementation.
 
 mod app;
+pub mod lod;
+pub use lod::{create_lod_fixture, prepare_lod};
 
 pub use app::{
     ImportOptions, ImportReport, atomic_write, create_synthetic_fixture, hash, import_snapshot,

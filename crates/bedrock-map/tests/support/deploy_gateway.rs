@@ -123,10 +123,11 @@ async fn generated_gateway_enforces_auth_methods_and_fixed_read_routes() {
         };
         let player_path = format!("/api/v1/worlds/{}/players", prepared.world_id);
         let terrain_path = format!("/api/v1/worlds/{}/terrain/manifest.json", prepared.world_id);
+        let lod_path = format!("/api/v1/worlds/{}/terrain/lod.json", prepared.world_id);
         let public = inventory(&f.root.join("prepared/public"));
         for path in std::iter::once("/".into())
             .chain(public.keys().map(|p| format!("/{p}")))
-            .chain([player_path.clone(), terrain_path.clone()])
+            .chain([player_path.clone(), terrain_path.clone(), lod_path.clone()])
         {
             let url = format!("{origin}{path}");
             if !public_access {
@@ -154,7 +155,7 @@ async fn generated_gateway_enforces_auth_methods_and_fixed_read_routes() {
             }
             let enabled = if path == player_path {
                 players
-            } else if path == terrain_path {
+            } else if path == terrain_path || path == lod_path {
                 terrain
             } else {
                 true

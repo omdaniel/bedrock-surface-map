@@ -3,7 +3,7 @@ use bedrock_map::{assets, config, doctor, resources::Resources, result, server, 
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{fs, path::PathBuf};
+use std::{fs, io::Read, path::PathBuf};
 
 const BUILD_COMMIT: &str = env!("BEDROCK_MAP_BUILD_COMMIT");
 
@@ -54,6 +54,20 @@ enum Command {
         name: String,
         #[arg(long)]
         replace_active: bool,
+    },
+    /// Register an existing verified surface snapshot without a raw-world import.
+    Register {
+        #[arg(long)]
+        snapshot: PathBuf,
+        #[arg(long)]
+        replace_active: bool,
+    },
+    /// Derive LOD from the selected surface snapshot, without raw-world access.
+    PrepareLod {
+        #[arg(long)]
+        replace_active: bool,
+        #[arg(long, default_value_t = bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES)]
+        max_output_bytes: u64,
     },
     Serve {
         #[arg(long)]
@@ -233,6 +247,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Init => "init",
         Command::Demo { .. } => "demo",
         Command::Import { .. } => "import",
+        Command::Register { .. } => "register",
+        Command::PrepareLod { .. } => "prepare-lod",
         Command::Serve { .. } => "serve",
         Command::Status => "status",
         Command::Doctor { .. } => "doctor",
@@ -383,6 +399,10 @@ async fn run(args: Args) -> Result<u8> {
                 let public = operation.join("public");
                 copy_tree(&fixture, &public)?;
                 let source = hash_file(&public.join("manifest.json"))?;
+                bedrock_map::preparation::ensure_lod(
+                    &public,
+                    bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+                )?;
                 state.register_staged_dataset(&public, source, *replace_active)
             })?;
             print(
@@ -439,6 +459,10 @@ async fn run(args: Args) -> Result<u8> {
                 if private_report.exists() {
                     fs::rename(&private_report, operation.join("import-report.json"))?;
                 }
+                bedrock_map::preparation::ensure_lod(
+                    &public,
+                    bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+                )?;
                 let active = state.register_staged_dataset(&public, source, *replace_active)?;
                 Ok((active, report))
             })?;
@@ -446,6 +470,69 @@ async fn run(args: Args) -> Result<u8> {
                 result(
                     "import",
                     json!({"dataset":active.dataset_id,"report":report}),
+                )?,
+                args.json,
+            );
+        }
+        Command::Register {
+            snapshot,
+            replace_active,
+        } => {
+            let _lock = state.lock_mutation()?;
+            let identity = bedrock_map::state::validate_public_tree(snapshot)?;
+            let manifest_hash = hash_file(&snapshot.join("manifest.json"))?;
+            let source = if identity.source_sha256.len() == 64
+                && identity
+                    .source_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit())
+            {
+                identity.source_sha256
+            } else {
+                manifest_hash.clone()
+            };
+            let active = with_operation(&state, "register", |operation| {
+                let public = operation.join("public");
+                copy_tree(snapshot, &public)?;
+                ensure!(
+                    hash_file(&public.join("manifest.json"))? == manifest_hash,
+                    "E_INPUT_CHANGED: snapshot manifest changed while registering"
+                );
+                state.register_staged_dataset(&public, source, *replace_active)
+            })?;
+            print(
+                result(
+                    "register",
+                    json!({"dataset":active.dataset_id,"source_sha256":active.source_sha256}),
+                )?,
+                args.json,
+            );
+        }
+        Command::PrepareLod {
+            replace_active,
+            max_output_bytes,
+        } => {
+            let _lock = state.lock_mutation()?;
+            let selected = state
+                .active_validated()?
+                .context("E_NO_DATASET: select a snapshot first")?;
+            let input = state
+                .registered(&selected.dataset_id)?
+                .context("E_NO_DATASET: snapshot unavailable")?;
+            let active = with_operation(&state, "prepare-lod", |operation| {
+                let public = operation.join("public");
+                copy_tree(&input, &public)?;
+                bedrock_map::preparation::ensure_lod(&public, *max_output_bytes)?;
+                state.register_staged_dataset(
+                    &public,
+                    selected.source_sha256.clone(),
+                    *replace_active,
+                )
+            })?;
+            print(
+                result(
+                    "prepare-lod",
+                    json!({"dataset":active.dataset_id,"source_dataset":selected.dataset_id}),
                 )?,
                 args.json,
             );
@@ -572,8 +659,17 @@ fn with_operation<T>(
 }
 
 fn hash_file(path: &std::path::Path) -> Result<String> {
-    let bytes = fs::read(path)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    let mut file = fs::File::open(path)?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        digest.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 fn copy_tree(source: &std::path::Path, target: &std::path::Path) -> Result<()> {
     fs::create_dir_all(target)?;
@@ -599,6 +695,7 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         "E_STATE_UNSAFE",
         "E_STATE_BUSY",
         "E_PREPARE_SYNC",
+        "E_PREPARE_LOD",
         "E_PREPARED_DURABILITY",
         "E_RESOURCE_MISMATCH",
         "E_NO_DATASET",
@@ -630,6 +727,62 @@ mod tests {
         assert_eq!(error_code(&error), "E_PREPARED_DURABILITY");
         let error = anyhow::anyhow!("E_PREPARE_SYNC: prepared/ was not published");
         assert_eq!(error_code(&error), "E_PREPARE_SYNC");
+    }
+
+    #[tokio::test]
+    async fn register_region_only_snapshot_and_prepare_lod_without_raw_import() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = State::new(temp.path().join("state")).unwrap();
+        state.init().unwrap();
+        let snapshot = temp.path().join("snapshot");
+        surface_cli::create_synthetic_fixture(&snapshot).unwrap();
+        let mut manifest: surface_core::MapManifest =
+            serde_json::from_slice(&fs::read(snapshot.join("manifest.json")).unwrap()).unwrap();
+        fs::remove_file(snapshot.join(&manifest.heights)).unwrap();
+        manifest.heights.clear();
+        manifest.heights_sha256.clear();
+        manifest.bounds = [-8192, -8192, 8192, 8192];
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        fs::write(snapshot.join("manifest.json"), &bytes).unwrap();
+        let register = || Args {
+            state: Some(state.root.clone()),
+            resources: None,
+            json: true,
+            command: Command::Register {
+                snapshot: snapshot.clone(),
+                replace_active: false,
+            },
+        };
+        fs::write(snapshot.join("unlisted.json"), b"{}").unwrap();
+        assert!(run(register()).await.is_err());
+        assert!(state.active().unwrap().is_none());
+        fs::remove_file(snapshot.join("unlisted.json")).unwrap();
+        run(register()).await.unwrap();
+        let selected = state.active_validated().unwrap().unwrap();
+        assert_eq!(
+            selected.source_sha256,
+            hash_file(&snapshot.join("manifest.json")).unwrap()
+        );
+        run(Args {
+            state: Some(state.root.clone()),
+            resources: None,
+            json: true,
+            command: Command::PrepareLod {
+                replace_active: true,
+                max_output_bytes: bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+            },
+        })
+        .await
+        .unwrap();
+        let prepared = state.active_validated().unwrap().unwrap();
+        assert_ne!(prepared.dataset_id, selected.dataset_id);
+        assert_eq!(prepared.source_sha256, selected.source_sha256);
+        assert!(run(register()).await.is_err());
+        assert_eq!(
+            state.active_validated().unwrap().unwrap().dataset_id,
+            prepared.dataset_id
+        );
+        assert_eq!(fs::read(snapshot.join("manifest.json")).unwrap(), bytes);
     }
 
     #[test]
