@@ -13,15 +13,15 @@ maintenance entry points without making the demo visitor read an operator guide.
 | surface-sync / terrain pack     | Chunk observations, durable current terrain, incremental delivery           |
 | web                             | Worker decoding, navigation, picking, configuration and overlays            |
 
-Live terrain replaces chunks and patches resident height windows, overviews and
-picking data. It does not allocate a heightfield for an arbitrarily large world.
-The logical map budget is 256 MiB, excluding browser RSS, transient allocations
-and graphics-driver overhead. Oversized views request zooming in.
+The [LOD path](LOD.md) uses independent detail/summary tiles and bounded GPU
+height pages for prepared snapshots, live terrain and the public demo. Its
+200,000,000-byte ledger includes loading and retirement reservations; detail
+adapts without rejecting ordinary navigation. Live chunk replacements update
+GPU data and picking together, with coarse ancestors published separately.
 
-Those limits describe the region-based viewer. The optional
-[static LOD path](LOD.md) uses independent detail/summary tiles and a
-200,000,000-byte ledger including loading and retirement reservations. Its
-preparation commands and current integration boundaries are documented separately.
+The legacy region-based reader uses a 256 MiB logical map budget and may require
+zooming in for oversized views. Neither accounting model is a whole-browser RSS
+or graphics-driver limit. LOD preparation and verification are documented separately.
 
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),

@@ -90,11 +90,13 @@ a foreground window. Combined scope compares offline/players-off with
 live-terrain/players-on at the same camera and physical canvas size. Record the
 actual player count and edit load: idle-feed timing does not measure active edits.
 
-The growth script generates dense synthetic 4x and 16x maps, pans through 26
-locations per map and checks bounded residency, picking and zoom-in recovery.
-The 256 MiB budget covers accounted map allocations, not total browser/driver
-RSS or transient decoder peaks. Oversized views must ask for zooming in rather
-than omit required shadow coverage.
+The growth script checks the legacy region reader: dense synthetic 4x and 16x
+maps, 26 navigation locations per map, bounded residency, picking and zoom-in
+recovery. Its 256 MiB budget is not total browser/driver RSS or a transient
+decoder bound. For prepared and live LOD, use the [LOD scale and residency
+checks](LOD.md#verification). These enforce the 200,000,000-byte managed ceiling,
+including loading/retirement reservations, and require detail adaptation without
+discarding the camera position or required shadow coverage.
 
 Measure direct-edit and background freshness separately, including sampling,
 transport and browser application delay. Targets are five-second direct updates,
