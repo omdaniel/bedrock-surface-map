@@ -2,6 +2,7 @@ import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { LodManifest, LodNode, NodeRef } from "../web/src/lod/protocol";
+import { captureLodFailure } from "./lod-evidence";
 
 const directory = resolve(".local/terrain-fixture");
 const object = (url: string) => readFileSync(resolve(directory, "state", url));
@@ -272,12 +273,99 @@ test("terrain opt-out uses snapshot LOD without contacting the live terrain serv
   expect(await page.evaluate(() => window.__map.state().lod?.live)).toBeNull();
 });
 
-test.afterEach(async ({ page }, info) => {
-  if (info.status === info.expectedStatus) return;
-  await info.attach("lod-live-state", {
-    body: JSON.stringify(
-      await page.evaluate(() => window.__map?.state()).catch(() => null),
-    ),
-    contentType: "application/json",
+test("live LOD rejects unrelated or older roots without replacing valid terrain", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  let current = structuredClone(roots[1]);
+  let accepted = roots[1];
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/viewer-config.json", (route) =>
+    route.fulfill({
+      json: {
+        terrain: {
+          lod_url: "/api/v1/worlds/fixture-world/terrain/lod.json",
+          world_id: "fixture-world",
+          generation: "fixture-generation",
+          url: "/api/v1/worlds/fixture-world/terrain/manifest.json",
+        },
+      },
+    }),
+  );
+  await page.route("**/api/v1/worlds/fixture-world/terrain/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("lod.json")) return route.fulfill({ json: current });
+    if (path.endsWith("/status"))
+      return route.fulfill({
+        json: {
+          schema_version: 1,
+          world_id: accepted.world_id,
+          generation: accepted.generation,
+          status: "live",
+          reason: "live",
+          sample_age_ms: 0,
+          last_repair_ms: 1000,
+          lod: {
+            status: "live",
+            revision: accepted.revision,
+            source_revision: accepted.revision,
+            published_source_revision: accepted.revision,
+            revision_lag: 0,
+            pending_age_ms: null,
+            last_published_ms: 1000,
+            reason: null,
+          },
+        },
+      });
+    return route.fulfill({
+      body: object(`objects/${path.split("/").at(-1)}`),
+    });
   });
+  await page.goto("/?players=off");
+  await settled(page);
+  await expect(page.locator(".local-state")).toHaveText("Terrain live");
+  const baseline = await page.evaluate(() => window.__map.state());
+  const pixels = await page.locator("canvas").screenshot();
+  for (const [change, reason] of [
+    [{ world_id: "unrelated-world" }, "world binding changed"],
+    [{ generation: "unrelated-generation" }, "generation changed"],
+    [{ revision: roots[0].revision }, "revision moved backwards"],
+  ] as const) {
+    current = { ...structuredClone(roots[1]), ...change };
+    await expect
+      .poll(() => page.evaluate(() => window.__map.state().lod?.live?.error))
+      .toContain(reason);
+    const retained = await page.evaluate(() => window.__map.state());
+    expect(retained.lod?.live?.revision).toBe(roots[1].revision);
+    expect(retained.draws).toBe(baseline.draws);
+    expect([retained.cx, retained.cz, retained.scale]).toEqual([
+      baseline.cx,
+      baseline.cz,
+      baseline.scale,
+    ]);
+    expect(await page.locator("canvas").screenshot()).toEqual(pixels);
+    current = structuredClone(roots[1]);
+    await expect(page.locator(".local-state")).toHaveText("Terrain live", {
+      timeout: 15000,
+    });
+  }
+  accepted = roots[2];
+  current = structuredClone(accepted);
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().lod?.live?.revision), {
+      timeout: 15000,
+    })
+    .toBe(accepted.revision);
+  await settled(page);
+  const recovered = await page.evaluate(() => window.__map.state());
+  expect([recovered.cx, recovered.cz, recovered.scale]).toEqual([
+    baseline.cx,
+    baseline.cz,
+    baseline.scale,
+  ]);
+  expect(recovered.lod!.memory.peakBytes).toBeLessThanOrEqual(200000000);
+  expect(errors).toEqual([]);
 });
+
+test.afterEach(({ page }, info) => captureLodFailure(page, info));

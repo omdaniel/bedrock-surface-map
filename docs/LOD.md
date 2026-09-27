@@ -220,6 +220,11 @@ node scripts/check-lod-safari.mjs \
 
 The Safari command requires an already enabled local WebDriver and a visible
 Safari window. No script changes browser security or physical display settings.
+It checks settled GPU work and retirement, ledger consistency, coarse-to-fine
+refinement and detail release, picking, lighting, resize, pointer navigation and
+stationary draw counts. Screenshots sample the canvas independently of UI chrome;
+the report records application failures and unexpected device recovery. These
+synthetic checks do not measure frame-rate performance or validate live feeds.
 The Chrome harness records actual rAF cadence separately from its pan-input cap;
 video and screenshots may affect timing. Reports, screenshots and recordings
 stay under `.local/`. Physical iPad acceptance is separate from desktop layouts.
