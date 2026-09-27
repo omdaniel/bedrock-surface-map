@@ -130,7 +130,18 @@ try {
   const resources = join(install, "share/bedrock-surface-map");
   const browser = await chromium.launch({
     headless: true,
-    args: ["--use-angle=swiftshader", "--enable-unsafe-webgpu"],
+    dumpio: Boolean(process.env.CI),
+    args:
+      process.platform === "linux"
+        ? [
+            "--enable-unsafe-webgpu",
+            "--enable-features=Vulkan",
+            "--use-angle=vulkan",
+            "--use-vulkan=swiftshader",
+            "--use-webgpu-adapter=swiftshader",
+            "--disable-vulkan-surface",
+          ]
+        : ["--use-angle=swiftshader", "--enable-unsafe-webgpu"],
   });
   try {
     for (const [index, basePath] of mountPaths.entries()) {
@@ -202,9 +213,12 @@ try {
           !state.lod ||
           state.lod.tiles < 1 ||
           state.cached < 1 ||
-          state.draws < 1
+          state.draws < 1 ||
+          state.lodRecoveries !== 0
         )
-          throw Error("fixture LOD terrain was not rendered");
+          throw Error(
+            "fixture LOD terrain was not rendered on a stable device",
+          );
         assertTerrainPixels(await page.locator("#map").screenshot());
         await page.mouse.move(640, 400);
         await page
