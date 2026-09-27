@@ -202,6 +202,21 @@ cargo test --locked -p surface-gpu
 npx playwright test tests/lod.spec.ts tests/lod-failure.spec.ts tests/lod-residency.spec.ts tests/lod-sparse.spec.ts
 ```
 
+For live publication and appearance checks, prepare the native synthetic fixtures
+before running the browser tests:
+
+```sh
+node scripts/terrain-fixture.mjs --small-only
+cargo run --locked -p surface-sync --example lod_catalog_fixture
+npx playwright test tests/lod-live.spec.ts tests/lod-catalog.spec.ts
+```
+
+The catalog fixture audits immutable objects, exact chunks, height pages and
+summary colors against the published material descriptors. The browser check
+exercises append-only catalog growth, descriptor reconstruction, temporary root
+failure and independent player updates. It does not replace atlas-replacement,
+catalog page-boundary or real-server acceptance checks.
+
 Native GPU tests require a wgpu adapter. Synthetic browser tests check rendering,
 retirement, constrained admission, malformed responses and navigation recovery.
 Their results do not establish reference-device performance.

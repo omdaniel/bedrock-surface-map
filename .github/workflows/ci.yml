@@ -54,6 +54,7 @@ jobs:
       - run: cargo run --locked -p surface-cli -- lod-fixture --output web/public/maps/lod-fixture
       - run: cargo run --locked -p surface-cli -- lod-fixture --sparse-small --output web/public/maps/lod-sparse-small
       - run: node scripts/terrain-fixture.mjs
+      - run: cargo run --locked -p surface-sync --example lod_catalog_fixture
       - name: Verify exact browser shard coverage
         run: node scripts/check-ci-shards.mjs 3
       - name: Bundle generated synthetic browser inputs
@@ -61,6 +62,7 @@ jobs:
           tar -cf "$RUNNER_TEMP/ci-browser-inputs.tar"
           web/pkg web/public/maps/fixture web/public/maps/lod-fixture
           web/public/maps/lod-sparse-small .local/terrain-fixture .local/terrain-large
+          .local/lod-catalog-fixture
       - name: Preserve generated browser inputs from this checkout
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
