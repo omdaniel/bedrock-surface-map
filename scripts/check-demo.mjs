@@ -63,7 +63,6 @@ try {
   );
   page.on("request", (r) => requests.push(r.url()));
   const coldStarted = performance.now();
-  await page.clock.install();
   await page.goto(url);
   // Freeze the scenario before refinement: software adapters may take longer
   // than the first terrain event to finish loading the initial exact cut.
@@ -136,7 +135,7 @@ try {
   await page.screenshot({ path: `${output}/desktop.png` });
   const draws = (await page.evaluate(() => window.__map.state())).draws;
   await page.getByRole("button", { name: "Play demo", exact: true }).click();
-  await page.clock.fastForward(5000);
+  await page.waitForTimeout(5000);
   await page.waitForTimeout(400);
   assert.equal(
     (await page.evaluate(() => window.__map.state())).draws,
@@ -144,7 +143,7 @@ try {
     "player-only redraw",
   );
   const pos = await page.locator(".player-detail").first().innerText();
-  await page.clock.fastForward(11000);
+  await page.waitForTimeout(11000);
   await pauseScenario();
   await settledRevision(initial.lod.live.revision + 1);
   const built = await page.evaluate(() => window.__map.state());
@@ -160,7 +159,7 @@ try {
   );
   await page.screenshot({ path: `${output}/construction.png` });
   await page.getByRole("button", { name: "Play demo", exact: true }).click();
-  await page.clock.fastForward(16000);
+  await page.waitForTimeout(16000);
   await pauseScenario();
   await settledRevision(built.lod.live.revision + 1);
   const opened = await page.evaluate(() => window.__map.state());
@@ -174,7 +173,7 @@ try {
   await page.screenshot({ path: `${output}/removal.png` });
   await page.getByRole("button", { name: "Play demo", exact: true }).click();
   for (let n = 0; n < 6; n++) {
-    await page.clock.fastForward(15000);
+    await page.waitForTimeout(15000);
     await page.waitForTimeout(300);
   }
   // Stop producing replacements before requiring transport/GPU quiescence.
@@ -184,7 +183,7 @@ try {
   const looped = await page.evaluate(() => window.__map.state());
   assert.ok(looped.lod.live.revision >= 9, "two loops");
   await page.getByRole("button", { name: "Restart demo", exact: true }).click();
-  await page.clock.fastForward(2100);
+  await page.waitForTimeout(2100);
   await page.waitForTimeout(500);
   await settledRevision(looped.lod.live.revision + 1);
   assert.ok(
@@ -200,7 +199,7 @@ try {
     "Play demo",
   );
   const paused = await page.locator("#demo-time").innerText();
-  await page.clock.fastForward(20000);
+  await page.waitForTimeout(20000);
   assert.equal(await page.locator("#demo-time").innerText(), paused);
   const transfer = await page.evaluate(() =>
     performance
@@ -223,8 +222,8 @@ try {
   };
   await page.close();
 
-  // Test real-time input in a separate context with native timers. Fast-forwarded
-  // requestAnimationFrame scheduling must not drive compositor actionability.
+  // Exercise reduced-motion playback and real pointer input independently of
+  // the paused stage captures above, using the same native browser timers.
   const ui = await browser.newPage({
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 1,
