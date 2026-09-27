@@ -310,7 +310,7 @@ fn main() -> Result<()> {
         );
     }
     let changed = snapshot(&store, &mut publisher, temporary.path(), 2)?;
-    let (_, changed_nodes) = audit(&state, &changed)?;
+    let (changed_materials, changed_nodes) = audit(&state, &changed)?;
     ensure!(
         changed.material_count == appended.material_count && changed.catalog != appended.catalog,
         "descriptor publication"
@@ -350,7 +350,100 @@ fn main() -> Result<()> {
         }
     }
     ensure!(!changed_coarse.is_empty(), "missing rebuilt coarse colors");
-    let report = serde_json::json!({"probe": probe, "revisions": [before.revision, appended.revision, changed.revision], "nodes": old.len(), "changed_coarse": changed_coarse, "audited": ["hashes", "chunk/detail", "catalog/summary", "height/range", "append-prefix", "unchanged-fine"]});
+
+    ensure!(
+        changed.material_count < CATALOG_PAGE_SIZE,
+        "fixture must start below the catalog page boundary"
+    );
+    let mut revisions = vec![before.revision, appended.revision, changed.revision];
+    let mut previous = changed.clone();
+    let mut previous_materials = changed_materials;
+    for (stage, target_count) in [(3, CATALOG_PAGE_SIZE), (4, CATALOG_PAGE_SIZE + 1)] {
+        let additions: Vec<MaterialSpec> = (previous.material_count..target_count)
+            .map(|id| MaterialSpec {
+                name: format!("minecraft:catalog_boundary_{id}"),
+                states: BTreeMap::new(),
+            })
+            .collect();
+        let mut growth = append.clone();
+        growth.sequence = stage as u64 - 1;
+        growth.materials.truncate(1);
+        growth.materials.extend(additions.clone());
+        {
+            let mut store = store.lock().unwrap();
+            ensure!(
+                !store.ingest(&growth, 1002 + stage as u64)?,
+                "boundary append changed terrain"
+            );
+            // As with gold, repair only new templates so Store publishes the
+            // appended descriptors; Publisher owns the catalog pages and roots.
+            for spec in &additions {
+                let mut descriptor = sand.clone();
+                descriptor.name = spec.render_name();
+                descriptor.texture = format!("synthetic:{}", descriptor.name);
+                ensure!(
+                    store.connection.execute(
+                        "INSERT INTO templates(name,material) VALUES(?1,?2)",
+                        [spec.render_name(), serde_json::to_string(&descriptor)?],
+                    )? == 1,
+                    "boundary template"
+                );
+            }
+            ensure!(
+                store.refresh_catalog()? == additions.len(),
+                "boundary descriptor repair count"
+            );
+            ensure!(
+                store.lod_manifest()? == previous,
+                "boundary append exposed unfinished LOD epoch"
+            );
+        }
+        let grown = snapshot(&store, &mut publisher, temporary.path(), stage)?;
+        let (grown_materials, grown_nodes) = audit(&state, &grown)?;
+        ensure!(grown.material_count == target_count, "boundary count");
+        ensure!(
+            serde_json::to_vec(&grown_materials[..previous_materials.len()])?
+                == serde_json::to_vec(&previous_materials)?,
+            "boundary append changed existing IDs/descriptors"
+        );
+        for (offset, spec) in additions.iter().enumerate() {
+            let descriptor = &grown_materials[previous.material_count + offset];
+            ensure!(
+                descriptor.key == spec.key() && descriptor.name == spec.render_name(),
+                "boundary append assigned unexpected ID"
+            );
+        }
+        ensure!(
+            grown.roots == changed.roots && grown_nodes == changed_nodes,
+            "boundary append rebuilt terrain"
+        );
+        ensure!(
+            grown.atlas == changed.atlas
+                && grown.source_sha256 == changed.source_sha256
+                && grown.appearance_version == changed.appearance_version
+                && grown.revision > previous.revision,
+            "boundary append changed appearance/provenance or revision order"
+        );
+        ensure!(
+            grown.catalog[0].start == 0 && grown.catalog[0].count == CATALOG_PAGE_SIZE,
+            "boundary first page"
+        );
+        if stage == 3 {
+            ensure!(grown.catalog.len() == 1, "boundary full page count");
+        } else {
+            ensure!(
+                grown.catalog.len() == 2
+                    && grown.catalog[0] == previous.catalog[0]
+                    && grown.catalog[1].start == CATALOG_PAGE_SIZE
+                    && grown.catalog[1].count == 1,
+                "boundary append did not preserve the full first page"
+            );
+        }
+        revisions.push(grown.revision);
+        previous = grown;
+        previous_materials = grown_materials;
+    }
+    let report = serde_json::json!({"probe": probe, "revisions": revisions, "nodes": old.len(), "changed_coarse": changed_coarse, "audited": ["hashes", "chunk/detail", "catalog/summary", "height/range", "append-prefix", "unchanged-fine", "catalog-page-boundary", "stable-material-ids", "unchanged-boundary-terrain"]});
     fs::write(
         temporary.path().join("report.json"),
         serde_json::to_vec_pretty(&report)?,

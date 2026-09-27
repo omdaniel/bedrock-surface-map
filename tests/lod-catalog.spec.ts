@@ -4,16 +4,17 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { PNG } from "pngjs";
 import type { LodManifest, LodNode, NodeRef } from "../web/src/lod/protocol";
+import type { Material } from "../web/src/types";
 import { captureLodFailure } from "./lod-evidence";
 
 // Generate once with cargo run --locked -p surface-sync --example lod_catalog_fixture.
 const directory = resolve(".local/lod-catalog-fixture");
 const json = (path: string) =>
   JSON.parse(readFileSync(resolve(directory, path), "utf8"));
-const roots: LodManifest[] = [0, 1, 2].map((stage) =>
+const roots: LodManifest[] = [0, 1, 2, 3, 4].map((stage) =>
   json(`lod-${stage}.json`),
 );
-const health = [0, 1, 2].map((stage) => json(`health-${stage}.json`));
+const health = [0, 1, 2, 3, 4].map((stage) => json(`health-${stage}.json`));
 const report: {
   probe: { x: number; z: number; height: number };
   revisions: number[];
@@ -130,7 +131,7 @@ function pixelChanges(before: Buffer, after: Buffer) {
 
 test.afterEach(({ page }, info) => captureLodFailure(page, info));
 
-test("native catalog append and descriptor repair adopt live without reload or mixed coarse/fine appearance", async ({
+test("native catalog append across the page boundary and descriptor repair adopt live without reload or mixed coarse/fine appearance", async ({
   page,
 }, info) => {
   test.setTimeout(180_000);
@@ -139,6 +140,18 @@ test("native catalog append and descriptor repair adopt live without reload or m
   expect(roots[1].material_count).toBe(roots[0].material_count + 1);
   expect(roots[2].material_count).toBe(roots[1].material_count);
   expect(roots[2].catalog).not.toEqual(roots[1].catalog);
+  expect(roots[3].material_count).toBe(256);
+  expect(
+    roots[3].catalog.map(({ start, count }) => ({ start, count })),
+  ).toEqual([{ start: 0, count: 256 }]);
+  expect(roots[4].material_count).toBe(257);
+  expect(
+    roots[4].catalog.map(({ start, count }) => ({ start, count })),
+  ).toEqual([
+    { start: 0, count: 256 },
+    { start: 256, count: 1 },
+  ]);
+  expect(roots[4].catalog[0]).toEqual(roots[3].catalog[0]);
   // Validate every served index/catalog hash, independently of the native audit.
   const graphs = roots.map((root) => {
     const nodes = new Map<string, LodNode>();
@@ -154,16 +167,51 @@ test("native catalog append and descriptor repair adopt live without reload or m
     };
     root.roots.forEach(visit);
     expect(nodes.size).toBe(report.nodes);
-    for (const catalog of root.catalog)
-      expect(
-        createHash("sha256").update(object(catalog.url)).digest("hex"),
-      ).toBe(catalog.sha256);
+    for (const catalog of root.catalog) {
+      const bytes = object(catalog.url);
+      expect(bytes.length).toBe(catalog.bytes);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(
+        catalog.sha256,
+      );
+    }
     return nodes;
   });
   for (const [key, node] of graphs[1]) {
     expect(graphs[0].get(key)).toEqual(node);
     expect(graphs[2].get(key)!.height).toEqual(node.height);
     if (!node.key.level) expect(graphs[2].get(key)).toEqual(node);
+  }
+  const catalogs: Material[][] = roots.map((root) => {
+    const materials: Material[] = [];
+    for (const page of root.catalog) {
+      expect(page.start).toBe(materials.length);
+      const descriptors: Material[] = JSON.parse(object(page.url).toString());
+      expect(descriptors).toHaveLength(page.count);
+      materials.push(...descriptors);
+    }
+    expect(materials).toHaveLength(root.material_count);
+    expect(new Set(materials.map((material) => material.key)).size).toBe(
+      materials.length,
+    );
+    return materials;
+  });
+  for (const next of [1, 3, 4])
+    expect(catalogs[next].slice(0, catalogs[next - 1].length)).toEqual(
+      catalogs[next - 1],
+    );
+  for (const next of [3, 4]) {
+    expect(roots[next].roots).toEqual(roots[2].roots);
+    expect(graphs[next]).toEqual(graphs[2]);
+    expect(roots[next].atlas).toEqual(roots[2].atlas);
+    expect(roots[next].source_sha256).toBe(roots[2].source_sha256);
+    expect(roots[next].appearance_version).toBe(roots[2].appearance_version);
+    expect(roots[next].revision).toBeGreaterThan(roots[next - 1].revision);
+  }
+  for (let id = roots[2].material_count; id < catalogs[4].length; id++) {
+    expect(catalogs[4][id].name).toBe(`catalog_boundary_${id}`);
+    expect(catalogs[4][id].key).toBe(
+      JSON.stringify([`minecraft:catalog_boundary_${id}`, {}]),
+    );
   }
 
   let stage = 0,
@@ -410,6 +458,51 @@ test("native catalog append and descriptor repair adopt live without reload or m
     expect(camera(revisited)).toEqual(camera(beforeRepair));
     await pick(page, true);
     expect(pixelChanges(repairedFine, await pixels(page))).toBe(0);
+    const boundaryEvidence = [];
+    let beforeGrowth = revisited;
+    for (const next of [3, 4]) {
+      const requestsBeforeGrowth = requests.length;
+      const playerBeforeGrowth = playerSequence;
+      stage = next;
+      playerX += 1;
+      const grown = await settled(page, roots[next].revision, 0);
+      expect(camera(grown)).toEqual(camera(beforeGrowth));
+      expect(grown.lod!.tileUploads).toBe(beforeGrowth.lod!.tileUploads);
+      expect(grown.lod!.cut).toEqual(beforeGrowth.lod!.cut);
+      expect(grown.lod!.firstVisible).toBe(beforeGrowth.lod!.firstVisible);
+      expect(grown.lod!.heightKeys).toEqual(beforeGrowth.lod!.heightKeys);
+      // Catalog comparison may read the old/new last page, but growth must
+      // retain every terrain index, tile, chunk, height, and atlas already live.
+      const allowedObjects = new Set(
+        [...roots[next - 1].catalog, ...roots[next].catalog].map(
+          (catalog) => `${api}/${catalog.url}`,
+        ),
+      );
+      await pick(page, true);
+      expect(pixelChanges(repairedFine, await pixels(page))).toBe(0);
+      await expect
+        .poll(() => playerSequence)
+        .toBeGreaterThan(playerBeforeGrowth);
+      await expect(page.locator(".player-detail")).toContainText(
+        `${Math.floor(playerX)}, 64,`,
+      );
+      await expect(page.locator(".local-state")).toHaveText("Terrain live");
+      const objectRequests = requests
+        .slice(requestsBeforeGrowth)
+        .filter((path) => path.includes("/objects/"));
+      expect(
+        objectRequests.filter((path) => !allowedObjects.has(path)),
+      ).toEqual([]);
+      boundaryEvidence.push({
+        revision: roots[next].revision,
+        materialCount: roots[next].material_count,
+        catalogPages: roots[next].catalog.length,
+        tileUploads: grown.lod!.tileUploads,
+        peakBytes: grown.lod!.memory.peakBytes,
+        objectRequests,
+      });
+      beforeGrowth = grown;
+    }
     const sampling = await page.evaluate(() => {
       const sampling = (window as SamplingWindow).__catalogAcceptance!;
       clearInterval(sampling.timer);
@@ -428,6 +521,7 @@ test("native catalog append and descriptor repair adopt live without reload or m
           camera: camera(revisited),
           failedRootReads,
           coarseBlocked,
+          boundaryEvidence,
           navigations,
           sampling,
           peaks: [
