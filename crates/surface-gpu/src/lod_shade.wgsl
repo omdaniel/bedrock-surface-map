@@ -25,5 +25,7 @@
     let check=f32(((u32(q.x)/8u)+(u32(q.y)/8u))&1u);
     let unknown=mix(background,vec3f(0.13,0.15,0.15),check);
     let color=compose_lighting(base,shade,edge)*summary.a+background*max(0.0,1.0-summary.a-unknown_fraction)+unknown*unknown_fraction;
-    textureStore(dest,id.xy,vec4f(color,1));atomicOr(&cached_status,height_status);report_height_status();
+    textureStore(dest,id.xy,vec4f(color,1));
+    if (height_status & ~atomicLoad(&cached_status))!=0u {atomicOr(&cached_status,height_status);}
+    report_height_status(id.xy);
 }

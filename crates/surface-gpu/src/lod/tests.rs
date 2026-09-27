@@ -1,5 +1,69 @@
 use super::*;
 
+#[test]
+fn striped_feedback_reduction_preserves_flags_and_sample_counts() {
+    let gpu = setup();
+    let mut lanes = [[0u32; 4]; 128];
+    let mut expected = [0u32; 4];
+    for (i, lane) in lanes.iter_mut().enumerate() {
+        *lane = [1 << (i % 4), i as u32, (i * 3) as u32, (i * 7) as u32];
+        expected[0] |= lane[0];
+        for j in 1..4 {
+            expected[j] += lane[j];
+        }
+    }
+    gpu.queue
+        .write_buffer(&gpu.feedback_lanes, 0, bytemuck::cast_slice(&lanes));
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    gpu.reduce_feedback(&mut encoder);
+    gpu.queue.submit([encoder.finish()]);
+    assert_eq!(
+        bytemuck::cast_slice::<u8, u32>(&read(&gpu, &gpu.feedback)),
+        expected
+    );
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    encoder.clear_buffer(&gpu.feedback_lanes, 0, None);
+    gpu.reduce_feedback(&mut encoder);
+    gpu.queue.submit([encoder.finish()]);
+    assert_eq!(
+        bytemuck::cast_slice::<u8, u32>(&read(&gpu, &gpu.feedback)),
+        [0; 4]
+    );
+    let reporter = include_str!("../lod_height.wgsl")
+        .split("fn signed_height")
+        .next()
+        .unwrap();
+    let shader = format!(
+        "{reporter}\n{}",
+        r#"
+@compute @workgroup_size(64) fn report(@builtin(global_invocation_id) id:vec3u) {
+    height_status=id.x%8u;
+    report_height_status(vec2u(id.x%256u,id.x/256u));
+    report_height_status(vec2u(id.x%256u,id.x/256u));
+}
+"#
+    );
+    let pipeline = crate::compute_pipeline(&gpu.device, "feedback count oracle", &shader, "report");
+    let group = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[entry(7, &gpu.feedback_lanes)],
+    });
+    let mut encoder = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder.begin_compute_pass(&Default::default());
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.dispatch_workgroups(32, 1, 1);
+    }
+    gpu.reduce_feedback(&mut encoder);
+    gpu.queue.submit([encoder.finish()]);
+    assert_eq!(
+        bytemuck::cast_slice::<u8, u32>(&read(&gpu, &gpu.feedback)),
+        [7, 2048, 2048, 2048]
+    );
+}
+
 fn setup() -> GpuLod {
     pollster::block_on(async {
         let instance = wgpu::Instance::default();

@@ -170,8 +170,11 @@ status is unavailable, never silently exact. Old nonzero flags are retained
 while feedback is pending.
 `missing_height_samples()`, `unknown_height_samples()` and
 `exhausted_height_samples()` count affected evaluated fragments/cache samples.
-They are asynchronous diagnostics, not a scheduler readiness proof. Coarse
-cache status persists on subsequent draws. Missing or unknown height evidence
+They are asynchronous diagnostics, not a scheduler readiness proof. Diagnostic
+writes use 128 fixed lanes and a GPU reduction pass that preserves
+all flags and sample counts; the 2,048-byte lane buffer is charged as a shared
+allocation. Coarse cache status persists on subsequent draws. Missing or unknown
+height evidence
 keeps the known surface color and reports approximate lighting; it does not
 turn known ground into an unknown-surface checker. A root can therefore render
 while the caller admits its height pages. At most three submissions and three

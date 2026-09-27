@@ -34,6 +34,7 @@ pub const TERRAIN: &str = concat!(
     include_str!("relief.wgsl")
 );
 pub const HEIGHT_BUILD: &str = include_str!("lod_height_build.wgsl");
+pub const FEEDBACK_REDUCE: &str = include_str!("lod_feedback.wgsl");
 pub const COARSE_BUILD: &str = include_str!("lod_coarse.wgsl");
 pub const COARSE_SHADE: &str = concat!(
     include_str!("appearance.wgsl"),
@@ -640,9 +641,12 @@ pub struct GpuLod {
     coarse_shade: wgpu::ComputePipeline,
     height_leaves: wgpu::ComputePipeline,
     height_reduce: wgpu::ComputePipeline,
+    feedback_reduce: wgpu::ComputePipeline,
+    feedback_group: wgpu::BindGroup,
     global: wgpu::BindGroup,
     shade_global: wgpu::BindGroup,
     feedback: wgpu::Buffer,
+    feedback_lanes: wgpu::Buffer,
     readbacks: [wgpu::Buffer; 3],
     feedback_state: Arc<Mutex<FeedbackState>>,
     params: wgpu::Buffer,
@@ -780,6 +784,12 @@ impl GpuLod {
             crate::compute_pipeline(&device, "LOD height leaves", HEIGHT_BUILD, "leaves");
         let height_reduce =
             crate::compute_pipeline(&device, "LOD height max hierarchy", HEIGHT_BUILD, "reduce");
+        let feedback_reduce = crate::compute_pipeline(
+            &device,
+            "LOD coverage feedback reduction",
+            FEEDBACK_REDUCE,
+            "reduce",
+        );
         let params = buffer(
             &device,
             "LOD camera",
@@ -847,6 +857,17 @@ impl GpuLod {
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
         );
+        let feedback_lanes = buffer(
+            &device,
+            "striped LOD coverage feedback",
+            &[0u8; 128 * 16],
+            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        );
+        let feedback_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("LOD coverage reduction"),
+            layout: &feedback_reduce.get_bind_group_layout(0),
+            entries: &[entry(0, &feedback_lanes), entry(1, &feedback)],
+        });
         let readbacks = std::array::from_fn(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("bounded LOD feedback readback"),
@@ -865,7 +886,7 @@ impl GpuLod {
             &coarse_sampler,
             &page_table,
             &nodes,
-            &feedback,
+            &feedback_lanes,
         );
         let shade_global = Self::bind_shade(
             &device,
@@ -873,7 +894,7 @@ impl GpuLod {
             &params,
             &page_table,
             &nodes,
-            &feedback,
+            &feedback_lanes,
         );
         let mut this = Self {
             device,
@@ -884,9 +905,12 @@ impl GpuLod {
             coarse_shade,
             height_leaves,
             height_reduce,
+            feedback_reduce,
+            feedback_group,
             global,
             shade_global,
             feedback,
+            feedback_lanes,
             readbacks,
             feedback_state: Arc::default(),
             params,
@@ -1013,7 +1037,7 @@ impl GpuLod {
             &self.coarse_sampler,
             &self.page_table,
             &self.nodes,
-            &self.feedback,
+            &self.feedback_lanes,
         );
         self.shade_global = Self::bind_shade(
             &self.device,
@@ -1021,7 +1045,7 @@ impl GpuLod {
             &self.params,
             &self.page_table,
             &self.nodes,
-            &self.feedback,
+            &self.feedback_lanes,
         );
     }
     fn generate_atlas_mips(&mut self) {
@@ -1114,6 +1138,7 @@ impl GpuLod {
             + texture_bytes(&self.atlas)
             + texture_bytes(&self.dummy)
             + self.feedback.size()
+            + self.feedback_lanes.size()
             + self.readbacks.iter().map(wgpu::Buffer::size).sum::<u64>()
             + self.empty_status.size()
             + self.gutter_scratch.size()
@@ -2644,7 +2669,7 @@ impl GpuLod {
         if prepared.is_some() || shade_key.is_some() {
             self.feedback_revision += 1;
         }
-        encoder.clear_buffer(&self.feedback, 0, None);
+        encoder.clear_buffer(&self.feedback_lanes, 0, None);
         let direction = surface_core::sun_direction(azimuth);
         let params = [
             0.,
@@ -2785,6 +2810,7 @@ impl GpuLod {
                     .sum::<usize>(),
         );
         self.retire(vec![Resource::Buffer(staging)], vec![]);
+        self.reduce_feedback(&mut encoder);
         let readback = {
             let mut state = self.feedback_state.lock().unwrap();
             let index = state.busy.iter().position(|busy| !busy);
@@ -2801,6 +2827,16 @@ impl GpuLod {
             self.read_feedback(index, self.submitted, self.feedback_revision);
         }
         Ok(true)
+    }
+
+    fn reduce_feedback(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("LOD coverage feedback reduction"),
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.feedback_reduce);
+        pass.set_bind_group(0, &self.feedback_group, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
     }
 
     /// Explicit release without waiting for a failed device's queue. Native
@@ -2834,6 +2870,7 @@ impl GpuLod {
             &self.params,
             &self.material_buffer,
             &self.feedback,
+            &self.feedback_lanes,
             &self.page_table,
             &self.nodes,
             &self.empty_status,

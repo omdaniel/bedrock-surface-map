@@ -4,14 +4,15 @@ struct Draw { origin:vec4f, key:vec4i, world:vec4f, edges:vec4f, corners:vec4f }
 @group(0) @binding(4) var<storage,read> pages:array<vec4i>;
 @group(0) @binding(5) var<storage,read> height_nodes:array<vec2u>;
 struct Feedback { flags:atomic<u32>, missing:atomic<u32>, unknown:atomic<u32>, exhausted:atomic<u32> }
-@group(0) @binding(7) var<storage,read_write> feedback:Feedback;
+@group(0) @binding(7) var<storage,read_write> feedback:array<Feedback,128>;
 var<private> height_status:u32;
-fn report_height_status() {
+fn report_height_status(at:vec2u) {
     if height_status==0u {return;}
-    atomicOr(&feedback.flags,height_status);
-    if (height_status&1u)!=0u {atomicAdd(&feedback.missing,1u);}
-    if (height_status&2u)!=0u {atomicAdd(&feedback.unknown,1u);}
-    if (height_status&4u)!=0u {atomicAdd(&feedback.exhausted,1u);}
+    let lane=(at.x^(at.y*31u))&127u;
+    atomicOr(&feedback[lane].flags,height_status);
+    if (height_status&1u)!=0u {atomicAdd(&feedback[lane].missing,1u);}
+    if (height_status&2u)!=0u {atomicAdd(&feedback[lane].unknown,1u);}
+    if (height_status&4u)!=0u {atomicAdd(&feedback[lane].exhausted,1u);}
 }
 
 fn signed_height(v:u32)->f32 {return f32(bitcast<i32>(v<<16u)>>16)/16.0;}

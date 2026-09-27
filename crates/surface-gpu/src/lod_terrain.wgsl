@@ -67,7 +67,7 @@ fn unknown(at:vec2f)->vec3f {
             if (u32(draw.key.w)&16u)!=0u {height_status|=8u;}
         }
     }
-    report_height_status();
+    report_height_status(vec2u(v.position.xy));
     // Every cut member contributes background for empty/unknown coverage. It must
     // never discard and expose an opaque parent's ground through a child hole.
     return vec4f(color,1)*draw.origin.w;
