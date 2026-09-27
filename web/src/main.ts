@@ -1253,7 +1253,6 @@ async function boot() {
     ) ||
     !Array.isArray(manifest.regions) ||
     !manifest.regions.length ||
-    manifest.regions.length > (terrain ? 65536 : 4096) ||
     !Array.isArray(manifest.materials) ||
     !manifest.materials.length ||
     manifest.materials.length > 65536 ||
@@ -1262,15 +1261,18 @@ async function boot() {
     !manifest.spawn.every(Number.isFinite)
   )
     throw new Error("Unsupported or empty map manifest");
+  const conversionRequired =
+    "This snapshot requires LOD preparation. Run surface-cli prepare-lod --map <manifest.json> --output <directory>, then set lod_url to the resulting lod.json.";
+  if (manifest.regions.length > (terrain ? 65536 : 4096))
+    throw new Error(
+      terrain ? "Unsupported or empty map manifest" : conversionRequired,
+    );
   $("app").querySelector(".identity strong")!.textContent = manifest.name;
   const width = manifest.bounds[2] - manifest.bounds[0],
     height = manifest.bounds[3] - manifest.bounds[1];
-  if (
-    width <= 0 ||
-    height <= 0 ||
-    (!terrain && width * height > 16 * 1024 * 1024)
-  )
-    throw new Error("Map bounds exceed the prototype limit");
+  if (width <= 0 || height <= 0) throw new Error("Invalid map bounds");
+  if (!terrain && width * height > 16 * 1024 * 1024)
+    throw new Error(conversionRequired);
   const ids = new Set<string>();
   for (const r of manifest.regions) {
     const k = key(r);
