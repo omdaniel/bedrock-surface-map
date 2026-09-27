@@ -1,6 +1,208 @@
 use super::*;
 
 #[test]
+#[ignore = "requires the generated synthetic coastline source and a native GPU"]
+fn diagnostic_shadow_traversal() {
+    let source = std::env::var("SURFACE_SHADOW_SOURCE").expect("synthetic source directory");
+    let mut gpu = setup();
+    gpu.set_world([-512, -512, 512, 512], 4800).unwrap();
+    let out = output(&gpu, 1, 1);
+    let mut heights = vec![-1e6f32; 1024 * 1024];
+    let mut regions = 0;
+    for file in std::fs::read_dir(std::path::Path::new(&source).join("objects")).unwrap() {
+        let bytes = std::fs::read(file.unwrap().path()).unwrap();
+        let Ok(raw) = surface_core::decompress(&bytes, surface_core::MAX_DECOMPRESSED) else {
+            continue;
+        };
+        let Ok(region) = surface_core::decode_region(&raw) else {
+            continue;
+        };
+        assert!((-2..2).contains(&region.rx) && (-2..2).contains(&region.rz));
+        regions += 1;
+        for dz in 0..2 {
+            for dx in 0..2 {
+                let key = Key::new(0, region.rx * 2 + dx, region.rz * 2 + dz).unwrap();
+                let tile = surface_core::lod::DetailTile::from_region(
+                    &region,
+                    surface_core::lod::TileKey::new(0, key.x, key.z).unwrap(),
+                )
+                .unwrap();
+                let page = surface_core::lod::HeightTile::from_detail(&tile).unwrap();
+                let words = page.gpu_words();
+                for (i, word) in words.iter().enumerate() {
+                    let x = (key.x * 128 + (i % 128) as i32 + 512) as usize;
+                    let z = (key.z * 128 + (i / 128) as i32 + 512) as usize;
+                    if word >> 16 & 1 != 0 {
+                        heights[z * 1024 + x] = (*word as u16 as i16) as f32 / 16.;
+                    }
+                }
+                gpu.add_height(key, words).unwrap();
+                draw(&mut gpu, &out, [64., 64., 1.], false, 0.);
+            }
+        }
+    }
+    assert_eq!(
+        regions, 16,
+        "only the 1024-square synthetic source is supported"
+    );
+    let lod_code = include_str!("../lod_height.wgsl")
+        .replace(
+            "fn page_node(slot:i32,local:vec2u,mip:u32)->vec2u {",
+            "fn page_node(slot:i32,local:vec2u,mip:u32)->vec2u { paged_queries+=1u;",
+        )
+        .replace("let epsilon=0.0001;", "paged_steps+=1u;let epsilon=0.0001;");
+    let legacy_code = crate::SHADOW_SHADER
+        .replace(
+            "fn maximum_height(level:u32, cell:vec2u)->f32 {",
+            "fn maximum_height(level:u32, cell:vec2u)->f32 { legacy_queries+=1u;",
+        )
+        .replace("loop {", "loop { legacy_steps+=1u;")
+        .replace("relief_neighbor", "legacy_relief_neighbor")
+        .replace("surface_shadow", "legacy_surface_shadow")
+        .replace("ray_shadow", "legacy_ray_shadow");
+    let code = format!(
+        "{}\nvar<private> paged_queries:u32;var<private> paged_steps:u32;var<private> legacy_queries:u32;var<private> legacy_steps:u32;\n{lod_code}\n{legacy_code}\n{}",
+        crate::APPEARANCE_SHADER,
+        r#"
+@group(0) @binding(0) var<uniform> p:Params;
+@group(0) @binding(6) var<storage,read> heights:HeightTree;
+@group(1) @binding(0) var<uniform> draw:Draw;
+@group(1) @binding(1) var<storage,read> samples:array<vec4f>;
+@group(1) @binding(2) var<storage,read_write> result:array<vec4u>;
+@compute @workgroup_size(64) fn check(@builtin(global_invocation_id) id:vec3u) {
+    if id.x>=arrayLength(&samples){return;}
+    let s=samples[id.x];height_status=0u;paged_queries=0u;paged_steps=0u;legacy_queries=0u;legacy_steps=0u;
+    let a=ray_shadow(s.xy,s.z);let b=legacy_ray_shadow(s.xy+vec2f(512),s.z);
+    result[id.x*2u]=vec4u(u32(a),u32(b),paged_queries,legacy_queries);
+    result[id.x*2u+1u]=vec4u(paged_steps,legacy_steps,height_status,0u);
+}
+"#
+    );
+    let pipeline =
+        crate::compute_pipeline(&gpu.device, "shadow traversal diagnostics", &code, "check");
+    let samples: Vec<[f32; 4]> = (0..64)
+        .flat_map(|z| {
+            let heights = &heights;
+            (0..64).map(move |x| {
+                let at = [-96. + x as f32 * 5. + 0.37, -26. + z as f32 * 2.8 + 0.61];
+                [
+                    at[0],
+                    at[1],
+                    heights
+                        [(at[1] + 512.).floor() as usize * 1024 + (at[0] + 512.).floor() as usize],
+                    0.,
+                ]
+            })
+        })
+        .collect();
+    let input = buffer(
+        &gpu.device,
+        "ray samples",
+        bytemuck::cast_slice(&samples),
+        wgpu::BufferUsages::STORAGE,
+    );
+    let tree = buffer(
+        &gpu.device,
+        "legacy tree",
+        bytemuck::cast_slice(&surface_core::height_pyramid(&heights, 1024, 1024)),
+        wgpu::BufferUsages::STORAGE,
+    );
+    let anchor = buffer(
+        &gpu.device,
+        "anchor",
+        bytemuck::bytes_of(&DrawUniform {
+            origin: [0.; 4],
+            key: [0; 4],
+            world: [-512., -512., 512., 512.],
+            edges: [0.; 4],
+            corners: [0.; 4],
+        }),
+        wgpu::BufferUsages::UNIFORM,
+    );
+    let result = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: samples.len() as u64 * 32,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let group1 = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &pipeline.get_bind_group_layout(1),
+        entries: &[entry(0, &anchor), entry(1, &input), entry(2, &result)],
+    });
+    for azimuth in [0., 90., 120., 180., 270.] {
+        let direction = surface_core::sun_direction(azimuth);
+        let params: [f32; 20] = [
+            0.,
+            0.,
+            1.,
+            1920.,
+            1080.,
+            0.,
+            1.,
+            1.,
+            300.,
+            0.,
+            1024.,
+            1024.,
+            0.55,
+            0.,
+            direction[0],
+            direction[1],
+            0.,
+            0.25,
+            0.,
+            0.,
+        ];
+        let uniform = buffer(
+            &gpu.device,
+            "light",
+            bytemuck::cast_slice(&params),
+            wgpu::BufferUsages::UNIFORM,
+        );
+        let group0 = gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                entry(0, &uniform),
+                entry(4, &gpu.page_table),
+                entry(5, &gpu.nodes),
+                entry(6, &tree),
+            ],
+        });
+        let mut encoder = gpu.device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &group0, &[]);
+            pass.set_bind_group(1, &group1, &[]);
+            pass.dispatch_workgroups(64, 1, 1);
+        }
+        gpu.queue.submit([encoder.finish()]);
+        let bytes = read(&gpu, &result);
+        let words: &[u32] = bytemuck::cast_slice(&bytes);
+        let mut sums = [0u64; 4];
+        let mut maximum = [0u32; 4];
+        for (i, row) in words.chunks_exact(8).enumerate() {
+            assert_eq!(row[0], row[1], "ray {i}, azimuth {azimuth}");
+            assert_eq!(row[6], 0, "known footprint");
+            for (j, n) in [row[2], row[3], row[4], row[5]].into_iter().enumerate() {
+                sums[j] += u64::from(n);
+                maximum[j] = maximum[j].max(n);
+            }
+        }
+        assert!(
+            sums.iter().all(|n| *n > 0),
+            "shader instrumentation is active"
+        );
+        println!(
+            "azimuth={azimuth} [paged queries, legacy queries, paged steps, legacy steps] mean={:?} max={maximum:?}",
+            sums.map(|n| n as f64 / samples.len() as f64)
+        );
+    }
+}
+
+#[test]
 fn striped_feedback_reduction_preserves_flags_and_sample_counts() {
     let gpu = setup();
     let mut lanes = [[0u32; 4]; 128];

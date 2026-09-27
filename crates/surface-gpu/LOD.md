@@ -224,6 +224,24 @@ Reading memory stats or the next render/admission reaps resources on the main
 thread. Completed feedback readbacks dispatch the same event. This also wakes the
 controller when rendering has otherwise stopped.
 
+Shadow traversal resolves a height page once per step and shares its address
+between the current node and its parent. Each ray retains the coverage checks
+and representative-leaf tests; page maxima only prune traversal.
+
+The opt-in native diagnostic compares exact rays and query/step counts against
+the legacy height-tree shader on the generated 1,024-square synthetic fixture:
+
+```sh
+npm run lod:fixture
+SURFACE_SHADOW_SOURCE="$PWD/web/public/maps/lod-fixture/source" \
+  cargo test -p surface-gpu diagnostic_shadow_traversal --locked \
+  -- --ignored --nocapture
+```
+
+It requires a native GPU adapter and reports traversal counts, not frame rate or
+GPU execution timestamps. Its temporary whole-fixture oracle is test-only;
+the viewer does not allocate that height tree.
+
 `tile_bytes(level)` reports incremental tile allocation. `height_bytes(level)`
 reports temporary height preparation allocation, since the arena is already
 charged. `resize_bytes(width,height)` reports the entire new target size if a

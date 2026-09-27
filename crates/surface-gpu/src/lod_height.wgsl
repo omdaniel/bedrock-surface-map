@@ -29,6 +29,10 @@ fn page_slot(key:vec2i,level:u32)->i32 {
     return -1;
 }
 fn node_offset(mip:u32)->u32 {return (65536u-(65536u>>(2u*mip)))/3u;}
+fn page_node(slot:i32,local:vec2u,mip:u32)->vec2u {
+    let cell=local>>vec2u(mip);
+    return height_nodes[u32(slot)*21845u+node_offset(mip)+cell.y*(128u>>mip)+cell.x];
+}
 // Sparse trees can terminate at uniformly absent coarse nodes. Only absence is
 // inherited: a coarse mean/range can never stand in for missing exact ground.
 fn ancestor_absence(key:vec2i,local:vec2u,mip:u32)->vec2u {
@@ -55,8 +59,7 @@ fn height_node(at:vec2f,mip:u32)->vec2u {
     let slot=page_slot(key,u32(draw.key.x));
     let local=vec2u(clamp(floor(at-vec2f(delta)*128.0),vec2f(0),vec2f(127)));
     if slot<0 {return ancestor_absence(key,local,mip);}
-    let cell=local>>vec2u(mip);
-    return height_nodes[u32(slot)*21845u+node_offset(mip)+cell.y*(128u>>mip)+cell.x];
+    return page_node(slot,local,mip);
 }
 fn relief_neighbor(at:vec2i,fallback:f32)->f32 {
     let node=height_node(vec2f(at),0u);let flags=node.x>>16u;
@@ -79,7 +82,15 @@ fn ray_shadow(start:vec2f,y:f32)->f32 {
         let position=start+direction*(distance+epsilon);
         let ray_y=y+distance*slope+0.0001;
         if ray_y>=p.bounds.x || any(position<draw.world.xy) || any(position>=draw.world.zw) {return 0.0;}
-        let node=height_node(position,mip);let flags=node.x>>16u;
+        // Resolve the page once: both hierarchy levels contain this position.
+        let delta=vec2i(floor(position/128.0));
+        let key=draw.key.yz+delta;
+        let slot=page_slot(key,u32(draw.key.x));
+        let local=vec2u(clamp(floor(position-vec2f(delta)*128.0),vec2f(0),vec2f(127)));
+        var node:vec2u;
+        if slot<0 {node=ancestor_absence(key,local,mip);}
+        else {node=page_node(slot,local,mip);}
+        let flags=node.x>>16u;
         if (flags&32u)!=0u || ((flags&4u)!=0u && (flags&1u)!=0u) {
             if mip>0u {mip-=1u;continue;}
             if (flags&32u)!=0u {height_status|=1u;return 0.0;}
@@ -89,7 +100,9 @@ fn ray_shadow(start:vec2f,y:f32)->f32 {
             if mip>0u {mip-=1u;continue;}
             if any(vec2i(floor(position))!=own) && signed_height(node.x)>ray_y {return 1.0;}
         } else if mip<7u {
-            let parent=height_node(position,mip+1u);
+            var parent:vec2u;
+            if slot<0 {parent=ancestor_absence(key,local,mip+1u);}
+            else {parent=page_node(slot,local,mip+1u);}
             let parent_flags=parent.x>>16u;
             // An all-unavailable span has no retained occluders to test. Skip
             // its cells, but preserve unknown status: this is not empty ground
