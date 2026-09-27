@@ -94,7 +94,7 @@ jobs:
     needs: prepare-synthetic
     # Run independent assertions even if the later demo check fails. The
     # synthetic aggregate still requires the entire preparation job to pass.
-    if: always() && needs.prepare-synthetic.outputs.browser-inputs-ready == 'true'
+    if: always() && !cancelled() && needs.prepare-synthetic.outputs.browser-inputs-ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
