@@ -683,6 +683,7 @@ pub struct GpuLod {
     view: Option<View>,
     grid: Option<bool>,
     presentation_dirty: bool,
+    prepared_presentation_dirty: bool,
     active: Arc<AtomicBool>,
     feedback_revision: u64,
 }
@@ -949,6 +950,7 @@ impl GpuLod {
             view: None,
             grid: None,
             presentation_dirty: true,
+            prepared_presentation_dirty: false,
             active: Arc::new(AtomicBool::new(true)),
             feedback_revision: 1,
         };
@@ -1239,14 +1241,51 @@ impl GpuLod {
     pub fn needs_frame(&self) -> bool {
         !self.is_disposed()
             && self.view.is_some_and(|v| v.width > 0 && v.height > 0)
-            && (self.presentation_dirty || self.pending_preparations() > 0)
+            && (self.presentation_dirty
+                || self.prepared_presentation_dirty
+                || self.pending_preparations() > 0)
     }
     fn presentation_source(&self, key: Key, view: View) -> bool {
+        self.active_cuts().any(|(cut, _)| {
+            cut.entries.iter().any(|e| {
+                e.opacity > 0.
+                    && view.visible(e.key)
+                    && (e.key == key
+                        || (e.key.level > 0 && e.key.level == key.level && {
+                            let dx = i64::from(key.x) - i64::from(e.key.x);
+                            let dz = i64::from(key.z) - i64::from(e.key.z);
+                            let strip = |d| match d {
+                                -1 => [0., 1.],
+                                0 => [0., 128.],
+                                1 => [127., 128.],
+                                _ => [0., 0.],
+                            };
+                            let x = strip(dx);
+                            let z = strip(dz);
+                            // Only coarse filtering reads sibling gutters.
+                            // Fine interiors and offscreen gutters do not.
+                            x[0] < x[1]
+                                && z[0] < z[1]
+                                && view.local_visible(e.key, [x[0], z[0], x[1], z[1]])
+                        })
+                        || cut
+                            .boundaries
+                            .get(&e.key)
+                            .is_some_and(|b| b.sources(e.key, view).contains(&key)))
+            })
+        })
+    }
+    fn cache_status_source(&self, key: Key, view: View) -> bool {
+        if key.level == 0 {
+            return false;
+        }
         let touches = |source: Key| {
             source.level == key.level
                 && (i64::from(source.x) - i64::from(key.x)).abs() <= 1
                 && (i64::from(source.z) - i64::from(key.z)).abs() <= 1
         };
+        // Coarse and parent feedback aggregates all nine cache-status lanes,
+        // even when the corresponding color gutter is outside the viewport.
         self.active_cuts().any(|(cut, _)| {
             cut.entries.iter().any(|e| {
                 e.opacity > 0.
@@ -2762,8 +2801,11 @@ impl GpuLod {
             (p.kind.tile() && self.presentation_source(p.key, view))
                 || (p.kind.height() && self.fine_height_dependency(p.key, view))
         });
-        let shade_visible = preparation.is_none() && !self.preparation_keys().is_empty();
-        if output.is_none() && (self.presentation_dirty || changes_visible || shade_visible) {
+        let shade_pending = !self.preparation_keys().is_empty();
+        // Relight the bounded visible cache set before presenting it once. View,
+        // cut, lighting and live-content invalidations still preempt this batch.
+        let prepared_visible = self.prepared_presentation_dirty && !shade_pending;
+        if output.is_none() && (self.presentation_dirty || changes_visible || prepared_visible) {
             self.presentation_dirty = true;
             return Ok(true);
         }
@@ -2771,7 +2813,7 @@ impl GpuLod {
             return Ok(false);
         }
         self.validate_visible_sources(view)?;
-        if output.is_none() && preparation.is_none() {
+        if output.is_none() && preparation.is_none() && !shade_pending {
             return Ok(false);
         }
         let draw_count: usize = self
@@ -2799,7 +2841,7 @@ impl GpuLod {
         }
         let mut encoder = self.device.create_command_encoder(&Default::default());
         let prepared = self.prepare_one(&mut encoder)?;
-        if output.is_none() && prepared.is_none() {
+        if output.is_none() && prepared.is_none() && !self.pending.is_empty() {
             return Ok(false);
         }
         let shade_key = match prepared {
@@ -2807,7 +2849,10 @@ impl GpuLod {
             Some(_) => None,
             None => self.preparation_keys().first().copied(),
         };
-        if output.is_some() || !self.preparation_keys().is_empty() {
+        if output.is_some()
+            || !self.preparation_keys().is_empty()
+            || shade_key.is_some_and(|key| self.cache_status_source(key, view))
+        {
             self.feedback_revision += 1;
         }
         if output.is_none() && shade_key.is_none() {
@@ -2878,6 +2923,8 @@ impl GpuLod {
         if let Some(key) = shade_key {
             encoder.copy_buffer_to_buffer(&staging, 80, &self.tiles[&key].origin, 0, DRAW_BYTES);
             self.shade_one(key, &mut encoder);
+            self.prepared_presentation_dirty |=
+                self.presentation_source(key, view) || self.cache_status_source(key, view);
         }
         if output.is_none() {
             self.upload_peak = self.upload_peak.max(self.cpu_bytes() + uniforms.capacity());
@@ -2975,6 +3022,7 @@ impl GpuLod {
         }
         self.submit(encoder);
         self.presentation_dirty = false;
+        self.prepared_presentation_dirty = false;
         if let Some(index) = readback {
             self.read_feedback(index, self.submitted, self.feedback_revision);
         }

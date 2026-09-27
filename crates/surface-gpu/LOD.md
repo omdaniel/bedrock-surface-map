@@ -10,25 +10,46 @@ No legacy browser interface is removed.
 ```typescript
 const renderer = await LodRenderer.create(canvas, materials, atlasBitmap);
 renderer.set_world(new Int32Array([minX, minZ, maxX, maxZ]), maxHeight16);
-renderer.add_tile(level, x, z, words);   // Uint32Array, queued
+renderer.add_tile(level, x, z, words); // Uint32Array, queued
 renderer.add_height(level, x, z, words); // Uint32Array, queued
 renderer.replace_surface(level, x, z, words, heightWords); // atomic queued pair
 renderer.patch_chunks(x, z, chunkCoordinates, words, heightWords);
 renderer.surface_update_bytes(level, patchCount); // incremental GPU reservation
-renderer.has_tile(level, x, z);         // prepared and submitted in queue order
+renderer.has_tile(level, x, z); // prepared and submitted in queue order
 renderer.has_height(level, x, z);
 renderer.set_cut(new Float32Array([level, x, z, opacity /* ... */]));
 renderer.set_transition(
   new Float32Array([oldLevel, oldX, oldZ /* ... */]),
-  new Float32Array([newLevel, newX, newZ /* ... */]), progress);
+  new Float32Array([newLevel, newX, newZ /* ... */]),
+  progress,
+);
 const sources = renderer.required_sources(
-  topologyKeyTriples, cx, cz, physicalScale, width, height); // Int32Array triples
-const presented = renderer.render(cx, cz, physicalScale, width, height, grid, shadows,
-  elevation, azimuth, strength, vivid, relief, reliefWidth);
+  topologyKeyTriples,
+  cx,
+  cz,
+  physicalScale,
+  width,
+  height,
+); // Int32Array triples
+const presented = renderer.render(
+  cx,
+  cz,
+  physicalScale,
+  width,
+  height,
+  grid,
+  shadows,
+  elevation,
+  azimuth,
+  strength,
+  vivid,
+  relief,
+  reliefWidth,
+);
 const needsAnotherFrame = renderer.needs_frame();
 renderer.update_materials(startMaterialId, values); // bounded Float32Array range
-renderer.set_materials(values);                    // replace the full catalog
-renderer.grow_materials(materialCount);            // preserve existing GPU IDs
+renderer.set_materials(values); // replace the full catalog
+renderer.grow_materials(materialCount); // preserve existing GPU IDs
 renderer.remove_tile(level, x, z);
 renderer.remove_height(level, x, z);
 renderer.is_lost();
@@ -47,8 +68,14 @@ and compute commands: it acquires no canvas texture and runs no terrain or
 resolve pass. An idle call submits nothing. Visible surface replacements and
 fine-height changes that can affect displayed shadows or relief stay in the
 same submission as their presentation. Coarse height preparation can retain the
-current canvas until the affected displayed cache is relit. Navigation and
-lighting changes still draw available fallback content while refinement proceeds.
+current canvas while affected displayed caches are relit one per submission,
+then presents the completed batch once. `needs_frame()` remains true between
+the last cache preparation and that final presentation. Only sampled surface
+and gutter sources immediately invalidate presentation; a fine tile does not
+sample its same-level surface neighbors. Coarse feedback still aggregates all
+gutter status lanes: offscreen gutter-status changes invalidate feedback and
+receive a coalesced final presentation, not a claim of completed coverage.
+Navigation and lighting changes still draw available fallback content while refinement proceeds.
 Native `GpuLod::render`, which receives an explicit output view, retains its
 explicit presentation behavior; this automatic separation is the browser contract.
 
@@ -227,18 +254,18 @@ allocations. The last five values sum to total. Buffers use their actual descrip
 sizes; textures use format block size, dimensions, layers, samples and mip count.
 These are nominal resource bytes, not an estimate of driver heap overhead.
 
-| Allocation | Nominal GPU Bytes |
-| --- | ---: |
-| Height arena, 128 slots | 22,369,280 |
-| One height slot within that arena | 174,760 |
-| All height page tables | 69,632 |
-| Shared gutter-copy scratch buffer | 65,536 |
-| Fine tile, including draw uniform | 524,368 |
-| Coarse tile, including all caches and status | 798,932 |
-| Temporary level-zero height upload/build/table | 135,296 |
-| Temporary coarse height upload/build/table | 200,832 |
-| Accumulation target | width * height * 8 |
-| Frame uniform upload | 80 + visible contributing draws * 80 + (one cache preparation ? 80 : 0), at most 10,400 |
+| Allocation                                     |                                                                       Nominal GPU Bytes |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------: |
+| Height arena, 128 slots                        |                                                                              22,369,280 |
+| One height slot within that arena              |                                                                                 174,760 |
+| All height page tables                         |                                                                                  69,632 |
+| Shared gutter-copy scratch buffer              |                                                                                  65,536 |
+| Fine tile, including draw uniform              |                                                                                 524,368 |
+| Coarse tile, including all caches and status   |                                                                                 798,932 |
+| Temporary level-zero height upload/build/table |                                                                                 135,296 |
+| Temporary coarse height upload/build/table     |                                                                                 200,832 |
+| Accumulation target                            |                                                                      width * height * 8 |
+| Frame uniform upload                           | 80 + visible contributing draws * 80 + (one cache preparation ? 80 : 0), at most 10,400 |
 
 The arena is allocated with `create_buffer`, not a CPU zero vector. One slot is
 reserved for atomic replacement: at most 127 height pages are resident and

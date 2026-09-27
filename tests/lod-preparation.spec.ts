@@ -21,6 +21,20 @@ interface PreparationHarness {
 declare global {
   interface Window {
     __lodPreparation: PreparationHarness;
+    __lodCachePreparation: {
+      draw(cx?: number, azimuth?: number): boolean;
+      upload(): void;
+      replace(): void;
+      state(): {
+        serial: number;
+        completed: number;
+        pending: number;
+        retired: number;
+        preparations: number;
+        needs: boolean;
+      };
+      destroy(): void;
+    };
   }
 }
 
@@ -34,6 +48,182 @@ async function retired(page: Page) {
     )
     .toEqual([0, 0]);
 }
+
+test("mixed-cut cache preparations coalesce presentations without hiding input or live changes", async ({
+  page,
+}) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/lod-cache-preparation-test", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: '<canvas id="map" width="64" height="32"></canvas>',
+    }),
+  );
+  await page.goto("/lod-cache-preparation-test");
+  await page.evaluate(async () => {
+    const url = "/pkg/surface_gpu.js";
+    const { default: init, LodRenderer } = (await import(
+      url
+    )) as typeof import("../web/pkg/surface_gpu.js");
+    await init();
+    const atlas = new OffscreenCanvas(32, 32);
+    const context = atlas.getContext("2d")!;
+    context.fillStyle = "#cc331a";
+    context.fillRect(0, 0, 32, 32);
+    const renderer = await LodRenderer.create(
+      document.querySelector<HTMLCanvasElement>("#map")!,
+      new Float32Array([0, 0, 1, 1, 0.5, 0.4, 0.5, 1, 0, 0, 0, 0]),
+      await createImageBitmap(atlas),
+    );
+    const summary = (green = false) => {
+      const words = new Uint32Array(128 * 128 * 6);
+      for (let i = 0; i < 128 * 128; i++)
+        words.set(
+          green
+            ? [0xffff0000, 0, 65535, 0, 255 << 16, 1 << 16]
+            : [65535, 0xffff0000, 0, 0, 255 << 16, 1 << 16],
+          i * 6,
+        );
+      return words;
+    };
+    const coarseHeights = () => {
+      const words = new Uint32Array(128 * 128 * 2);
+      for (let i = 0; i < 128 * 128; i++) words[i * 2] = 1 << 16;
+      return words;
+    };
+    const draw = (cx = 256, azimuth = 90) =>
+      renderer.render(
+        cx,
+        128,
+        0.125,
+        64,
+        32,
+        false,
+        true,
+        45,
+        azimuth,
+        0.55,
+        false,
+        0.5,
+        0.25,
+      );
+    const finishSubmission = async () => {
+      const deadline = performance.now() + 10000;
+      while (renderer.pending_submissions() > 0) {
+        if (performance.now() >= deadline)
+          throw Error("Fixture GPU preparation did not complete");
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => resolve()),
+        );
+      }
+    };
+    renderer.set_world(new Int32Array([0, 0, 2048, 2048]), 512);
+    for (const x of [0, 1]) {
+      renderer.replace_surface(1, x, 0, summary(), coarseHeights());
+      draw();
+      await finishSubmission();
+    }
+    const detail = new Uint32Array(128 * 128 * 8);
+    for (let i = 0; i < 128 * 128; i++) {
+      detail[i * 8 + 2] = 0xffffff;
+      detail[i * 8 + 7] = 1;
+    }
+    renderer.replace_surface(
+      0,
+      1,
+      0,
+      detail,
+      new Uint32Array(128 * 128).fill(1 << 16),
+    );
+    draw();
+    await finishSubmission();
+    renderer.set_cut(new Float32Array([0, 1, 0, 1, 1, 1, 0, 1]));
+    window.__lodCachePreparation = {
+      draw,
+      upload() {
+        for (const z of [3, 4]) renderer.add_height(1, 3, z, coarseHeights());
+      },
+      replace() {
+        renderer.replace_surface(1, 1, 0, summary(true), coarseHeights());
+      },
+      state() {
+        const [serial, completed] = renderer.submission_stats();
+        return {
+          serial,
+          completed,
+          pending: renderer.pending_submissions(),
+          retired: renderer.allocation_stats()[1],
+          preparations: renderer.pending_preparations(),
+          needs: renderer.needs_frame(),
+        };
+      },
+      destroy: () => renderer.dispose(),
+    };
+  });
+  const state = () => page.evaluate(() => window.__lodCachePreparation.state());
+  const drain = () =>
+    expect
+      .poll(async () => {
+        const s = await state();
+        return [s.pending, s.retired, s.serial - s.completed];
+      })
+      .toEqual([0, 0, 0]);
+  await drain();
+  for (let i = 0; i < 8 && (await state()).needs; i++) {
+    await page.evaluate(() => window.__lodCachePreparation.draw());
+    await drain();
+  }
+  expect((await state()).needs).toBe(false);
+  const pixels = async () =>
+    PNG.sync.read(await page.locator("#map").screenshot()).data;
+  const baseline = await pixels();
+  expect(baseline.some((v, i) => i % 4 !== 3 && v > 40)).toBe(true);
+  await page.evaluate(() => window.__lodCachePreparation.upload());
+  for (const remaining of [3, 2, 1, 0]) {
+    const before = await state();
+    expect(await page.evaluate(() => window.__lodCachePreparation.draw())).toBe(
+      false,
+    );
+    expect((await state()).serial).toBe(before.serial + 1);
+    expect((await state()).preparations).toBe(remaining);
+    expect((await state()).needs).toBe(true);
+    expect(await pixels()).toEqual(baseline);
+    await drain();
+  }
+  expect(await page.evaluate(() => window.__lodCachePreparation.draw())).toBe(
+    true,
+  );
+  await drain();
+  const idle = await state();
+  expect(idle.needs).toBe(false);
+  expect(await page.evaluate(() => window.__lodCachePreparation.draw())).toBe(
+    false,
+  );
+  expect((await state()).serial).toBe(idle.serial);
+  await page.evaluate(() => window.__lodCachePreparation.upload());
+  expect(
+    await page.evaluate(() => window.__lodCachePreparation.draw(257)),
+  ).toBe(true);
+  await drain();
+  expect(
+    await page.evaluate(() => window.__lodCachePreparation.draw(257, 180)),
+  ).toBe(true);
+  await drain();
+  await page.evaluate(() => window.__lodCachePreparation.replace());
+  expect(
+    await page.evaluate(() => window.__lodCachePreparation.draw(257, 180)),
+  ).toBe(true);
+  await drain();
+  expect(await pixels()).not.toEqual(baseline);
+  for (let i = 0; i < 8 && (await state()).needs; i++) {
+    await page.evaluate(() => window.__lodCachePreparation.draw(257, 180));
+    await drain();
+  }
+  expect((await state()).needs).toBe(false);
+  expect(errors).toEqual([]);
+  await page.evaluate(() => window.__lodCachePreparation.destroy());
+});
 
 test("height preparation preserves presentation, live picking, and retirement without idle frames", async ({
   page,

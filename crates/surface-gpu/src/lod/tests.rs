@@ -2290,6 +2290,16 @@ fn preparation_skips_unchanged_presentations_and_retires_through_the_frame_ledge
                 .unwrap();
         }
         if level > 0 {
+            let before = gpu.submitted;
+            assert!(!prepare_without_presentation(
+                &mut gpu, &out, camera, false, 90.
+            ));
+            assert_eq!(gpu.submitted, before + 1, "cache preparation only");
+            assert_eq!(pixels(&gpu, &out), baseline);
+            assert!(
+                gpu.needs_frame(),
+                "prepared cache needs a final presentation"
+            );
             assert!(prepare_without_presentation(
                 &mut gpu, &out, camera, false, 90.
             ));
@@ -2373,6 +2383,171 @@ fn preparation_skips_unchanged_presentations_and_retires_through_the_frame_ledge
         assert_eq!(gpu.retiring_bytes(), 0);
         assert_eq!(gpu.pending_submissions(), 0);
         assert!(!gpu.needs_frame());
+    }
+}
+
+#[test]
+fn visible_cache_preparations_coalesce_but_input_and_live_changes_preempt() {
+    let mut gpu = setup();
+    gpu.set_world([0, 0, 2048, 2048], 512).unwrap();
+    let keys = [Key::new(1, 0, 0).unwrap(), Key::new(1, 1, 0).unwrap()];
+    let words = summary([65535, 0, 0], 0);
+    let out = output(&gpu, 64, 32);
+    let camera = [256., 128., 0.125];
+    for key in keys {
+        gpu.replace_surface(key, words.clone(), live_heights(1, &words))
+            .unwrap();
+        draw(&mut gpu, &out, camera, true, 0.5);
+    }
+    let child = Key::new(0, 1, 0).unwrap();
+    let fine = detail(0, 1);
+    gpu.replace_surface(child, fine.clone(), live_heights(0, &fine))
+        .unwrap();
+    draw(&mut gpu, &out, camera, true, 0.5);
+    gpu.set_cut(unit_cut([child, keys[1]])).unwrap();
+    draw(&mut gpu, &out, camera, true, 0.5);
+    draw(&mut gpu, &out, camera, true, 0.5);
+    let baseline = pixels(&gpu, &out);
+    for z in [3, 4] {
+        gpu.add_height(Key::new(1, 3, z).unwrap(), live_heights(1, &words))
+            .unwrap();
+    }
+    for remaining in [1, 0] {
+        let before = gpu.submitted;
+        assert!(!prepare_without_presentation(
+            &mut gpu, &out, camera, false, 90.
+        ));
+        assert_eq!(gpu.pending_uploads(), remaining);
+        assert_eq!(gpu.submitted, before + 1);
+        assert_eq!(pixels(&gpu, &out), baseline);
+    }
+    assert_eq!(gpu.preparation_keys().len(), 2);
+    for remaining in [1, 0] {
+        let before = gpu.submitted;
+        assert!(!prepare_without_presentation(
+            &mut gpu, &out, camera, false, 90.
+        ));
+        assert_eq!(gpu.preparation_keys().len(), remaining);
+        assert_eq!(gpu.submitted, before + 1);
+        assert!(gpu.pending_submissions() <= 3);
+        assert_eq!(pixels(&gpu, &out), baseline);
+        assert!(gpu.needs_frame());
+    }
+    let before = gpu.submitted;
+    assert!(prepare_without_presentation(
+        &mut gpu, &out, camera, false, 90.
+    ));
+    assert_eq!(
+        gpu.submitted, before,
+        "preflight never submits presentation"
+    );
+    draw(&mut gpu, &out, camera, true, 0.5);
+    assert!(!gpu.needs_frame());
+    assert!(!prepare_without_presentation(
+        &mut gpu, &out, camera, false, 90.
+    ));
+    assert_eq!(
+        gpu.submitted,
+        before + 1,
+        "one final presentation, no idle work"
+    );
+
+    for key in keys {
+        gpu.tiles.get_mut(&key).unwrap().dirty = true;
+    }
+    assert!(!prepare_without_presentation(
+        &mut gpu, &out, camera, false, 90.
+    ));
+    let moved = [257., 128., 0.125];
+    assert!(prepare_without_presentation(
+        &mut gpu, &out, moved, false, 90.
+    ));
+    draw(&mut gpu, &out, moved, true, 0.5);
+    for key in keys {
+        gpu.tiles.get_mut(&key).unwrap().dirty = true;
+    }
+    assert!(!prepare_without_presentation(
+        &mut gpu, &out, moved, false, 90.
+    ));
+    assert!(prepare_without_presentation(
+        &mut gpu, &out, moved, false, 180.
+    ));
+    draw(&mut gpu, &out, moved, true, 0.5);
+
+    let replacement = summary([0, 65535, 0], 160);
+    gpu.replace_surface(keys[1], replacement.clone(), live_heights(1, &replacement))
+        .unwrap();
+    let old_slot = gpu.heights[&keys[1]];
+    assert!(prepare_without_presentation(
+        &mut gpu, &out, moved, false, 90.
+    ));
+    assert_eq!(gpu.heights[&keys[1]], old_slot);
+    draw(&mut gpu, &out, moved, true, 0.5);
+    assert_ne!(gpu.heights[&keys[1]], old_slot);
+    for _ in 0..MAX_TILES + 1 {
+        if !gpu.needs_frame() {
+            break;
+        }
+        if prepare_without_presentation(&mut gpu, &out, moved, false, 90.) {
+            draw(&mut gpu, &out, moved, true, 0.5);
+        }
+        gpu.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .unwrap();
+    }
+    assert!(!gpu.needs_frame(), "preparation batch terminates");
+    assert_ne!(pixels(&gpu, &out), baseline);
+    assert_eq!(gpu.pending_submissions(), 0);
+    assert_eq!(gpu.retiring_bytes(), 0);
+    assert_eq!(gpu.submission_stats().completed_serial, gpu.submitted);
+}
+
+#[test]
+fn presentation_sources_exclude_fine_neighbors_and_offscreen_coarse_gutters() {
+    for level in [0, 1] {
+        let mut gpu = setup();
+        let key = Key::new(level, 0, 0).unwrap();
+        gpu.cuts[0] = Topology::new(unit_cut([key]), false).unwrap();
+        let neighbor = Key::new(level, 1, 0).unwrap();
+        let interior = View::new([64., 64.], 1., 32, 32).unwrap();
+        assert!(gpu.presentation_source(key, interior));
+        assert!(!gpu.presentation_source(neighbor, interior));
+        let edge = View::new([key.span() - 0.5, 64.], 1., 32, 32).unwrap();
+        assert_eq!(gpu.presentation_source(neighbor, edge), level > 0);
+        assert_eq!(gpu.cache_status_source(neighbor, interior), level > 0);
+        if level > 0 {
+            gpu.cuts[0] = Topology::default();
+            gpu.set_world([0, 0, 2048, 2048], 512).unwrap();
+            let words = summary([65535, 0, 0], 0);
+            gpu.replace_surface(key, words.clone(), live_heights(level, &words))
+                .unwrap();
+            let out = output(&gpu, 32, 32);
+            let camera = [64., 64., 1.];
+            draw(&mut gpu, &out, camera, true, 0.5);
+            gpu.set_cut(unit_cut([key])).unwrap();
+            draw(&mut gpu, &out, camera, true, 0.5);
+            let baseline = pixels(&gpu, &out);
+            gpu.add_tile(neighbor, words).unwrap();
+            let before = gpu.submitted;
+            assert!(!prepare_without_presentation(
+                &mut gpu, &out, camera, false, 90.
+            ));
+            assert_eq!(gpu.submitted, before + 1);
+            assert_eq!(pixels(&gpu, &out), baseline);
+            assert!(
+                gpu.height_status()[0] & 8 != 0,
+                "status awaits presentation"
+            );
+            assert!(prepare_without_presentation(
+                &mut gpu, &out, camera, false, 90.
+            ));
+            draw(&mut gpu, &out, camera, true, 0.5);
+            assert!(
+                gpu.height_status()[0] & 1 != 0,
+                "gutter feedback is retained"
+            );
+            assert!(!gpu.needs_frame());
+        }
     }
 }
 
