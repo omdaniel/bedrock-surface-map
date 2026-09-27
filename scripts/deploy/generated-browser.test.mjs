@@ -6,6 +6,8 @@ function fixture({
   failures = 0,
   changed = false,
   mapExists = false,
+  mapReady = mapExists,
+  terrainInitialized = false,
   gotoError = false,
 } = {}) {
   const messages = [],
@@ -35,8 +37,26 @@ function fixture({
         throw timeout;
       }
     },
-    async evaluate() {
-      return mapExists;
+    async evaluate(predicate) {
+      const previous = globalThis.window;
+      globalThis.window = {
+        __map: mapExists
+          ? {
+              ready: mapReady,
+              state: () => ({
+                lod: terrainInitialized ? {} : null,
+                cached: 0,
+                draws: 0,
+              }),
+            }
+          : undefined,
+      };
+      try {
+        return predicate();
+      } finally {
+        if (previous === undefined) delete globalThis.window;
+        else globalThis.window = previous;
+      }
     },
   };
   return {
@@ -68,6 +88,17 @@ test("navigation-level network change also has a single retry", async () => {
   assert.deepEqual(f.counts(), { navigations: 2, waits: 1 });
 });
 
+test("a debug handle without initialized terrain does not suppress the startup network retry", async () => {
+  const f = fixture({
+    failures: 1,
+    changed: true,
+    mapExists: true,
+    mapReady: false,
+  });
+  await f.run();
+  assert.deepEqual(f.counts(), { navigations: 2, waits: 2 });
+});
+
 test("repeated network changes fail after the bounded second attempt", async () => {
   const f = fixture({ failures: 2, changed: true });
   await assert.rejects(f.run(), (error) => error === f.timeout);
@@ -75,7 +106,16 @@ test("repeated network changes fail after the bounded second attempt", async () 
 });
 
 test("readiness and initialized-application failures are not retried", async () => {
-  for (const options of [{}, { changed: true, mapExists: true }]) {
+  for (const options of [
+    {},
+    { changed: true, mapExists: true },
+    {
+      changed: true,
+      mapExists: true,
+      mapReady: false,
+      terrainInitialized: true,
+    },
+  ]) {
     const f = fixture({ failures: 1, ...options });
     await assert.rejects(f.run(), (error) => error === f.timeout);
     assert.equal(f.counts().navigations, 1);

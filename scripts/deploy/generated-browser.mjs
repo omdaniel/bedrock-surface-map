@@ -32,7 +32,13 @@ export async function openGeneratedMap(page, url, consoleMessages, errors) {
         attempt !== 0 ||
         !changed ||
         errors.length ||
-        (await page.evaluate(() => Boolean(window.__map)))
+        (await page.evaluate(() => {
+          const map = window.__map;
+          const state = map?.state();
+          return Boolean(
+            map?.ready || state?.lod || state?.cached > 0 || state?.draws > 0,
+          );
+        }))
       )
         throw error;
     }
