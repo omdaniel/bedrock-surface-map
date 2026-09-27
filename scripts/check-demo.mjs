@@ -38,6 +38,17 @@ try {
     deviceScaleFactor: 1,
   });
   activePage = page;
+  const pauseScenario = async () => {
+    // Pause production immediately, without waiting for a busy GPU compositor.
+    // Real pointer/keyboard playback is exercised in the native-timer context.
+    await page
+      .getByRole("button", { name: "Pause demo", exact: true })
+      .evaluate((button) => button.click());
+    assert.equal(
+      await page.locator("#demo-play").getAttribute("aria-label"),
+      "Play demo",
+    );
+  };
   const errors = [],
     requests = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -134,7 +145,7 @@ try {
   );
   const pos = await page.locator(".player-detail").first().innerText();
   await page.clock.fastForward(11000);
-  await page.waitForTimeout(1000);
+  await pauseScenario();
   await settledRevision(initial.lod.live.revision + 1);
   const built = await page.evaluate(() => window.__map.state());
   await pickSite(67, "oak planks");
@@ -148,8 +159,9 @@ try {
     pos,
   );
   await page.screenshot({ path: `${output}/construction.png` });
+  await page.getByRole("button", { name: "Play demo", exact: true }).click();
   await page.clock.fastForward(16000);
-  await page.waitForTimeout(1000);
+  await pauseScenario();
   await settledRevision(built.lod.live.revision + 1);
   const opened = await page.evaluate(() => window.__map.state());
   assert.ok(opened.lod.live.revision > built.lod.live.revision);
@@ -160,12 +172,13 @@ try {
     "removal changes terrain pixels",
   );
   await page.screenshot({ path: `${output}/removal.png` });
+  await page.getByRole("button", { name: "Play demo", exact: true }).click();
   for (let n = 0; n < 6; n++) {
     await page.clock.fastForward(15000);
     await page.waitForTimeout(300);
   }
   // Stop producing replacements before requiring transport/GPU quiescence.
-  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
+  await pauseScenario();
   await page.locator("canvas").screenshot({ path: `${output}/looped.png` });
   await settledRevision(9);
   const looped = await page.evaluate(() => window.__map.state());
