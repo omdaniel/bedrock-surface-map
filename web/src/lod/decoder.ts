@@ -19,6 +19,7 @@ export class LodDecoder {
   private worker: Worker | null = null;
   private sequence = 0;
   private disposed = false;
+  private workerFailure: Error | null = null;
   private readonly pending = new Map<
     number,
     {
@@ -34,6 +35,7 @@ export class LodDecoder {
     this.startWorker();
   }
   private startWorker() {
+    this.workerFailure = null;
     const worker = new Worker(new URL("./decoder.worker.ts", import.meta.url), {
       type: "module",
     });
@@ -64,6 +66,7 @@ export class LodDecoder {
   }
   private failWorker(worker: Worker, error: Error) {
     if (this.worker !== worker) return;
+    this.workerFailure = error;
     this.worker = null;
     worker.terminate();
     for (const entry of this.pending.values()) {
@@ -123,7 +126,11 @@ export class LodDecoder {
   ) {
     if (this.disposed) throw Error("LOD decoder disposed");
     const worker = this.worker;
-    if (!worker) throw Error("LOD decoder failed; Retry to restart");
+    if (!worker)
+      throw Error(
+        `LOD decoder failed; Retry to restart${this.workerFailure ? ` (${this.workerFailure.message})` : ""}`,
+        { cause: this.workerFailure },
+      );
     if (this.pending.size >= 2) throw Error("LOD decode concurrency limit");
     return new Promise<DecodeResult>((resolve, reject) => {
       const id = ++this.sequence;

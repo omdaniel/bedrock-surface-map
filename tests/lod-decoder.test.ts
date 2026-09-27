@@ -515,6 +515,39 @@ function fakeWorker(t: TestContext) {
   });
 }
 
+test("a worker failure before the first job retains its cause for explicit recovery", async (t) => {
+  fakeWorker(t);
+  const decoder = new LodDecoder();
+  t.after(() => decoder.destroy());
+  const failed = FakeWorker.last;
+  failed.onerror({ message: "module initialization failed before dispatch" });
+  assert.throws(
+    () =>
+      decoder.update(fixture(), null, base, 64, new AbortController().signal),
+    (error: Error) => {
+      assert.match(
+        error.message,
+        /Retry to restart.*module initialization failed/,
+      );
+      assert.equal(
+        (error.cause as Error).message,
+        "module initialization failed before dispatch",
+      );
+      return true;
+    },
+  );
+  decoder.retry();
+  const recovered = decoder.update(
+    fixture(),
+    null,
+    base,
+    64,
+    new AbortController().signal,
+  );
+  FakeWorker.last.reply(1, { words: new Uint32Array([42]), wasmBytes: 65536 });
+  assert.equal((await recovered).words![0], 42);
+});
+
 for (const failure of ["module", "WASM"])
   test(`initial ${failure} failure permits one explicit replacement with no stale jobs or capacity reset`, async (t) => {
     fakeWorker(t);

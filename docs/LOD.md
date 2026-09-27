@@ -205,7 +205,9 @@ Device loss cancels pending work and triggers one coarse-first reconstruction,
 preserving the camera, lighting and independent player layer. A second loss or a
 failed reconstruction requires an explicit Retry.
 Worker-module or decoder-WASM initialization failures reject pending jobs and
-release their loading reservations. Explicit Retry replaces a failed decoder
+release their loading reservations. Failure diagnostics retain the worker's
+original cause even when it fails before the first job. Explicit Retry replaces
+a failed decoder
 without reloading the page; disposed decoders never restart, and replies from
 retired workers cannot enter the new view.
 

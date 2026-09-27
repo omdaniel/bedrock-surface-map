@@ -103,9 +103,24 @@ export async function verifyGeneratedBrowser({
     for (const suffix of ["/", "/?terrain=off", "/?players=off"]) {
       const page = await context.newPage();
       const requests = [],
+        failedRequests = [],
+        failedResponses = [],
         errors = [],
         consoleMessages = [];
       page.on("request", (request) => requests.push(request.url()));
+      page.on("requestfailed", (request) =>
+        failedRequests.push({
+          url: request.url(),
+          error: request.failure()?.errorText,
+        }),
+      );
+      page.on("response", (response) => {
+        if (response.status() >= 400)
+          failedResponses.push({
+            url: response.url(),
+            status: response.status(),
+          });
+      });
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
         if (["error", "warning"].includes(message.type()))
@@ -337,6 +352,8 @@ export async function verifyGeneratedBrowser({
                 path: suffix,
                 errors,
                 consoleMessages,
+                failedRequests,
+                failedResponses,
                 state: await page.evaluate(() => ({
                   map: window.__map?.state(),
                   message: document.querySelector("#message")?.textContent,
