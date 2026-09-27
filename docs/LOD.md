@@ -244,6 +244,21 @@ The Chrome harness records actual rAF cadence separately from its pan-input cap;
 video and screenshots may affect timing. Reports, screenshots and recordings
 stay under `.local/`. Physical iPad acceptance is separate from desktop layouts.
 
+For a matched rebuilt-main/LOD comparison on an independently configured 60 Hz
+display, serve both frozen builds and supply their loopback URLs:
+
+```sh
+node scripts/check-lod-reference.mjs --every-frame \
+  --baseline-url "$BASELINE_VIEWER_URL" --candidate-url "$LOD_VIEWER_URL"
+```
+
+This records a blank-page cadence calibration followed by baseline, candidate,
+candidate and baseline pans without screenshots or protocol polling during
+timing. `--every-frame` sends one pan per actual rAF callback; the default timer
+cap can quantize inputs below 60 Hz. Neither mode configures display refresh.
+Reports separate actual input cadence, rAF intervals and submitted draws; they
+are not GPU completion timestamps.
+
 For generated scale fixtures, run the correctness and residency harness with an
 explicit loopback URL and browser mode:
 
@@ -258,6 +273,8 @@ a 20-minute minimum navigation window. `--budget 128000000` verifies an already
 configured constrained viewer; it does not change configuration. Optional
 `--simulate-objects` delays buffered responses using a shared 20 Mbps delivery
 budget plus 50 ms per object. This is not a physical-network or FPS measurement.
+Use a direct-file static host for large generated object directories; Vite's
+development/preview file checks can add directory-dependent serving overhead.
 PNG nonblank checks require visual inspection, and a declared dataset extent
 does not prove its populated-region count.
 Keep served source and assets unchanged during a run. Document navigation or

@@ -10,6 +10,7 @@ const { values } = parseArgs({
     "baseline-url": { type: "string" },
     "candidate-url": { type: "string" },
     output: { type: "string", default: ".local/lod-reference" },
+    "every-frame": { type: "boolean", default: false },
     help: { type: "boolean", default: false },
   },
 });
@@ -18,13 +19,15 @@ if (values.help) {
   console.log(`Usage: node scripts/check-lod-reference.mjs \\
   --baseline-url 'http://127.0.0.1:5196/?map=/maps/lod-fixture/source/manifest.json&players=off' \\
   --candidate-url 'http://127.0.0.1:5195/?lod=/maps/lod-fixture/lod.json&players=off' \\
-  [--output .local/lod-reference]
+  [--output .local/lod-reference] [--every-frame]
 
 Run only after both servers and renderers are ready. Installed headful Chrome;
 first a 10-second blank-page rAF calibration, then fresh contexts in
 baseline/candidate/candidate/baseline order; identical 1024x1024
 fixture, camera (64,64), scale 6, viewport 1920x1176 and DPR 1. Each run has one
 5-second pan warmup and a 10-second measured pan capped at 60 inputs/second.
+--every-frame sends one pan per actual rAF callback instead of timer gating;
+use it with an independently configured 60 Hz display for the 60 Hz workload.
 No video or screenshots. Input cadence does not set physical display refresh;
 independent rAF histograms report the cadence Chrome actually delivers.`);
 } else {
@@ -165,7 +168,8 @@ async function main() {
         "After aim: current and target LOD 0, nonempty cut, pending=0, activeKind=null, queuedUpload=false, preparations=0 and no pending render",
       warmupSeconds: 5,
       measuredSeconds: 10,
-      panInputCapHz: 60,
+      panInputCapHz: values["every-frame"] ? null : 60,
+      panInputMode: values["every-frame"] ? "every-rAF" : "timer-cap",
       path: "x=64+12*sin(t/700), z=64+7.2*sin(t/1100), milliseconds; restart at center after warmup",
       timing:
         "Independent real rAF intervals; submitted FPS uses __map.state().draws over the measured pan only. No GPU timestamps",
@@ -174,7 +178,9 @@ async function main() {
       network:
         "Same-origin fixture traffic only. Identical cross-origin security routes disable HTTP cache for both versions; service workers blocked",
       display:
-        "60 inputs/second is a workload cap, not a physical 60 Hz display configuration. Report observed input and rAF cadence separately",
+        values["every-frame"]
+          ? "Every-frame inputs follow observed rAF cadence; physical display refresh must be configured independently. Report observed input and rAF cadence separately"
+          : "60 inputs/second is a workload cap, not a physical 60 Hz display configuration. Report observed input and rAF cadence separately",
     },
     runs: [],
     errors: [],
@@ -352,7 +358,10 @@ async function main() {
           Math.abs(run.readyState.scale - 6) > 1e-6
         )
           throw Error("Matched camera configuration was not applied");
-        const result = await withDeadline(page.evaluate(measurePan), 35_000);
+        const result = await withDeadline(
+          page.evaluate(measurePan, values["every-frame"]),
+          35_000,
+        );
         if (result.error) throw Error(result.error);
         run.measurement = result;
         run.summary = summarize(result);
@@ -506,7 +515,7 @@ function calibrateRaf() {
 }
 
 // All timing and pan commands stay inside one rAF loop, with no protocol polling.
-function measurePan() {
+function measurePan(everyFrame) {
   return new Promise((resolve) => {
     const result = {
       warmupMs: null,
@@ -602,7 +611,11 @@ function measurePan() {
           }
         }
         // Cap pan inputs only; every real rAF callback still contributes timing.
-        if (lastInput === null || now - lastInput + 1e-6 >= 1000 / 60) {
+        if (
+          everyFrame ||
+          lastInput === null ||
+          now - lastInput + 1e-6 >= 1000 / 60
+        ) {
           const elapsed = now - (measuredStart ?? started);
           const x = 64 + 12 * Math.sin(elapsed / 700),
             z = 64 + 7.2 * Math.sin(elapsed / 1100);
