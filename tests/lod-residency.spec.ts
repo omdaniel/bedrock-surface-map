@@ -322,6 +322,10 @@ test.describe("LOD bounded residency over repeated navigation", () => {
   test("far pans and repeated revisits keep metadata, catalog and residency bounded", async ({
     page,
   }) => {
+    // Software rendering completes the same 21 settled views without imposing
+    // a native-GPU navigation deadline on the whole workload.
+    if (process.env.CI || process.env.SURFACE_CI_LOCAL_SOFTWARE === "1")
+      test.setTimeout(360_000);
     await openCoarse(page);
     const sun = camera(await state(page));
     const positions = [

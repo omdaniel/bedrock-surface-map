@@ -60,7 +60,7 @@ jobs:
       - run: node scripts/terrain-fixture.mjs
       - run: cargo run --locked -p surface-sync --example lod_catalog_fixture
       - name: Verify exact browser shard coverage
-        run: node scripts/check-ci-shards.mjs 3
+        run: node scripts/check-ci-shards.mjs 6
       - name: Bundle generated synthetic browser inputs
         run: >-
           tar -cf "$RUNNER_TEMP/ci-browser-inputs.tar"
@@ -100,7 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     env:
       XDG_RUNTIME_DIR: /tmp
     steps:
@@ -117,10 +117,10 @@ jobs:
           name: synthetic-browser-inputs-${{ github.sha }}
           path: ${{ runner.temp }}/ci-browser-inputs
       - run: tar -xf "$RUNNER_TEMP/ci-browser-inputs/ci-browser-inputs.tar"
-      - name: Browser correctness (shard ${{ matrix.shard }}/3)
+      - name: Browser correctness (shard ${{ matrix.shard }}/6)
         run: >-
           xvfb-run -a -s '-screen 0 1280x900x24'
-          npx playwright test --config scripts/ci-browser.config.mjs --shard=${{ matrix.shard }}/3
+          npx playwright test --config scripts/ci-browser.config.mjs --shard=${{ matrix.shard }}/6
       - name: Preserve browser timings, screenshots and failure context
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -11,6 +11,8 @@ import {
 } from "../web/src/lod/protocol.ts";
 
 const directory = "web/public/maps/lod-sparse-small/";
+const softwareGpu =
+  Boolean(process.env.CI) || process.env.SURFACE_CI_LOCAL_SOFTWARE === "1";
 test.afterEach(({ page }, info) => captureLodFailure(page, info));
 const base = new URL("http://127.0.0.1/maps/lod-sparse-small/");
 const manifest = parseManifest(
@@ -48,7 +50,7 @@ async function settle(page: Page) {
       );
     },
     undefined,
-    { timeout: 30_000 },
+    { timeout: softwareGpu ? 60_000 : 30_000 },
   );
   const s = await page.evaluate(() => window.__map.state());
   expect(s.lod!.failures).toEqual([]);
@@ -59,6 +61,7 @@ async function settle(page: Page) {
 test("sparse off-view gutters use certified absence without blocking known fine terrain", async ({
   page,
 }, info) => {
+  if (softwareGpu) test.setTimeout(180_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(String(error)));
   await page.goto("/?lod=/maps/lod-sparse-small/lod.json&players=off");

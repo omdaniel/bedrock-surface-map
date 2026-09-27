@@ -27,6 +27,13 @@ for completed GPU work and inspect pixels; a submitted draw alone is not proof
 of visible output. CI does not use private worlds, Mojang textures or homelab
 credentials. It does not measure native Mac or iPad GPU performance.
 
+Browser CI uses six single-worker shards and audits discovery so every test runs
+exactly once. The repeated 21-view residency workload allows six minutes on a
+software adapter; sparse-view settling allows one minute per view. Native-browser
+limits remain three minutes for that workload and 30 seconds per sparse view.
+These bounded correctness waits preserve all navigation, coverage, retirement
+and memory assertions; they are not frame-rate targets.
+
 ## Offline Import
 
 Use a consistent archive and the [import commands](IMPORT.md). Record its hash
