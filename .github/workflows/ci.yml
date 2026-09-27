@@ -12,6 +12,8 @@ jobs:
   prepare-synthetic:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      browser-inputs-ready: ${{ steps.browser-inputs.outputs.ready }}
     env:
       CARGO_TERM_COLOR: always
       XDG_RUNTIME_DIR: /tmp
@@ -72,6 +74,9 @@ jobs:
           path: ${{ runner.temp }}/ci-browser-inputs.tar
           if-no-files-found: error
           retention-days: 1
+      - name: Mark verified browser inputs available
+        id: browser-inputs
+        run: echo 'ready=true' >> "$GITHUB_OUTPUT"
       - run: npx playwright install --with-deps chromium
       - run: npm run demo:build
       - run: DEMO_SELF_SERVE=1 xvfb-run -a -s '-screen 0 1920x1200x24' node scripts/check-demo.mjs
@@ -87,6 +92,9 @@ jobs:
       # No raw world imports, Mojang downloads or homelab credentials.
   browser:
     needs: prepare-synthetic
+    # Run independent assertions even if the later demo check fails. The
+    # synthetic aggregate still requires the entire preparation job to pass.
+    if: always() && needs.prepare-synthetic.outputs.browser-inputs-ready == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     strategy:
