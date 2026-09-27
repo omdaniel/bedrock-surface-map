@@ -158,7 +158,9 @@ try {
     await page.clock.fastForward(15000);
     await page.waitForTimeout(300);
   }
-  // Virtual time advances the scenario, not asynchronous transport/GPU work.
+  // Stop producing replacements before requiring transport/GPU quiescence.
+  await page.getByRole("button", { name: "Pause demo", exact: true }).click();
+  await page.locator("canvas").screenshot({ path: `${output}/looped.png` });
   await settledRevision(9);
   const looped = await page.evaluate(() => window.__map.state());
   assert.ok(looped.lod.live.revision >= 9, "two loops");
@@ -170,6 +172,7 @@ try {
     (await page.evaluate(() => window.__map.state())).lod.live.revision >
       looped.lod.live.revision,
   );
+  await page.getByRole("button", { name: "Play demo", exact: true }).click();
   // Exercise keyboard playback as well as the pointer controls above.
   await page.getByRole("button", { name: "Pause demo", exact: true }).focus();
   await page.keyboard.press("Enter");
