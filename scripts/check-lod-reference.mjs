@@ -177,10 +177,9 @@ async function main() {
         "No video, screenshots or periodic protocol polling during timing; one in-page rAF loop and a bounded long-task observer",
       network:
         "Same-origin fixture traffic only. Identical cross-origin security routes disable HTTP cache for both versions; service workers blocked",
-      display:
-        values["every-frame"]
-          ? "Every-frame inputs follow observed rAF cadence; physical display refresh must be configured independently. Report observed input and rAF cadence separately"
-          : "60 inputs/second is a workload cap, not a physical 60 Hz display configuration. Report observed input and rAF cadence separately",
+      display: values["every-frame"]
+        ? "Every-frame inputs follow observed rAF cadence; physical display refresh must be configured independently. Report observed input and rAF cadence separately"
+        : "60 inputs/second is a workload cap, not a physical 60 Hz display configuration. Report observed input and rAF cadence separately",
     },
     runs: [],
     errors: [],
