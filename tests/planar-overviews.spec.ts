@@ -248,6 +248,14 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
         canvas: canvas.getBoundingClientRect().toJSON(),
         width: canvas.width,
         height: canvas.height,
+        controls: Object.fromEntries(
+          ["#scale", ".north", ".zoom", "header", "footer"].map((selector) => {
+            const { x, y } = document
+              .querySelector(selector)!
+              .getBoundingClientRect();
+            return [selector, { x, y }];
+          }),
+        ),
       };
     });
   await page.route("**/maps/coast/regions/**", async (route) => {
@@ -280,6 +288,15 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
     await expect(page.locator("#message-text")).toHaveText(
       "Preparing 2 × 2 overview…",
     );
+    const notice = await page.locator("#message").boundingBox();
+    const scaleBar = await page.locator("#scale").boundingBox();
+    expect(notice!.x).toBe(scaleBar!.x);
+    expect(notice!.y).toBeGreaterThan(scaleBar!.y + scaleBar!.height);
+    await expect(page.locator("#message")).toHaveCSS(
+      "background-color",
+      "rgba(0, 0, 0, 0)",
+    );
+    await expect(page.locator("#message")).toHaveCSS("pointer-events", "none");
     expect(await geometry()).toEqual(originalGeometry);
     const retained = await screenshot(page, info, "coast-replacing");
     coastPixels(retained, fine);

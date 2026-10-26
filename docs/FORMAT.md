@@ -116,7 +116,8 @@ texture, so diagonal ledges do not acquire enlarged vertical block faces.
 These nadir surfaces use ordinary region quads, with no mixed-resolution mesh
 stitching. Resolution changes release the previous records, picking arrays and
 height resources; the last complete frame remains visible during preparation.
-Preparation and error notices overlay the map without resizing its viewport.
+Preparation status floats below the scale bar; retryable errors use a bottom
+notice. Neither changes the map viewport or the positions of other controls.
 Queued draws recheck readiness at submission time, so rapid input cannot present
 an empty or partially replaced resolution. The prepared view appears in one draw.
 

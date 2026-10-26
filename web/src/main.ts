@@ -80,10 +80,6 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("map");
 const main = canvas.parentElement!;
-// Keep floating controls clear of notices without changing the map viewport.
-new ResizeObserver(() => {
-  main.style.setProperty("--message-height", `${$("message").offsetHeight}px`);
-}).observe($("message"));
 let manifest: Manifest;
 let renderer: Renderer;
 let base: URL;
