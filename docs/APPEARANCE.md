@@ -34,7 +34,7 @@ supply a bounded height window with offscreen shadow coverage; see
 [height coverage and caching](FORMAT.md#height-coverage-and-caching).
 
 The detail pass takes four stratified samples in the clipped pixel footprint.
-The overview pass samples the whole block, then box-filters its mip chain.
+The exact overview pass samples the whole block, then box-filters its mip chain.
 This preserves fractional-block shadows without per-block meshes. A height
 difference `H` casts a horizontal shadow of `H / tan(elevation)`: a ten-block
 column gives 5.7735 blocks at 60 degrees, or ten blocks at 45 degrees.
@@ -73,9 +73,15 @@ blend towards `min(base * 1.55 + 0.025, 1)`. Contact shade uses 0.28 with up to
 before contact shade is applied, so shaded rims do not glow through terrain.
 Separately averaged shadow/relief coverage is a subpixel approximation.
 
-Detail and overview share `relief.wgsl` and the lighting composition function.
+Exact detail and its overview share `relief.wgsl` and the lighting composition function.
 Relief reuses height storage and adds no per-region allocation. Setting its
 strength to zero skips neighbor lookups without disabling cast shadows.
+
+The 2×2 and 4×4 viewing levels use averaged sample heights and directional
+gradient relief instead of enlarged block-edge bands. Their surface raster is
+filtered in the browser, retaining adjustable sunlight and the same color grade.
+This approximates diagonal ledges and small terrain features; exact band widths,
+individual block materials and fractional-block shadows require close-up detail.
 
 ## Color Treatment
 

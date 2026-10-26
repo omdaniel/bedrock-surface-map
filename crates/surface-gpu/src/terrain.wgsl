@@ -22,13 +22,13 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
     return tint_color(m,c,tint,p.lighting.y);
 }
 @fragment fn fs(v:Vertex)->@location(0) vec4f {
-    let q=clamp(vec2u(v.local),vec2u(0),vec2u(255));let c=cells[q.y*256u+q.x];
     let fractional=fract(v.local);let footprint=fwidth(v.local);
-    if p.camera.z < 1.0 {
-        let lod=max(0.0,log2(1.0/p.camera.z));
+    if origin.z>1.0 || p.camera.z < 1.0 {
+        let lod=max(0.0,log2(1.0/(p.camera.z*origin.z)));
         let col=textureSampleLevel(overview,overview_sampler,v.local/256.0,lod);
         if col.a<0.005{discard;}return vec4f(col.rgb/max(col.a,0.001),col.a);
     }
+    let q=clamp(vec2u(v.local),vec2u(0),vec2u(255));let c=cells[q.y*256u+q.x];
     if c.covered!=1u {discard;}
     var col=material_color(c.material,c.tint,fractional);
     if c.depth>0u {

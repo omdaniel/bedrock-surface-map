@@ -15,8 +15,10 @@ maintenance entry points without making the demo visitor read an operator guide.
 
 Live terrain replaces chunks and patches resident height windows, overviews and
 picking data. It does not allocate a heightfield for an arbitrarily large world.
-The logical map budget is 256 MiB, excluding browser RSS, transient allocations
-and graphics-driver overhead. Oversized views request zooming in.
+The logical map budget is 256 MiB, with 32 MiB reserved for working allocations;
+it is not a browser/driver RSS guarantee. One view-wide sample spacing selects
+exact blocks, 2×2 summaries or 4×4 summaries. Wider views reduce detail without
+moving the camera. Views exceeding even the 4×4 representation require zooming in.
 
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),
@@ -58,6 +60,7 @@ npm run terrain:build
 npm run terrain:test
 npm run demo:test
 npm run fixture
+cargo run --locked -p surface-cli -- fixture --coast --output web/public/maps/coast
 node scripts/terrain-fixture.mjs
 npm test
 ```

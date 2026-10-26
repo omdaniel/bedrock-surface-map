@@ -46,6 +46,9 @@ export interface DecodeRequest {
   rz?: number;
   materials?: number;
   columns?: number;
+  /** Number of real blocks along one resident sample edge. */
+  stride?: number;
+  width?: number;
 }
 export interface DecodeReply {
   id: number;

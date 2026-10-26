@@ -63,6 +63,8 @@ try {
         () =>
           window.__map?.ready &&
           window.__map.state().pending === 0 &&
+          !window.__map.state().switchingResolution &&
+          !window.__map.state().renderPending &&
           !window.__map.state().terrain?.busy &&
           window.__map.state().cached > 0,
         null,
@@ -71,6 +73,10 @@ try {
     await settled();
     const samples = [],
       cold = performance.now() - started;
+    await page
+      .getByRole("button", { name: "World spawn", exact: true })
+      .click();
+    await settled();
     const extent = root.bounds[2] - 384;
     const stops = [-extent, -extent / 2, 0, extent / 2, extent];
     const route = stops.flatMap((z) => stops.map((x) => [x, z]));
@@ -101,7 +107,11 @@ try {
       );
       await settled();
       const s = await page.evaluate(() => window.__map.state());
-      assert(s.memory <= 256 * 1024 * 1024, "Map cache exceeded 256 MiB");
+      assert(
+        s.memory + s.reservedMemory <= 256 * 1024 * 1024,
+        "Map cache exceeded 256 MiB",
+      );
+      assert.equal(s.stride, 1, "Close-up traversal must retain exact detail");
       assert(s.cached < root.regions.length, "Whole-world detail was loaded");
       assert.equal(s.failures.length, 0);
       const w = s.terrain.window;
@@ -109,12 +119,11 @@ try {
       samples.push({ memory: s.memory, cached: s.cached, window: w });
     }
     await page.getByRole("button", { name: "Fit world", exact: true }).click();
-    await page.waitForFunction(
-      () =>
-        document.querySelector("#message")?.textContent?.includes("Zoom in"),
-      null,
-      { timeout: 15000 },
-    );
+    await settled();
+    const overview = await page.evaluate(() => window.__map.state());
+    assert.equal(overview.cached, root.regions.length);
+    assert(overview.stride > 1, "Fit world must use reduced samples");
+    assert(overview.memory + overview.reservedMemory <= 256 * 1024 * 1024);
     await page
       .getByRole("button", { name: "World spawn", exact: true })
       .click();
@@ -131,7 +140,8 @@ try {
       regions: root.regions.length,
       first_visible_ms: cold,
       samples,
-      wide_view_requires_zoom: true,
+      overview_stride: overview.stride,
+      overview_memory_with_reserve: overview.memory + overview.reservedMemory,
       recovered: true,
     });
     await page.close();

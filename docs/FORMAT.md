@@ -101,6 +101,22 @@ per block. Filtering is local to each region; no overview images are exported.
 Procedural borders use fragment derivatives and fade with zoom. Relief uses
 neighbor heights and analytical band coverage, without contour or edge meshes.
 
+The visible map uses a single sample spacing of 1, 2 or 4 blocks. The scale bar
+retains exact detail through its 100-block range when memory permits; the next
+200-block bar selects 2×2 reduction. Memory pressure selects 4×4 reduction.
+The worker chooses a modal material from each group, with center-nearest ties,
+and retains that real sample's tint, water, support and overlay attributes.
+Height is the mean of present columns, rounded to a sixteenth block. Partial
+coverage remains fractional; an unavailable group is never verified-empty.
+Reduced data is a lossy viewing representation; the stored surface objects remain
+unchanged and lossless. Picking labels reduced surfaces as approximate.
+
+Reduced terrain shades continuous height gradients into a filtered surface
+texture, so diagonal ledges do not acquire enlarged vertical block faces.
+These nadir surfaces use ordinary region quads, with no mixed-resolution mesh
+stitching. Resolution changes release the previous records, picking arrays and
+height resources; the last complete frame remains visible during preparation.
+
 ## Height Coverage and Caching
 
 Offline maps carry a complete dataset heightfield. Live maps and the demo use
@@ -109,8 +125,9 @@ height-only pages. The margin derives from the dataset's height range and sun
 elevation: `height_difference / tan(elevation)`, plus neighbor padding. Unknown
 terrain outside mapped coverage cannot supply an occluder.
 
-Changing the window rebuilds its CPU/GPU height pyramid. A live height update
-patches a region's height rectangle and affected ancestors. It invalidates
+Changing the window uploads sampled heights and builds their maximum pyramid
+on the GPU. No complete CPU pyramid is retained. Live updates patch height
+rectangles and rebuild the GPU maximum levels once before rendering. They invalidate
 resident shaded overviews; a material-only chunk update invalidates its region's
 overview. Dirty overviews regenerate before drawing. GPU column patches and
 CPU picking records update together without resetting camera, lighting or players.
@@ -122,12 +139,13 @@ the height window while covered, but close-up fragments perform ray queries on
 each draw. Unchanged polls and player-only motion do not request terrain frames;
 following a player moves the camera and therefore redraws terrain.
 
-The logical map budget is 256 MiB, including resident detail, picking records,
-CPU/GPU height trees and compact live height pages. Eviction prefers nonvisible
-detail. Camera and lighting changes reserve space for both visible detail and
-required shadow coverage before loading. A view that cannot fit is refused with
-a zoom-in notice; the last supported camera and sun elevation remain usable, and
-the elevation control reflects the retained value. Enlarging the browser
-window tightens the zoom when necessary. Shadows are not silently clipped. This
-budget is not total browser/driver RSS or a bound on transient allocations. Region
-loading uses two requests at a time; an unchanged view has no continuous terrain loop.
+The logical map budget is 256 MiB, including resident samples, picking records,
+GPU height trees and compact live height pages, with a 32 MiB working reserve.
+Eviction prefers nonvisible detail. Camera, resize and lighting changes select a
+sample spacing that fits visible terrain and the required shadow coverage.
+They do not silently change camera position, zoom or sun elevation. If even
+4×4 samples cannot fit, the viewer requests a smaller view. This is not a
+guarantee about total browser/driver RSS or all transient allocation peaks.
+Region loading uses two requests at a time; an unchanged view has no continuous
+terrain loop. Existing offline and live endpoints deliver the same objects at
+every resolution; reduction requires no new server index or preparation step.

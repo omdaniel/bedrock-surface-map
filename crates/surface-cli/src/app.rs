@@ -54,6 +54,9 @@ enum Command {
     Fixture {
         #[arg(long, default_value = "web/public/maps/fixture")]
         output: PathBuf,
+        /// Multi-region diagonal coast and terraces for planar overview checks.
+        #[arg(long)]
+        coast: bool,
     },
 }
 pub fn hash(bytes: &[u8]) -> String {
@@ -457,6 +460,10 @@ fn import_snapshot_inner(
 
 /// Create the synthetic fixture used by development and packaged smoke tests.
 pub fn create_synthetic_fixture(output: &Path) -> Result<()> {
+    create_fixture(output, false)
+}
+
+fn create_fixture(output: &Path, coast: bool) -> Result<()> {
     let mut r = SurfaceRegion::empty(-1, -1);
     for z in 0..256 {
         for x in 0..256 {
@@ -505,9 +512,50 @@ pub fn create_synthetic_fixture(output: &Path) -> Result<()> {
         });
     }
     let atlas = assets::synthetic(output, &mut materials)?;
+    let regions = if coast {
+        let mut regions = Vec::new();
+        for rz in -2..2 {
+            for rx in -2..2 {
+                let mut region = SurfaceRegion::empty(rx, rz);
+                for z in 0..256 {
+                    for x in 0..256 {
+                        let i = z * 256 + x;
+                        let wx = rx * 256 + x as i32;
+                        let wz = rz * 256 + z as i32;
+                        let shore = wx + wz + ((wx as f32 / 90.).sin() * 32.) as i32;
+                        let elevation = (shore / 18).clamp(0, 18);
+                        region.coverage[i] = 1;
+                        region.heights[i] = ((64 + elevation) * 16) as i16;
+                        region.materials[i] = if shore < 0 {
+                            3
+                        } else if shore < 240 {
+                            4
+                        } else {
+                            1
+                        };
+                        if shore < 0 {
+                            region.water_depth[i] = (1 + (-shore / 12)).min(20) as u32;
+                            region.supports[i] = 4;
+                        }
+                        // Cross-region, one-block diagonal ledges and an isolated column.
+                        if (wx - wz).abs() < 12 && shore > 0 {
+                            region.heights[i] += 16;
+                        }
+                        if wx == 16 && wz == 16 {
+                            region.heights[i] += 160;
+                        }
+                    }
+                }
+                regions.push(region);
+            }
+        }
+        regions
+    } else {
+        vec![r]
+    };
     publish(
         output,
-        vec![r],
+        regions,
         materials,
         "synthetic-fixture-v1".into(),
         [-128, 4, -128],
@@ -607,8 +655,8 @@ fn run() -> Result<()> {
                 serde_json::json!({"regions":m.regions.len(),"columns":columns,"decode_seconds":start.elapsed().as_secs_f64()})
             );
         }
-        Command::Fixture { output } => {
-            create_synthetic_fixture(&output)?;
+        Command::Fixture { output, coast } => {
+            create_fixture(&output, coast)?;
         }
     }
     Ok(())
