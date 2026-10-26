@@ -6,6 +6,12 @@ remains independently managed. Use a restored/disposable world before adopting
 the packs on a persistent world. Public image publication and actual-BDS
 acceptance are separate from passing synthetic CI.
 
+**Release availability:** [v0.1.0](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
+provides the snapshot runtime. It does not include the published operator bundle
+and image lock required below. This guide documents the implemented deployment
+commands and requirements; it is not a claim that the snapshot download alone
+installs a live service. For the available install path, use [snapshot setup](INSTALL.md).
+
 ## Requirements
 
 - Native Linux AMD64 or ARM64, an Ubuntu 24.04-class host, rootful Docker Engine

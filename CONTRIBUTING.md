@@ -1,50 +1,29 @@
 # Contributing
 
-Development requires Git, Node `26.8.1`, Rust `1.92.0` with rustup, and native
-C/C++ tools for your platform. Linux development supports x86-64 and ARM64;
-macOS development supports Apple Silicon. Windows contributors use WSL2/Linux.
-Python 3 is also required by archive checks and the optional Git hook. The
-[development container](.devcontainer/Dockerfile) lists the Linux build packages.
+Use [source setup](docs/GETTING_STARTED.md#run-the-demo-locally) to install the
+pinned tools and open a synthetic map. No Minecraft account, private world or
+running server is needed for ordinary development.
 
 ```sh
-git clone https://github.com/omdaniel/bedrock-surface-map.git
-cd bedrock-surface-map
-./dev doctor
-./dev setup
-./dev demo
+./dev --help
+./dev check
+./dev test -- tests/dial.spec.ts
 ```
 
-`setup` verifies Node and Rust, installs the WASM target and project-local
-`wasm-bindgen`, runs `npm ci`, builds WASM, prepares the project-local secret
-scanner, and creates a local synthetic fixture. It does not download Minecraft
-assets or contact a Minecraft server.
-`npm run bootstrap` is a compatibility alias for this same safe setup path.
-`setup --offline` checks a warmed local cache and reports exactly what is absent
-without accessing the network.
-The optional `.devcontainer/` uses the same `./dev setup` command after creating
-its Node/Rust environment; it is not a separate project bootstrap path.
+Before a pull request, run `./dev check --profile full`. It is the source/demo
+suite used by CI; native release packaging has separate architecture-specific
+checks. See [development](docs/DEVELOPMENT.md#verify) for focused iteration and
+[architecture](docs/DEVELOPMENT.md) for component ownership.
 
-Run `./dev check --profile fast` before a focused change. `--profile full`
-also runs workspace and WASM lints, renderer/browser checks, tracking and
-terrain protocol suites, and the public-demo audit. Local browser checks require
-installed Google Chrome (`chrome` channel).
-Prepare the full profile's additional fixture with `node scripts/terrain-fixture.mjs`
-after setup. CI uses Playwright Chromium and the system packages in the
-[workflow](.github/workflows/ci.yml). For direct npm builds outside `./dev`, use the
-[local tool PATH](docs/GETTING_STARTED.md#run-the-demo-locally).
+Keep changes focused. Include the user-visible behavior, relevant test results
+and any remaining limitations in the PR. Update affected documentation to describe
+current behavior; leave change history in commits and the PR. Keep dependency
+lockfiles with dependency changes. Source is [AGPL-3.0-only](LICENSE).
+Keep generated maps, downloaded Mojang assets, release archives and private data
+outside Git. Use a `codex/` branch for substantive work.
 
-Use `./dev package --target x86_64-unknown-linux-musl` or
-`aarch64-unknown-linux-musl` only when the pinned cargo-zigbuild and Zig tools
-are available and the selected Rust target is installed with
-`rustup target add <target> --toolchain 1.92.0`.
-Cross-compilation is not native runtime proof; each release
-target needs its archive smoke-tested on matching Linux hardware.
-
-`./dev setup --install-hooks` opts into the repository hook path only when no
-unrelated local hook path is configured. It does not change `pull.ff`,
-`push.default`, global Git configuration, or existing hooks.
-
-Keep generated maps, worlds, credentials, downloaded Mojang assets, and release
-archives outside Git. Use a `codex/` branch for substantive work, make narrow
-tested commits, and update documentation to describe current behavior rather
-than implementation history.
+For bugs, include the release tag or commit, browser/version, OS, steps, expected
+result and actual result. Try the public demo or a synthetic fixture when possible.
+Share only redacted errors or screenshots. Never upload credentials, raw worlds,
+player records or private server configuration to an issue. A small synthetic
+reproduction is preferable to someone else's private world.

@@ -17,6 +17,8 @@ export function probe(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     cwd: options.cwd,
+    env: options.env,
+    timeout: 10000,
   });
   return result.status === 0 ? result.stdout.trim() : null;
 }

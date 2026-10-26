@@ -1,5 +1,11 @@
 # Release CI
 
+The source/demo gate runs `./dev check --profile full`, also available as
+`npm run verify`, after installing the pinned tools and the CI browser. The
+same command prepares synthetic fixtures, checks native/WASM code and packs,
+runs browser tests, and verifies the public demo. Use `./dev check` for the
+smaller local feedback loop. Neither command requires homelab credentials.
+
 GitHub Actions checks source and Pages, and its uncredentialed `native-amd64`
 job assembles and tests the exact AMD64 Linux archive on an AMD64 runner.
 The optional GitLab pipeline in [`.gitlab-ci.yml`](../.gitlab-ci.yml) builds
@@ -7,8 +13,20 @@ the same release scripts on both native Linux architectures after an owner
 creates a mirror. Neither source nor native-test jobs publish binary releases.
 GitHub retains `native-amd64-<commit>` candidate artifacts for fourteen days;
 successful CI does not create a version tag or a GitHub Release. Deployment CI
-also validates both native archives; publication requires the protected manual
-pipeline below.
+also validates both native archives. The published
+[v0.1.0 release](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
+contains those native runtimes and source-bound evidence, without live operator
+bundles. Publication is a separate owner action, never a side effect of a test.
+
+For a native-only GitHub release, collect both successful architecture artifacts
+from the **same exact-commit** Deployment Packaging run with `ci/collect-release.mjs`,
+then run `scripts/release/publish.mjs --dist <candidate-dir>` in validation-only
+mode. Its archive hashes, embedded common resources, native smoke and browser
+reports must agree. Tag that exact commit and attach only the three verified
+archives, `SHA256SUMS` and `release-evidence.json` to the GitHub Release. Do not
+rebuild between validation and upload, or label untested cross-compilation as
+native acceptance. The optional protected GitLab publisher below automates this
+publication; a GitLab mirror is not required to develop or install the project.
 
 Configure these protected GitLab variables before enabling its jobs:
 

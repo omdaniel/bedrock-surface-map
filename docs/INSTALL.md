@@ -6,17 +6,34 @@ SHA-256 entry from the adjacent `SHA256SUMS` file before extracting it for the
 matching architecture. A release runs without Node, npm, Rust, Cargo,
 Python, Git, Zig, Vite, or a Minecraft server.
 
-Successful [GitHub Actions runs](https://github.com/omdaniel/bedrock-surface-map/actions/workflows/ci.yml)
-provide an AMD64 candidate in `native-amd64-<commit>`; download and unpack that
-artifact to obtain the archive, checksums and test evidence. A CI artifact is not
-a tagged [release](https://github.com/omdaniel/bedrock-surface-map/releases).
-Versioned publication is a separate [release CI](CI.md) step that requires both
-native Linux targets to pass. Replace `VERSION` below with the archive's version.
+## Download and Run
+
+[Download v0.1.0](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
+for **Linux AMD64** (Intel/AMD x86-64) or **Linux ARM64**. The release includes
+checksums, source and native test evidence. macOS users can use the
+[public demo](https://omdaniel.github.io/bedrock-surface-map/) or the
+[source development path](GETTING_STARTED.md#run-the-demo-locally).
+
+On Linux, these commands select your architecture, download into a dedicated
+directory and verify the archive before extracting it. They need `curl`, `tar`
+and `sha256sum`; do not run them with `sudo`.
 
 ```sh
-sha256sum --check --ignore-missing SHA256SUMS
-tar -xzf bedrock-surface-map-vVERSION-linux-amd64.tar.gz
-cd bedrock-surface-map-vVERSION-linux-amd64
+set -eu
+version=v0.1.0
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64) arch=amd64 ;;
+  Linux:aarch64|Linux:arm64) arch=arm64 ;;
+  *) echo "Use a supported Linux host or the source development guide."; exit 1 ;;
+esac
+archive="bedrock-surface-map-$version-linux-$arch.tar.gz"
+base="https://github.com/omdaniel/bedrock-surface-map/releases/download/$version"
+mkdir "bedrock-map-$version"
+cd "bedrock-map-$version"
+curl --fail --location --remote-name "$base/$archive"
+curl --fail --location --remote-name "$base/SHA256SUMS"
+sha256sum --check --ignore-missing SHA256SUMS && tar -xzf "$archive"
+cd "bedrock-surface-map-$version-linux-$arch"
 ./bedrock-map init --state ./map-data
 ./bedrock-map demo --state ./map-data
 ./bedrock-map serve --state ./map-data
@@ -27,6 +44,12 @@ map is synthetic and requires no network access or Minecraft assets. The
 runtime binds only `127.0.0.1` or `::1`; publishing a map to a LAN or Internet
 is an operator deployment concern, not an implicit release behavior.
 
+Keep the terminal running while viewing the map; Ctrl-C stops the server without
+deleting its state. On a headless Linux host, forward its loopback listener from
+your computer with `ssh -L 8080:127.0.0.1:8080 USER@HOST`, then open
+`http://127.0.0.1:8080/` locally. This keeps WebGPU on a trusted loopback origin
+without exposing a public listener or installing a certificate.
+
 `bedrock-map serve` selects an immutable offline snapshot. It does not configure
 live player or terrain feeds, install packs, or manage background services.
 Although the archive includes collector binaries and packs, live deployment
@@ -34,6 +57,11 @@ uses the separate [initial live deployment](DEPLOYMENT.md), paired image/operato
 release and explicit BDS handoff. The [player](TRACKING-REFERENCE.md) and
 [terrain](TERRAIN-SYNC.md) guides describe the service interfaces for other operator
 integrations. The snapshot command is not a replacement for that setup.
+**v0.1.0 includes snapshot runtimes, not published live operator bundles or OCI
+image locks.** CI candidate artifacts are for release verification, not a simpler
+install path.
+
+## Import Your World
 
 To import a consistent offline `.mcworld` or ZIP snapshot, first acquire the
 supported Mojang sample archive explicitly, review the linked terms, then import:
@@ -49,6 +77,8 @@ local compatible archive with `import --assets /path/to/assets.zip`; it is
 recorded as user-supplied, not as verified Mojang content. Imports accept
 archives only, never a live LevelDB directory. A failed import leaves the
 previous selected map unchanged.
+
+## Check or Troubleshoot
 
 Use these non-mutating checks to inspect the selected dataset and packaged
 resources:

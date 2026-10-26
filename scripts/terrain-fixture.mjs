@@ -97,6 +97,7 @@ execFileSync(
   "cargo",
   [
     "run",
+    "--release",
     "--quiet",
     "--locked",
     "-p",
