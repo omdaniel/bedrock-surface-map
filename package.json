@@ -5,7 +5,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": "26.8.1"
   },
   "scripts": {
     "config:test": "node --test scripts/verification-config.test.mjs scripts/private-origin.test.mjs scripts/proxy-integration.test.mjs",
@@ -32,10 +32,10 @@
     "serve:lan": "node scripts/serve-lan.mjs",
     "build": "npm run wasm && tsc --noEmit && vite build --config vite.config.ts",
     "check": "tsc --noEmit",
-    "format": "prettier --write web/src web/index.html scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
-    "format:check": "prettier --check web/src web/index.html scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
-    "test": "playwright test",
-    "verify": "cargo test --workspace && npm run build && npm run fixture && npm test"
+    "format": "prettier --write web/src web/index.html scripts/dev.mjs scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
+    "format:check": "prettier --check web/src web/index.html scripts/dev.mjs scripts/**/*.mjs tests tracking terrain vite.config.ts playwright.config.ts",
+    "test": "node scripts/dev.mjs test --",
+    "verify": "node scripts/dev.mjs check --profile full"
   },
   "dependencies": {
     "lucide": "^0.577.0"

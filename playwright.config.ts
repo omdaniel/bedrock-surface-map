@@ -11,6 +11,8 @@ export default defineConfig({
     baseURL,
     viewport: { width: 1280, height: 800 },
     deviceScaleFactor: 1,
+    trace: "retain-on-failure",
+    screenshot: "only-on-failure",
     channel: process.env.CI ? undefined : "chrome",
     headless: !process.env.CI,
     launchOptions: {

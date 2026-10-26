@@ -44,7 +44,7 @@ server**, and its simulated edits do not alter the original world.
 
 [Install a snapshot viewer](docs/INSTALL.md) ·
 [Run locally or import your world](docs/GETTING_STARTED.md) ·
-[Development and architecture](docs/DEVELOPMENT.md) ·
+[Development and architecture](docs/DEVELOPMENT.md) · [Contributing](CONTRIBUTING.md) ·
 [Live players](docs/TRACKING.md) · [Live terrain](docs/TERRAIN-SYNC.md)
 
 **Current boundaries:** Overworld surfaces, not full 3D interiors or a world

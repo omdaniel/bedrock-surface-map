@@ -1,8 +1,18 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const directory = resolve(".local/terrain-large");
+
+async function expectFrameAfter(page: Page, previousDraws: number) {
+  // Software WebGPU can spend longer than the default assertion timeout on a
+  // replacement height window. This checks eventual presentation, not FPS.
+  await expect
+    .poll(() => page.evaluate(() => window.__map.state().draws), {
+      timeout: 45000,
+    })
+    .toBeGreaterThan(previousDraws);
+}
 
 test("sun elevation coarsens shadow coverage without moving the camera", async ({
   page,
@@ -99,11 +109,10 @@ test("sun elevation coarsens shadow coverage without moving the camera", async (
     rejected.elevation,
   ]).toEqual([before.cx, before.cz, before.scale, 15]);
   expect(rejected.memory).toBeLessThanOrEqual(256 * 1024 * 1024);
+  const beforeZoom = await page.evaluate(() => window.__map.state().draws);
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
   await expect(page.locator("#message")).toBeHidden();
-  await expect
-    .poll(() => page.evaluate(() => window.__map.state().draws))
-    .toBeGreaterThan(before.draws);
+  await expectFrameAfter(page, beforeZoom);
   const zoomed = await page.evaluate(() => window.__map.state());
   expect(zoomed.scale).toBeGreaterThan(before.scale);
   await page.locator("#map").focus();
@@ -111,9 +120,7 @@ test("sun elevation coarsens shadow coverage without moving the camera", async (
   await expect
     .poll(() => page.evaluate(() => window.__map.state().cx))
     .toBeGreaterThan(zoomed.cx);
-  await expect
-    .poll(() => page.evaluate(() => window.__map.state().draws))
-    .toBeGreaterThan(zoomed.draws);
+  await expectFrameAfter(page, zoomed.draws);
   // A supported elevation still applies and produces a frame through the same handler.
   const beforeLighting = await page.evaluate(() => window.__map.state().draws);
   await slider.focus();
@@ -122,9 +129,7 @@ test("sun elevation coarsens shadow coverage without moving the camera", async (
   await expect
     .poll(() => page.evaluate(() => window.__map.state().elevation))
     .toBe(75);
-  await expect
-    .poll(() => page.evaluate(() => window.__map.state().draws))
-    .toBeGreaterThan(beforeLighting);
+  await expectFrameAfter(page, beforeLighting);
   expect(
     await page.evaluate(() => window.__map.state().memory),
   ).toBeLessThanOrEqual(256 * 1024 * 1024);
@@ -273,10 +278,9 @@ for (const factor of [4, 16]) {
       expect(alignment.actual[0]).toBeCloseTo(alignment.expected[0], 1);
       expect(alignment.actual[1]).toBeCloseTo(alignment.expected[1], 1);
 
+      const beforeZoom = await page.evaluate(() => window.__map.state().draws);
       await page.getByRole("button", { name: "Zoom in", exact: true }).click();
-      await expect
-        .poll(() => page.evaluate(() => window.__map.state().draws))
-        .toBeGreaterThan(before.draws);
+      await expectFrameAfter(page, beforeZoom);
       await expect(page.locator("#message")).toBeHidden();
       expect(
         await page.evaluate(() => window.__map.state().scale),
@@ -289,9 +293,7 @@ for (const factor of [4, 16]) {
     await expect
       .poll(() => page.evaluate(() => window.__map.state().cx))
       .toBeGreaterThan(beforePan.cx);
-    await expect
-      .poll(() => page.evaluate(() => window.__map.state().draws))
-      .toBeGreaterThan(beforePan.draws);
+    await expectFrameAfter(page, beforePan.draws);
     await page.evaluate(() =>
       window.__map.zoom(0.8 / window.__map.state().scale),
     );
@@ -308,9 +310,7 @@ for (const factor of [4, 16]) {
     await expect
       .poll(() => page.evaluate(() => window.__map.state().scale))
       .toBe(beforeResize.scale);
-    await expect
-      .poll(() => page.evaluate(() => window.__map.state().draws))
-      .toBeGreaterThan(beforeResize.draws);
+    await expectFrameAfter(page, beforeResize.draws);
     await expect
       .poll(() =>
         page.evaluate(() => {

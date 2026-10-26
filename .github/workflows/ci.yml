@@ -11,7 +11,7 @@ concurrency:
 jobs:
   synthetic:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
       XDG_RUNTIME_DIR: /tmp
@@ -20,17 +20,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '26.8.1'
+          node-version-file: .node-version
           cache: npm
       - run: rustup toolchain install 1.92.0 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
       - run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 xvfb xauth
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - run: cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warnings
-      - run: cargo test --workspace --locked
       - name: Install SHA-verified wasm-bindgen 0.2.127
         run: |
           curl -fL --retry 3 --max-time 180 https://github.com/wasm-bindgen/wasm-bindgen/releases/download/0.2.127/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl.tar.gz -o "$RUNNER_TEMP/wasm-bindgen.tgz"
@@ -38,24 +34,17 @@ jobs:
           tar -xzf "$RUNNER_TEMP/wasm-bindgen.tgz" -C "$RUNNER_TEMP"
           install -m 0755 "$RUNNER_TEMP/wasm-bindgen-0.2.127-x86_64-unknown-linux-musl/wasm-bindgen" "$HOME/.cargo/bin/wasm-bindgen"
       - run: npm ci
-      - run: npm run secrets:check
-      - run: npm run format:check
-      - run: npm run config:test
-      - run: npm run release:test
-      - run: npm run build
-      - run: npm run tracking:build
-      - run: npm run tracking:test
-      - run: npm run terrain:build
-      - run: npm run terrain:test
-      - run: npm run demo:test
-      - run: cargo run --locked -p surface-cli -- fixture
-      - run: cargo run --locked -p surface-cli -- fixture --coast --output web/public/maps/coast
-      - run: node scripts/terrain-fixture.mjs
       - run: npx playwright install --with-deps chromium
-      - run: xvfb-run -a -s '-screen 0 1280x900x24' npm test
-      - run: npm run demo:build
-      - run: DEMO_SELF_SERVE=1 xvfb-run -a -s '-screen 0 1920x1200x24' node scripts/check-demo.mjs
-      - run: node scripts/audit-demo.mjs
+      - name: Run the same full check as local development
+        run: xvfb-run -a -s '-screen 0 1920x1200x24' ./dev check --profile full
+      - name: Retain synthetic browser failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synthetic-browser-${{ github.sha }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Configure Pages
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
@@ -82,7 +71,7 @@ jobs:
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
-          node-version: '26.8.1'
+          node-version-file: .node-version
           cache: npm
       - run: |
           rustup toolchain install 1.92.0 --profile minimal

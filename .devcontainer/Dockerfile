@@ -3,7 +3,7 @@ FROM node:26.8.1-bookworm
 ENV CARGO_HOME=/home/node/.cargo RUSTUP_HOME=/home/node/.rustup
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl git build-essential clang cmake pkg-config \
-    libssl-dev libclang-dev libvulkan1 mesa-vulkan-drivers \
+    libssl-dev libclang-dev libvulkan1 mesa-vulkan-drivers python3 \
     && rm -rf /var/lib/apt/lists/*
 USER node
 RUN curl --fail --location --silent --show-error https://sh.rustup.rs \

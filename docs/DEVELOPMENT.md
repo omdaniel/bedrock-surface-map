@@ -46,24 +46,23 @@ Local browser checks require installed Google Chrome. Linux CI uses Playwright
 Chromium and software Vulkan as configured in the [workflow](../.github/workflows/ci.yml).
 
 ```sh
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo clippy -p surface-gpu --target wasm32-unknown-unknown --locked -- -D warnings
-cargo test --workspace --locked
-npm run format:check
-npm run config:test
-npm run release:test
-npm run build
-npm run tracking:build
-npm run tracking:test
-npm run terrain:build
-npm run terrain:test
-npm run demo:test
-npm run fixture
-cargo run --locked -p surface-cli -- fixture --coast --output web/public/maps/coast
-node scripts/terrain-fixture.mjs
-npm test
+./dev check                         # formatting, types, JS tests and core Rust tests
+./dev test -- tests/dial.spec.ts     # one browser test file, with its fixtures prepared
+./dev check --profile full          # the same complete source/demo check used by CI
 ```
+
+`npm test -- tests/dial.spec.ts` is equivalent to `./dev test -- ...`;
+`npm run verify` is equivalent to the full check. Browser tests build WASM and
+prepare the basic, coastline and live-terrain fixtures automatically. `./dev
+fixtures` prepares those datasets without opening a browser. For repeated browser
+iterations after preparation, `npx --no-install playwright test tests/dial.spec.ts`
+reuses them. Set `SURFACE_TEST_PORT` if the default test port 5173 is occupied;
+do not point tests at a running production viewer.
+
+The full check also builds and tests the reviewed public demo under its Pages
+subpath, and audits its output. It can download that hash-pinned public dataset.
+It does not require Zig or the cross-compilation tools used for release packaging.
+Use `./dev package --help` and [release CI](CI.md) only when building releases.
 
 CI uses synthetic fixtures and software Vulkan; its public-demo checks use only
 the reviewed release packet. Neither requires homelab credentials, raw worlds,
@@ -75,6 +74,8 @@ must be explicitly enabled; restore its previous setting after testing.
 Local screenshots and raw reports stay ignored, except reviewed public-demo media.
 
 ## Maintenance
+
+See [contributing](../CONTRIBUTING.md) for the short change and bug-report workflow.
 
 Use small tested commits on a `codex/` branch and open a PR. Dependency changes
 update lockfiles and require native/WASM and browser checks. Parser changes also

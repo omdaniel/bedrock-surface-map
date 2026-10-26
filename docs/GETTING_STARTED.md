@@ -12,9 +12,15 @@ paused. No login, certificate installation, or Minecraft server is needed.
 
 ## Run the Demo Locally
 
-Install Git, Node.js 26.8.1, rustup, and your platform's native build tools
-(Xcode Command Line Tools on macOS). Rust 1.92.0 is pinned by rust-toolchain.toml.
-Install the pinned tooling without downloading Minecraft textures:
+This developer path supports Apple Silicon macOS and Linux AMD64/ARM64.
+Install Git, Node.js **26.8.1** (also in `.node-version`) and rustup. Native
+prerequisites are Python 3, Xcode Command Line Tools and CMake on macOS; on Ubuntu use
+`build-essential clang cmake pkg-config libssl-dev libclang-dev`.
+Python 3 is needed for archive checks and optional Git hooks. Windows contributors
+use WSL2/Linux. The optional [development container](../.devcontainer/Dockerfile)
+provides the Linux toolchain and runs the same `./dev setup` after creation.
+`./dev setup` installs the Rust 1.92.0 toolchain, WASM target, pinned project-local
+tools and npm dependencies. It does not download Minecraft textures.
 
 ```sh
 git clone https://github.com/omdaniel/bedrock-surface-map.git
@@ -24,7 +30,17 @@ cd bedrock-surface-map
 ./dev demo
 ```
 
-Open the loopback URL printed by Vite. This source path creates a synthetic
+`doctor` is read-only: it lists missing tools and fixes, exiting nonzero when
+setup is incomplete. `./dev doctor --json` provides the same result as JSON.
+Run setup to address its project-tool findings, then rerun doctor. Setup can
+take several minutes on a fresh machine. It does not change Git hooks unless
+you add `--install-hooks`; `--offline` requires previously cached dependencies.
+Use `./dev --help` for commands and supported options.
+`npm run bootstrap` is an alias for setup. The optional hooks do not alter global
+Git preferences or replace a different repository hook path.
+
+Open the loopback URL printed by Vite; use `./dev demo --port 5181` to select a
+different port. This source path creates a synthetic
 fixture and does not download Minecraft assets. The public showcase is a
 separate reviewed demo packet; `npm run demo:build` creates `.local/demo-dist`.
 
