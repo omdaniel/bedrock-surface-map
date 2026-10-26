@@ -57,11 +57,11 @@
 }
 #players-panel {
   position: absolute;
-  top: 14px;
+  top: calc(14px + var(--message-height, 0px));
   right: 18px;
   width: 300px;
   max-width: calc(100% - 36px);
-  max-height: calc(100% - 28px);
+  max-height: calc(100% - 28px - var(--message-height, 0px));
   overflow: auto;
   border: 1px solid #687669;
   border-radius: 5px;

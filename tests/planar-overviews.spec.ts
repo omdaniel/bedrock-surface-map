@@ -98,19 +98,13 @@ function fixedFixtureBytes(name: "fixture" | "coast") {
   );
 }
 
-function coastPixels(png: PNG, s: State, frame = png) {
+function coastPixels(png: PNG, s: State) {
   for (let rz = -2; rz < 2; rz++) {
     for (let rx = -2; rx < 2; rx++) {
       const x = rx * 256 + 96,
         z = rz * 256 + 104;
-      // A preparation message may resize the CSS canvas while its last rendered
-      // texture is retained. Project using that frame's dimensions, then scale.
-      const px = Math.floor(
-        ((frame.width / 2 + (x - s.cx) * s.scale) * png.width) / frame.width,
-      );
-      const py = Math.floor(
-        ((frame.height / 2 + (z - s.cz) * s.scale) * png.height) / frame.height,
-      );
+      const px = Math.floor(png.width / 2 + (x - s.cx) * s.scale);
+      const py = Math.floor(png.height / 2 + (z - s.cz) * s.scale);
       const i = (py * png.width + px) * 4;
       const [r, g, b] = png.data.subarray(i, i + 3);
       const shore = x + z + Math.trunc(Math.sin(x / 90) * 32);
@@ -236,9 +230,26 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   let hold = false;
   let held = 0;
   let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
+  let gate: Promise<void>;
+  const holdRequests = () => {
+    hold = true;
+    gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  };
+  const geometry = () =>
+    page.evaluate(() => {
+      const canvas = document.querySelector<HTMLCanvasElement>("#map")!;
+      return {
+        viewport: document
+          .querySelector("main")!
+          .getBoundingClientRect()
+          .toJSON(),
+        canvas: canvas.getBoundingClientRect().toJSON(),
+        width: canvas.width,
+        height: canvas.height,
+      };
+    });
   await page.route("**/maps/coast/regions/**", async (route) => {
     if (hold) {
       held++;
@@ -250,24 +261,30 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   await settled(page, 1, 16);
   await zoomTo(page, 0.500001);
   const fine = await settled(page, 1, 16);
+  const originalGeometry = await geometry();
   const original = await screenshot(page, info, "coast-fine");
   coastPixels(original, fine);
-  hold = true;
+  holdRequests();
   try {
     await zoomTo(page, 0.5);
     await expect.poll(() => held).toBeGreaterThan(0);
     const replacing = await state(page);
     expect(replacing.switchingResolution).toBe(true);
     expect(replacing.pending).toBeGreaterThan(0);
+    await expect(page.locator("#message-text")).toHaveText(
+      "Preparing 2 × 2 overview…",
+    );
+    expect(await geometry()).toEqual(originalGeometry);
     expect(replacing.draws).toBe(fine.draws);
     const retained = await screenshot(page, info, "coast-replacing");
-    coastPixels(retained, fine, original);
+    coastPixels(retained, fine);
     expect((await state(page)).draws).toBe(fine.draws);
   } finally {
     hold = false;
     release();
   }
   const coarse = await settled(page, 2, 16);
+  expect(await geometry()).toEqual(originalGeometry);
   expect(camera(coarse)).toEqual(camera(fine));
   expect(coarse.scale).toBeCloseTo(0.5, 10);
   const fixed = fixedFixtureBytes("coast");
@@ -276,8 +293,22 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   expect(ratio).toBeLessThan(0.251);
   const png = await screenshot(page, info, "coast-stride-2");
   coastPixels(png, coarse);
-  await zoomTo(page, 0.500001);
+  held = 0;
+  holdRequests();
+  try {
+    await zoomTo(page, 0.500001);
+    await expect.poll(() => held).toBeGreaterThan(0);
+    await expect(page.locator("#message-text")).toHaveText(
+      "Preparing full detail…",
+    );
+    expect(await geometry()).toEqual(originalGeometry);
+    expect((await state(page)).draws).toBe(coarse.draws);
+  } finally {
+    hold = false;
+    release();
+  }
   const restored = await settled(page, 1, 16);
+  expect(await geometry()).toEqual(originalGeometry);
   expect(camera(restored)).toEqual(camera(fine));
   expect(restored.memory).toBe(fine.memory);
   const restoredPixels = await screenshot(page, info, "coast-restored");

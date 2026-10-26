@@ -116,6 +116,7 @@ texture, so diagonal ledges do not acquire enlarged vertical block faces.
 These nadir surfaces use ordinary region quads, with no mixed-resolution mesh
 stitching. Resolution changes release the previous records, picking arrays and
 height resources; the last complete frame remains visible during preparation.
+Preparation and error notices overlay the map without resizing its viewport.
 
 ## Height Coverage and Caching
 
