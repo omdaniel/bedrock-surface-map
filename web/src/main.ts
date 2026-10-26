@@ -352,13 +352,23 @@ function updateScale() {
   el.querySelector("div")!.style.width = `${blocks * scale}px`;
   el.querySelector("span")!.textContent = `${blocks.toLocaleString()} blocks`;
 }
+function canDraw() {
+  return (
+    renderer &&
+    !disposed &&
+    !switchingResolution &&
+    heightStride === stride &&
+    (!terrain || terrain.covers(viewport(), elevation))
+  );
+}
 function requestDraw() {
-  if (frameQueued || !renderer || disposed) return;
-  if (switchingResolution || heightStride !== stride) return;
-  if (terrain && !terrain.covers(viewport(), elevation)) return;
+  if (frameQueued || !canDraw()) return;
   frameQueued = true;
   requestAnimationFrame(() => {
     frameQueued = false;
+    // Input can change resolution after this frame was queued. Never clear the
+    // last valid image using released records or a partial replacement.
+    if (!canDraw()) return;
     try {
       const dpr = Math.min(devicePixelRatio, 2);
       const w = Math.round(main.clientWidth * dpr),

@@ -266,7 +266,13 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   coastPixels(original, fine);
   holdRequests();
   try {
-    await zoomTo(page, 0.5);
+    // A wheel event can cross the threshold while a pan frame is already queued.
+    // Queue both actions in one turn so the pending frame cannot run first.
+    await page.evaluate(() => {
+      window.__map.pan(1, 0);
+      window.__map.pan(-1, 0);
+      window.__map.zoom(0.5 / window.__map.state().scale);
+    });
     await expect.poll(() => held).toBeGreaterThan(0);
     const replacing = await state(page);
     expect(replacing.switchingResolution).toBe(true);
@@ -275,9 +281,9 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
       "Preparing 2 × 2 overview…",
     );
     expect(await geometry()).toEqual(originalGeometry);
-    expect(replacing.draws).toBe(fine.draws);
     const retained = await screenshot(page, info, "coast-replacing");
     coastPixels(retained, fine);
+    expect(replacing.draws).toBe(fine.draws);
     expect((await state(page)).draws).toBe(fine.draws);
   } finally {
     hold = false;
@@ -296,12 +302,17 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   held = 0;
   holdRequests();
   try {
-    await zoomTo(page, 0.500001);
+    await page.evaluate(() => {
+      window.__map.pan(1, 0);
+      window.__map.pan(-1, 0);
+      window.__map.zoom(0.500001 / window.__map.state().scale);
+    });
     await expect.poll(() => held).toBeGreaterThan(0);
     await expect(page.locator("#message-text")).toHaveText(
       "Preparing full detail…",
     );
     expect(await geometry()).toEqual(originalGeometry);
+    coastPixels(await screenshot(page, info, "coast-refining"), coarse);
     expect((await state(page)).draws).toBe(coarse.draws);
   } finally {
     hold = false;
