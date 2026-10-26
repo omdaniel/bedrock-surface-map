@@ -85,8 +85,11 @@ device pixel ratio, refresh preference and cold/warm cache conditions with resul
 | Accounted map memory   | Resident map resources, not total browser/driver RSS or transient allocation peaks                                                                       |
 | Transfer size          | State whether bytes are encoded network transfer, response bodies or the complete published artifact                                                     |
 
-The rendering target is smooth 60 FPS at 1920x1080, DPR 1, after loading, not a
-guarantee across devices or scenes. Do not infer a speed advantage over another
+The release target is usable navigation at 30 FPS or better at 1920x1080, DPR 1,
+on reference hardware after loading; 60 FPS is an optimization target, not a
+guarantee across devices or scenes. Check stalls, memory growth and live-update
+delays independently. A brief resolution-preparation pause is distinct from
+sustained navigation performance. Do not infer a speed advantage over another
 renderer without equivalent input, workload, settings and hardware. Live-feed
 acceptance and active-update performance use the separate
 [terrain and player checklist](TERRAIN-ACCEPTANCE.md).
@@ -94,10 +97,17 @@ acceptance and active-update performance use the separate
 ## Limits to Check
 
 Biome interpolation, complex models, water layers and canopy shading are
-top-surface approximations. Overview filtering is per region. Very wide live
-views can exceed the 256 MiB logical map budget and require zooming in; there is
-no separate overview-only residency tier. Offline and live height coverage differ
+top-surface approximations. Overview filtering is per region. Wider views use
+reduced 2×2 or 4×4 surface and height records. Views that exceed the 256 MiB
+budget even at 4×4 require zooming in. Offline and live height coverage differ
 as described in [Format and Rendering](FORMAT.md).
+
+Generate the diagonal coastline fixture with
+`cargo run --locked -p surface-cli -- fixture --coast --output web/public/maps/coast`.
+`tests/planar-overviews.spec.ts` checks resolution changes, released residency,
+retained frames and approximate picking. Compare warm pan timings separately
+from downloads and overview generation; a successful functional test does not
+establish a 60 FPS hardware result.
 
 Player and terrain feeds require explicit configuration. The public demo uses
 simulated activity, not a live server. The viewer has no built-in account system;

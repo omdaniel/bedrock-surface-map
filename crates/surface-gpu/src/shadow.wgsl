@@ -19,7 +19,7 @@ fn ray_shadow(start:vec2f,y:f32)->f32 {
         if any(position<vec2f(0)) || any(position>=p.bounds.zw) {return 0.0;}
         let span=f32(1u<<level);
         let cell=vec2u(floor(position/span));
-        let ray_y=y+distance*p.screen.w+0.0001;
+        let ray_y=y+distance*p.screen.w*max(1.0,p.relief.z)+0.0001;
         let high=maximum_height(level,cell);
         if high>ray_y {
             if level>0u {level-=1u;continue;}

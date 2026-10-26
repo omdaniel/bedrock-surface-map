@@ -1,3 +1,5 @@
+pub mod height_field;
+
 pub const SHADOW_SHADER: &str = include_str!("shadow.wgsl");
 pub const APPEARANCE_SHADER: &str = include_str!("appearance.wgsl");
 pub const RELIEF_SHADER: &str = include_str!("relief.wgsl");

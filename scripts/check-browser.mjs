@@ -26,7 +26,16 @@ try {
   await page.screenshot({ path: config.output + "/chrome-overview.png" });
   const overview = await page.evaluate(() => window.__map.state());
   await page.evaluate(() => window.__map.spawn());
-  await page.waitForFunction(() => window.__map.state().pending === 0);
+  await page.waitForFunction(() => {
+    const s = window.__map.state();
+    return (
+      s.cached > 0 &&
+      !s.switchingResolution &&
+      s.pending === 0 &&
+      !s.renderPending &&
+      !s.terrain?.busy
+    );
+  });
   await page.mouse.move(960, 600);
   await page.screenshot({ path: config.output + "/chrome-detail.png" });
   const timings = await page.evaluate(() => window.__map.measure());

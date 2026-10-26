@@ -56,6 +56,7 @@ export interface TerrainUpdate {
   patches: ChunkPatch[];
   replacements: { ref: RegionRef; words: Uint32Array }[];
   window: number[];
+  stride: number;
   heights?: Float32Array;
   heightPatches: { rx: number; rz: number; values: Float32Array }[];
   pages: Map<string, { sha: string; data: Int16Array }>;
@@ -131,6 +132,7 @@ export class TerrainClient {
   root: LiveRoot;
   manifest!: Manifest;
   window: number[] = [];
+  stride = 1;
   pages = new Map<string, { sha: string; data: Int16Array }>();
   etag: string | null = null;
   private indexes = new Map<string, RegionIndex>();
@@ -222,6 +224,7 @@ export class TerrainClient {
     return this.manifest;
   }
   get memoryBytes() {
+    // Shared content is counted per region to keep the budget conservative.
     return [...this.pages.values()].reduce((n, p) => n + p.data.byteLength, 0);
   }
   needed(view: View, elevation: number, root = this.root, padding = 0) {
@@ -285,7 +288,10 @@ export class TerrainClient {
     elevation: number,
     poll: boolean,
     availableHeightBytes: number,
+    stride = 1,
   ): Promise<TerrainUpdate> {
+    if (stride !== 1 && stride !== 2 && stride !== 4)
+      throw Error("Invalid terrain stride");
     let root = this.root,
       etag = this.etag;
     if (poll) {
@@ -341,14 +347,23 @@ export class TerrainClient {
         Math.floor((view.left + view.right) / 512) * 256 + 256,
         Math.floor((view.top + view.bottom) / 512) * 256 + 256,
       ];
-    if (heightWindowBytes(window) > availableHeightBytes) window = required;
+    if (heightWindowBytes(window, stride) > availableHeightBytes)
+      window = required;
     if (
       count(window) <= 0 ||
-      count(window) > 16 * 1024 * 1024 ||
-      heightWindowBytes(window) > availableHeightBytes
+      count(window) / (stride * stride) > 16 * 1024 * 1024 ||
+      heightWindowBytes(window, stride) > availableHeightBytes
     )
       throw Error("Height coverage exceeds the 256 MiB cache. Zoom in.");
+    const rebuildHeights =
+      stride !== this.stride || !equal(window, this.window);
+    const pageWidth = 256 / stride;
     const pages = new Map<string, { sha: string; data: Int16Array }>();
+    // Bound reuse to the committed and requested windows at this resolution.
+    const pagesBySha = new Map<string, { sha: string; data: Int16Array }>();
+    if (stride === this.stride)
+      for (const page of this.pages.values()) pagesBySha.set(page.sha, page);
+    const patchValues = new Map<string, Float32Array>();
     const heightPatches: TerrainUpdate["heightPatches"] = [];
     for (const r of root.regions) {
       if (
@@ -358,36 +373,54 @@ export class TerrainClient {
         r.rz * 256 >= window[3]
       )
         continue;
-      let page = this.pages.get(key(r));
-      if (page?.sha !== r.heights.sha256) {
+      const coord = key(r);
+      const previous =
+        stride === this.stride ? this.pages.get(coord) : undefined;
+      let page = pagesBySha.get(r.heights.sha256);
+      if (!page) {
         const data = (await this.decode({
           kind: "heights",
           url: this.asset(r.heights.url),
           sha256: r.heights.sha256,
           columns: 65536,
+          width: 256,
+          stride,
         })) as Float32Array;
+        if (data.length !== pageWidth * pageWidth)
+          throw Error("Invalid terrain height page length");
         page = {
           sha: r.heights.sha256,
           data: Int16Array.from(data, (v) =>
             v < -900000 ? -32768 : Math.round(v * 16),
           ),
         };
-        heightPatches.push({ rx: r.rx, rz: r.rz, values: data });
+        pagesBySha.set(page.sha, page);
+        if (!rebuildHeights) patchValues.set(page.sha, data);
         this.bytesReceived += r.heights.bytes;
       }
-      pages.set(key(r), page);
+      if (!rebuildHeights && previous?.sha !== page.sha) {
+        let values = patchValues.get(page.sha);
+        if (!values) {
+          values = Float32Array.from(page.data, (h) =>
+            h === -32768 ? -1e6 : h / 16,
+          );
+          patchValues.set(page.sha, values);
+        }
+        heightPatches.push({ rx: r.rx, rz: r.rz, values });
+      }
+      pages.set(coord, page);
     }
     let heights: Float32Array | undefined;
-    if (!equal(window, this.window)) {
-      const width = window[2] - window[0];
-      heights = new Float32Array(count(window)).fill(-1e6);
+    if (rebuildHeights) {
+      const width = (window[2] - window[0]) / stride;
+      heights = new Float32Array(count(window) / (stride * stride)).fill(-1e6);
       for (const [coord, page] of pages) {
         const [rx, rz] = coord.split(",").map(Number);
-        const ox = rx * 256 - window[0],
-          oz = rz * 256 - window[1];
-        for (let z = 0; z < 256; z++)
-          for (let x = 0; x < 256; x++) {
-            const h = page.data[z * 256 + x];
+        const ox = (rx * 256 - window[0]) / stride,
+          oz = (rz * 256 - window[1]) / stride;
+        for (let z = 0; z < pageWidth; z++)
+          for (let x = 0; x < pageWidth; x++) {
+            const h = page.data[z * pageWidth + x];
             heights[(oz + z) * width + ox + x] = h === -32768 ? -1e6 : h / 16;
           }
       }
@@ -413,6 +446,7 @@ export class TerrainClient {
             rx: cx,
             rz: cz,
             materials: manifest.materials.length,
+            stride,
           })) as Uint32Array;
           staged.push({ cx, cz, words });
           this.bytesReceived += ref.bytes;
@@ -428,6 +462,7 @@ export class TerrainClient {
           rx: r.rx,
           rz: r.rz,
           materials: manifest.materials.length,
+          stride,
         })) as Uint32Array;
         replacements.push({ ref: r, words });
         this.bytesReceived += r.bytes;
@@ -440,6 +475,7 @@ export class TerrainClient {
       patches,
       replacements,
       window,
+      stride,
       heights,
       heightPatches,
       pages,
@@ -450,6 +486,7 @@ export class TerrainClient {
     this.manifest = update.manifest;
     this.etag = update.etag;
     this.window = update.window;
+    this.stride = update.stride;
     this.pages = update.pages;
     this.changedChunks += update.patches.length;
   }

@@ -21,8 +21,12 @@ import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
 import { DemoPlayback } from "./demo";
 import {
   MAP_CACHE_BYTES,
-  REGION_BYTES,
-  REGION_GPU_BYTES,
+  WORKING_BYTES,
+  regionBytes,
+  regionGpuBytes,
+  scaleBarBlocks,
+  chooseStride,
+  type SurfaceStride,
   heightWindowBytes,
 } from "./cache-budget";
 import "./style.css";
@@ -76,7 +80,6 @@ const $ = <T extends HTMLElement = HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 const canvas = $<HTMLCanvasElement>("map");
 const main = canvas.parentElement!;
-app.insertBefore($("message"), main);
 let manifest: Manifest;
 let renderer: Renderer;
 let base: URL;
@@ -87,8 +90,13 @@ let terrainBusy = false,
   terrainPollAgain = false;
 let terrainTimer: ReturnType<typeof setTimeout> | undefined;
 let terrainFailures = 0;
-let supportedView: [number, number, number, number] | null = null;
 let capacityWarning = false;
+let stride: SurfaceStride = 1;
+let heightStride = 1;
+let resolutionEpoch = 0;
+let switchingResolution = false;
+let offlineHeightBusy = false;
+let lastMeasurement: unknown = null;
 let cx = 0,
   cz = 0,
   scale = 1,
@@ -153,6 +161,7 @@ const playerLayer = new PlayerLayer({
       )
         ? null
         : false;
+    if (stride !== 1) return null;
     const ix =
       (((Math.floor(z) % 256) + 256) % 256) * 256 +
       (((Math.floor(x) % 256) + 256) % 256);
@@ -221,7 +230,7 @@ function memory() {
     : 0;
 }
 function makeSpace() {
-  while (memory() + REGION_BYTES > MAP_CACHE_BYTES) {
+  while (memory() + regionBytes(stride) + WORKING_BYTES > MAP_CACHE_BYTES) {
     const victim = [...cache.entries()]
       .filter(([, v]) => !visible(v.ref))
       .sort((a, b) => a[1].last - b[1].last)[0];
@@ -237,6 +246,8 @@ function loadRegions() {
     disposed ||
     renderer.is_lost() ||
     terrainBusy ||
+    offlineHeightBusy ||
+    heightStride !== stride ||
     needsHeightWindow()
   )
     return;
@@ -259,6 +270,7 @@ function loadRegions() {
     }
     active++;
     loading.add(k);
+    const epoch = resolutionEpoch;
     void decode({
       kind: "region",
       url: asset(r.url),
@@ -266,26 +278,24 @@ function loadRegions() {
       rx: r.rx,
       rz: r.rz,
       materials: manifest.materials.length,
+      stride,
     })
       .then((data) => {
         if (
           disposed ||
+          epoch !== resolutionEpoch ||
           terrainBusy ||
           !manifest.regions.some((v) => key(v) === k && v.sha256 === r.sha256)
         )
           return;
         const words = data as Uint32Array;
         if (!makeSpace()) return;
-        renderer.add_region(r.rx, r.rz, words);
-        const pick = new Int32Array(65536 * 2);
-        for (let i = 0; i < 65536; i++) {
-          pick[i * 2] = words[i * 8 + 7] === 1 ? words[i * 8] | 0 : -32768;
-          pick[i * 2 + 1] = words[i * 8 + 1];
-        }
-        cache.set(k, { ref: r, pick, last: performance.now() });
+        renderer.add_region(r.rx, r.rz, words, stride);
+        updatePick(r, words);
         requestDraw();
       })
       .catch((e) => {
+        if (epoch !== resolutionEpoch) return;
         failures.add(k);
         message(String(e), true);
       })
@@ -302,6 +312,14 @@ function updateStatus() {
   if (!manifest) return;
   const wanted = manifest.regions.filter(visible);
   const ready = wanted.filter((r) => cache.has(key(r))).length;
+  if (
+    switchingResolution &&
+    ready === wanted.length &&
+    heightStride === stride
+  ) {
+    switchingResolution = false;
+    requestDraw();
+  }
   $("load-state").textContent =
     `${ready} / ${wanted.length} regions · ${Math.round(scale * 100)}%`;
   if (
@@ -319,23 +337,34 @@ function updateStatus() {
 function updateMetrics() {
   if (!renderer) return;
   $("metrics").textContent =
-    `Cached regions  ${cache.size}\nMap memory      ${(memory() / 1048576).toFixed(1)} MiB\nWorker decode   ${totalDecode.toFixed(0)} ms\nFirst region    ${firstVisible?.toFixed(0) ?? "—"} ms\nFrames drawn    ${draws}`;
+    `Surface step    ${stride} × ${stride} blocks\nCached regions  ${cache.size}\nMap memory      ${(memory() / 1048576).toFixed(1)} MiB\nWorking reserve ${WORKING_BYTES / 1048576} MiB\nWorker decode   ${totalDecode.toFixed(0)} ms\nFirst region    ${firstVisible?.toFixed(0) ?? "—"} ms\nFrames drawn    ${draws}`;
+  if (lastMeasurement)
+    $("metrics").textContent +=
+      `\n\n${JSON.stringify(lastMeasurement, null, 2)}`;
 }
 function updateScale() {
-  const maxBlocks = 100 / scale;
-  const pow = 10 ** Math.floor(Math.log10(maxBlocks));
-  const blocks =
-    [5, 2, 1].map((v) => v * pow).find((v) => v <= maxBlocks) ?? pow / 2;
+  const blocks = scaleBarBlocks(scale);
   const el = $("scale");
   el.querySelector("div")!.style.width = `${blocks * scale}px`;
   el.querySelector("span")!.textContent = `${blocks.toLocaleString()} blocks`;
 }
+function canDraw() {
+  return (
+    renderer &&
+    !disposed &&
+    !switchingResolution &&
+    heightStride === stride &&
+    (!terrain || terrain.covers(viewport(), elevation))
+  );
+}
 function requestDraw() {
-  if (frameQueued || !renderer || disposed) return;
-  if (terrain && !terrain.covers(viewport(), elevation)) return;
+  if (frameQueued || !canDraw()) return;
   frameQueued = true;
   requestAnimationFrame(() => {
     frameQueued = false;
+    // Input can change resolution after this frame was queued. Never clear the
+    // last valid image using released records or a partial replacement.
+    if (!canDraw()) return;
     try {
       const dpr = Math.min(devicePixelRatio, 2);
       const w = Math.round(main.clientWidth * dpr),
@@ -370,44 +399,84 @@ function requestDraw() {
 }
 function fixedMapBytes() {
   return (
-    renderer.gpu_bytes() - renderer.cpu_bytes() - cache.size * REGION_GPU_BYTES
+    renderer.gpu_bytes() -
+    renderer.height_bytes() -
+    cache.size * regionGpuBytes(stride)
   );
 }
-function viewFits() {
+function viewFits(step: SurfaceStride) {
   const heights = terrain
-    ? heightWindowBytes(terrain.needed(viewport(), elevation))
-    : renderer.cpu_bytes() * 2;
+    ? heightWindowBytes(terrain.needed(viewport(), elevation), step)
+    : heightWindowBytes(manifest.bounds, step);
   return (
     fixedMapBytes() +
       heights +
-      manifest.regions.filter(visible).length * REGION_BYTES <=
-    MAP_CACHE_BYTES
+      manifest.regions.filter(visible).length * regionBytes(step) <=
+    MAP_CACHE_BYTES - WORKING_BYTES
   );
 }
-function admitView(resized: boolean) {
-  if (viewFits()) {
-    supportedView = [cx, cz, scale, elevation];
-    if (!resized) capacityWarning = false;
-    return true;
+function selectResolution() {
+  const next = chooseStride(scale, viewFits);
+  capacityWarning = !viewFits(next);
+  if (capacityWarning) {
+    message(
+      "This view exceeds the available overview memory. Zoom in for more detail.",
+    );
+    return false;
   }
-  if (supportedView) [cx, cz, scale, elevation] = supportedView;
-  // A resized viewport can outgrow the last supported camera too.
-  while (!viewFits() && scale < 80) scale = Math.min(80, scale * 1.5);
-  $<HTMLInputElement>("elevation").value = String(elevation);
-  $("elevation-value").textContent = `${elevation}\u00b0`;
-  capacityWarning = true;
-  message(
-    "Visible area exceeds the 256 MiB cache. Keeping a supported view. Zoom in for more detail.",
-  );
-  if (!viewFits()) return false;
-  supportedView = [cx, cz, scale, elevation];
+  if (next !== stride) {
+    for (const c of cache.values()) renderer.remove_region(c.ref.rx, c.ref.rz);
+    cache.clear();
+    stride = next;
+    resolutionEpoch++;
+    failures.clear();
+    switchingResolution = true;
+    message(
+      `Preparing ${stride === 1 ? "full detail" : `${stride} × ${stride} overview`}…`,
+    );
+  }
   return true;
 }
-function changed(resized = false) {
-  if (!renderer || !manifest || !admitView(resized)) return;
+async function updateOfflineHeights() {
+  if (offlineHeightBusy || heightStride === stride) return;
+  offlineHeightBusy = true;
+  const step = stride;
+  try {
+    const heights = await decode({
+      kind: "heights",
+      url: asset(manifest.heights),
+      sha256: manifest.heights_sha256,
+      columns:
+        (manifest.bounds[2] - manifest.bounds[0]) *
+        (manifest.bounds[3] - manifest.bounds[1]),
+      width: manifest.bounds[2] - manifest.bounds[0],
+      stride: step,
+    });
+    if (step !== stride || disposed) return;
+    renderer.set_height_window(
+      new Int32Array(manifest.bounds),
+      heights as Float32Array,
+      step,
+    );
+    heightStride = step;
+  } catch (error) {
+    message(String(error), true);
+  } finally {
+    offlineHeightBusy = false;
+    if (step !== stride) {
+      void updateOfflineHeights();
+      return;
+    }
+    if (heightStride !== stride) return;
+    loadRegions();
+  }
+}
+function changed(_resized = false) {
+  if (!renderer || !manifest || !selectResolution()) return;
   for (const c of cache.values())
     if (visible(c.ref)) c.last = performance.now();
-  if (needsHeightWindow()) void syncTerrain();
+  if (!terrain && heightStride !== stride) void updateOfflineHeights();
+  else if (needsHeightWindow()) void syncTerrain();
   else loadRegions();
   requestDraw();
 }
@@ -425,9 +494,10 @@ function materialWords(value: Manifest) {
   );
 }
 function updatePick(ref: RegionRef, words: Uint32Array) {
-  const pick = new Int32Array(65536 * 2);
-  for (let i = 0; i < 65536; i++) {
-    pick[i * 2] = words[i * 8 + 7] === 1 ? words[i * 8] | 0 : -32768;
+  const count = words.length / 8;
+  const pick = new Int32Array(count * 2);
+  for (let i = 0; i < count; i++) {
+    pick[i * 2] = (words[i * 8 + 7] & 255) === 1 ? words[i * 8] | 0 : -32768;
     pick[i * 2 + 1] = words[i * 8 + 1];
   }
   cache.set(key(ref), { ref, pick, last: performance.now() });
@@ -439,14 +509,18 @@ function terrainBudget() {
   // Reserve all visible detail before enlarging the height window, not just
   // regions that have already arrived. Nonvisible detail can be evicted on retry.
   return (
-    MAP_CACHE_BYTES - fixedMapBytes() - (cache.size + missing) * REGION_BYTES
+    MAP_CACHE_BYTES -
+    WORKING_BYTES -
+    fixedMapBytes() -
+    (cache.size + missing) * regionBytes(stride)
   );
 }
 function needsHeightWindow() {
   return (
     terrain !== null &&
-    (!terrain.covers(viewport(), elevation) ||
-      renderer.cpu_bytes() * 2 + terrain.memoryBytes > terrainBudget())
+    (heightStride !== stride ||
+      !terrain.covers(viewport(), elevation) ||
+      renderer.height_bytes() + terrain.memoryBytes > terrainBudget())
   );
 }
 async function syncTerrain(poll = false) {
@@ -464,7 +538,7 @@ async function syncTerrain(poll = false) {
     return;
   }
   terrainBusy = true;
-  const camera = [cx, cz, scale, elevation].join(",");
+  const camera = [cx, cz, scale, elevation, stride, resolutionEpoch].join(",");
   try {
     let update;
     try {
@@ -474,6 +548,7 @@ async function syncTerrain(poll = false) {
         elevation,
         poll,
         terrainBudget(),
+        stride,
       );
     } catch (error) {
       if (!String(error).includes("cache")) throw error;
@@ -488,9 +563,12 @@ async function syncTerrain(poll = false) {
         elevation,
         poll,
         terrainBudget(),
+        stride,
       );
     }
-    if (camera !== [cx, cz, scale, elevation].join(",")) {
+    if (
+      camera !== [cx, cz, scale, elevation, stride, resolutionEpoch].join(",")
+    ) {
       terrainAgain = true;
       return;
     }
@@ -501,12 +579,16 @@ async function syncTerrain(poll = false) {
     if (changedCatalog)
       renderer.update_materials(materialWords(update.manifest));
     if (update.heights)
-      renderer.set_height_window(new Int32Array(update.window), update.heights);
+      renderer.set_height_window(
+        new Int32Array(update.window),
+        update.heights,
+        stride,
+      );
     else
       for (const p of update.heightPatches)
         renderer.patch_height_region(p.rx, p.rz, p.values);
     for (const { ref, words } of update.replacements) {
-      renderer.add_region(ref.rx, ref.rz, words);
+      renderer.add_region(ref.rx, ref.rz, words, stride);
       updatePick(ref, words);
     }
     for (const p of update.patches) {
@@ -515,17 +597,20 @@ async function syncTerrain(poll = false) {
       );
       if (!cached) continue;
       renderer.patch_chunk(p.cx, p.cz, p.words);
-      const ox = (((p.cx % 16) + 16) % 16) * 16,
-        oz = (((p.cz % 16) + 16) % 16) * 16;
-      for (let i = 0; i < 256; i++) {
-        const ix = (oz + Math.floor(i / 16)) * 256 + ox + (i % 16);
+      const side = 16 / stride;
+      const ox = (((p.cx % 16) + 16) % 16) * side,
+        oz = (((p.cz % 16) + 16) % 16) * side;
+      for (let i = 0; i < side * side; i++) {
+        const ix =
+          (oz + Math.floor(i / side)) * (256 / stride) + ox + (i % side);
         cached.pick[ix * 2] =
-          p.words[i * 8 + 7] === 1 ? p.words[i * 8] | 0 : -32768;
+          (p.words[i * 8 + 7] & 255) === 1 ? p.words[i * 8] | 0 : -32768;
         cached.pick[ix * 2 + 1] = p.words[i * 8 + 1];
       }
     }
     manifest = update.manifest;
     terrain.commit(update);
+    heightStride = stride;
     for (const r of manifest.regions) {
       const cached = cache.get(key(r));
       if (cached) cached.ref = r;
@@ -628,7 +713,9 @@ function inspect(x: number, y: number) {
   $("coordinates").textContent =
     `X ${wx.toLocaleString()}   Z ${wz.toLocaleString()}`;
   const r = cache.get(`${Math.floor(wx / 256)},${Math.floor(wz / 256)}`);
-  const ix = (((wz % 256) + 256) % 256) * 256 + (((wx % 256) + 256) % 256);
+  const ix =
+    Math.floor((((wz % 256) + 256) % 256) / stride) * (256 / stride) +
+    Math.floor((((wx % 256) + 256) % 256) / stride);
   const h = r?.pick[ix * 2];
   if (h === undefined || h === -32768) {
     $("inspect").hidden = true;
@@ -639,9 +726,12 @@ function inspect(x: number, y: number) {
   $("block-name").textContent = m.name.replaceAll("_", " ");
   $("block-pos").textContent =
     `${wx} / ${(h / 16).toFixed(h % 16 ? 1 : 0)} / ${wz}`;
-  $("block-detail").textContent = m.approximate
-    ? "Top-surface approximation"
-    : "";
+  $("block-detail").textContent =
+    stride > 1
+      ? `Approximate ${stride} × ${stride}-block surface`
+      : m.approximate
+        ? "Top-surface approximation"
+        : "";
 }
 const points = new Map<number, { x: number; y: number }>();
 let previous: { x: number; y: number; distance: number } | null = null;
@@ -852,7 +942,8 @@ async function measure() {
     height: canvas.height,
     dpr: devicePixelRatio,
   };
-  $("metrics").textContent += `\n\n${JSON.stringify(result, null, 2)}`;
+  lastMeasurement = result;
+  updateMetrics();
   return result;
 }
 $("measure").onclick = () => {
@@ -885,6 +976,9 @@ function mapState() {
     reliefStrength,
     reliefWidth,
     cached: cache.size,
+    stride,
+    switchingResolution,
+    reservedMemory: WORKING_BYTES,
     pending: active,
     renderPending: frameQueued || resizeQueued,
     failures: [...failures],
@@ -1063,41 +1157,36 @@ async function boot() {
   await init();
   let bounds = manifest.bounds;
   let heights: Float32Array;
+  cx = (bounds[0] + bounds[2]) / 2;
+  cz = (bounds[1] + bounds[3]) / 2;
+  scale = Math.min(
+    main.clientWidth / (width + 64),
+    main.clientHeight / (height + 64),
+  );
+  if (demo) [cx, cz, scale] = demo.camera;
+  const budget = (step: number) =>
+    MAP_CACHE_BYTES -
+    WORKING_BYTES -
+    manifest.regions.filter(visible).length * regionBytes(step) -
+    (rgba.byteLength * 21) / 16 -
+    manifest.materials.length * 48;
+  stride = chooseStride(
+    scale,
+    (step) =>
+      heightWindowBytes(
+        terrain ? terrain.needed(viewport(), elevation) : bounds,
+        step,
+      ) <= budget(step),
+  );
   if (terrain) {
-    cx = (bounds[0] + bounds[2]) / 2;
-    cz = (bounds[1] + bounds[3]) / 2;
-    scale = Math.min(
-      main.clientWidth / (width + 64),
-      main.clientHeight / (height + 64),
+    const update = await terrain.prepare(
+      new Map(),
+      viewport(),
+      elevation,
+      false,
+      budget(stride),
+      stride,
     );
-    if (demo) [cx, cz, scale] = demo.camera;
-    const budget = () =>
-      MAP_CACHE_BYTES -
-      manifest.regions.filter(visible).length * REGION_BYTES -
-      (rgba.byteLength * 21) / 16 -
-      manifest.materials.length * 48;
-    let update;
-    try {
-      update = await terrain.prepare(
-        new Map(),
-        viewport(),
-        elevation,
-        false,
-        budget(),
-      );
-    } catch (error) {
-      if (!String(error).includes("cache")) throw error;
-      cx = manifest.spawn[0];
-      cz = manifest.spawn[2];
-      scale = 3;
-      update = await terrain.prepare(
-        new Map(),
-        viewport(),
-        elevation,
-        false,
-        budget(),
-      );
-    }
     bounds = update.window;
     heights = update.heights!;
     terrain.commit(update);
@@ -1107,6 +1196,8 @@ async function boot() {
       url: asset(manifest.heights),
       sha256: manifest.heights_sha256,
       columns: width * height,
+      width,
+      stride,
     })) as Float32Array;
   const materials = materialWords(manifest);
   renderer = await Renderer.create(
@@ -1117,8 +1208,9 @@ async function boot() {
     new Uint8Array(rgba.buffer),
     c.width,
     c.height,
+    stride,
   );
-  supportedView = [cx, cz, scale, elevation];
+  heightStride = stride;
   window.__map.ready = true;
   if (demo) {
     demo.mount();

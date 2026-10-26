@@ -2,6 +2,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io::Read;
+pub mod reduction;
 pub mod terrain;
 
 pub const SIDE: usize = 256;

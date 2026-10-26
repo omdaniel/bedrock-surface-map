@@ -75,25 +75,63 @@ pub fn decode_region_words(
     Ok(r.gpu_words())
 }
 #[wasm_bindgen]
+pub fn reduce_surface_words(
+    words: &[u32],
+    side: usize,
+    stride: usize,
+) -> Result<Vec<u32>, JsValue> {
+    surface_core::reduction::reduce_words(words, side, stride).map_err(js_error)
+}
+#[wasm_bindgen]
 pub fn decode_heights(bytes: &[u8], columns: usize) -> Result<Vec<f32>, JsValue> {
+    decode_height_samples(bytes, columns, columns, 1)
+}
+
+#[wasm_bindgen]
+pub fn decode_height_samples(
+    bytes: &[u8],
+    columns: usize,
+    width: usize,
+    stride: usize,
+) -> Result<Vec<f32>, JsValue> {
     if columns > 16 * 1024 * 1024 {
         return Err(js_error("heightfield limit"));
+    }
+    if width == 0
+        || !columns.is_multiple_of(width)
+        || ![1, 2, 4].contains(&stride)
+        || !width.is_multiple_of(stride)
+        || !(columns / width).is_multiple_of(stride)
+    {
+        return Err(js_error("heightfield sample dimensions"));
     }
     let raw = surface_core::decompress(bytes, columns * 2).map_err(js_error)?;
     if raw.len() != columns * 2 {
         return Err(js_error("heightfield length mismatch"));
     }
-    Ok(raw
-        .chunks_exact(2)
-        .map(|b| {
-            let h = i16::from_le_bytes([b[0], b[1]]);
-            if h == surface_core::MISSING_HEIGHT {
+    let mut out = Vec::with_capacity(columns / (stride * stride));
+    for z in (0..columns / width).step_by(stride) {
+        for x in (0..width).step_by(stride) {
+            let mut sum = 0i32;
+            let mut count = 0;
+            for dz in 0..stride {
+                for dx in 0..stride {
+                    let i = ((z + dz) * width + x + dx) * 2;
+                    let h = i16::from_le_bytes([raw[i], raw[i + 1]]);
+                    if h != surface_core::MISSING_HEIGHT {
+                        sum += i32::from(h);
+                        count += 1;
+                    }
+                }
+            }
+            out.push(if count == 0 {
                 -1e6
             } else {
-                h as f32 / 16.
-            }
-        })
-        .collect())
+                (sum as f32 / count as f32).round() / 16.
+            });
+        }
+    }
+    Ok(out)
 }
 
 struct Region {
@@ -104,6 +142,7 @@ struct Region {
     _origin: wgpu::Buffer,
     texture: wgpu::Texture,
     words: usize,
+    stride: usize,
     dirty: std::cell::Cell<bool>,
 }
 
@@ -123,8 +162,8 @@ pub struct Renderer {
     regions: BTreeMap<(i32, i32), Region>,
     sampler: wgpu::Sampler,
     base_bytes: usize,
-    height_buffer: wgpu::Buffer,
-    height_tree: Vec<u32>,
+    heights: height_field::HeightField,
+    height_dirty: bool,
     material_buffer: wgpu::Buffer,
     atlas_view: wgpu::TextureView,
     atlas_sampler: wgpu::Sampler,
@@ -134,6 +173,7 @@ pub struct Renderer {
 
 #[wasm_bindgen]
 impl Renderer {
+    #[allow(clippy::too_many_arguments)] // Flat WASM ABI keeps typed arrays out of serialized configuration.
     #[wasm_bindgen(js_name=create)]
     pub async fn create(
         canvas: web_sys::HtmlCanvasElement,
@@ -143,6 +183,7 @@ impl Renderer {
         rgba: Vec<u8>,
         aw: u32,
         ah: u32,
+        stride: usize,
     ) -> Result<Renderer, JsValue> {
         console_error_panic_hook::set_once();
         if bounds.len() != 4
@@ -152,8 +193,11 @@ impl Renderer {
         {
             return Err(js_error("invalid renderer input"));
         }
-        let w = (bounds[2] - bounds[0]) as usize;
-        let h = (bounds[3] - bounds[1]) as usize;
+        if ![1, 2, 4].contains(&stride) {
+            return Err(js_error("invalid surface resolution"));
+        }
+        let w = (bounds[2] - bounds[0]) as usize / stride;
+        let h = (bounds[3] - bounds[1]) as usize / stride;
         if w == 0 || h == 0 || heights.len() != w * h || w * h > 16 * 1024 * 1024 {
             return Err(js_error("invalid heightfield dimensions"));
         }
@@ -227,7 +271,7 @@ impl Renderer {
             direction[1],
             1.,
             0.25,
-            0.,
+            stride as f32,
             0.,
         ];
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -235,8 +279,8 @@ impl Renderer {
             contents: bytemuck::cast_slice(&values),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let tree = surface_core::height_pyramid(&heights, w, h);
-        let ss = storage(&device, bytemuck::cast_slice(&tree));
+        let height_field =
+            height_field::HeightField::new(&device, &queue, w, h, &heights).map_err(js_error)?;
         let mats = storage(&device, bytemuck::cast_slice(&materials));
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shared material atlas"),
@@ -360,7 +404,7 @@ impl Renderer {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&atlas_sampler),
                 },
-                entry(4, &ss),
+                entry(4, &height_field.buffer),
             ],
         });
         let overview_pipeline =
@@ -369,9 +413,13 @@ impl Renderer {
         let global_overview = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &overview_pipeline.get_bind_group_layout(0),
-            entries: &[entry(0, &params), entry(1, &mats), entry(2, &ss)],
+            entries: &[
+                entry(0, &params),
+                entry(1, &mats),
+                entry(2, &height_field.buffer),
+            ],
         });
-        let base_bytes = tree.len() * 4 + rgba.len() * 21 / 16 + materials.len() * 4;
+        let base_bytes = height_field.bytes() + rgba.len() * 21 / 16 + materials.len() * 4;
         Ok(Self {
             device,
             queue,
@@ -387,8 +435,8 @@ impl Renderer {
             regions: BTreeMap::new(),
             sampler,
             base_bytes,
-            height_buffer: ss,
-            height_tree: tree,
+            heights: height_field,
+            height_dirty: false,
             material_buffer: mats,
             atlas_view,
             atlas_sampler,
@@ -396,12 +444,25 @@ impl Renderer {
             lost,
         })
     }
-    pub fn add_region(&mut self, rx: i32, rz: i32, words: Vec<u32>) -> Result<(), JsValue> {
-        if words.len() != surface_core::CELLS * 8 {
+    pub fn add_region(
+        &mut self,
+        rx: i32,
+        rz: i32,
+        words: Vec<u32>,
+        stride: usize,
+    ) -> Result<(), JsValue> {
+        if ![1, 2, 4].contains(&stride)
+            || words.len() != surface_core::CELLS * 8 / (stride * stride)
+        {
             return Err(js_error("invalid region GPU data"));
         }
         self.remove_region(rx, rz);
-        let cost = words.len() * 4 + 349524;
+        let side = 256 / stride as u32;
+        let mip_count = side.ilog2() + 1;
+        let texture_bytes = (0..mip_count)
+            .map(|i| (side >> i).pow(2) as usize * 4)
+            .sum::<usize>();
+        let cost = words.len() * 4 + texture_bytes;
         if self.gpu_bytes() as usize + cost > 256 * 1024 * 1024 {
             return Err(js_error("GPU cache limit exceeded"));
         }
@@ -410,17 +471,22 @@ impl Renderer {
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
-                contents: bytemuck::cast_slice(&[rx as f32 * 256., rz as f32 * 256., 0., 0.]),
+                contents: bytemuck::cast_slice(&[
+                    rx as f32 * 256.,
+                    rz as f32 * 256.,
+                    stride as f32,
+                    side as f32,
+                ]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("local GPU overview"),
             size: wgpu::Extent3d {
-                width: 256,
-                height: 256,
+                width: side,
+                height: side,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 9,
+            mip_level_count: mip_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Rgba8Unorm,
@@ -462,7 +528,7 @@ impl Renderer {
             ],
         });
         let mut mips = vec![];
-        for level in 1..9 {
+        for level in 1..mip_count {
             let src = texture.create_view(&wgpu::TextureViewDescriptor {
                 base_mip_level: level - 1,
                 mip_level_count: Some(1),
@@ -496,9 +562,9 @@ impl Renderer {
             _origin: origin,
             texture,
             words: words.len(),
+            stride,
             dirty: std::cell::Cell::new(true),
         };
-        self.regenerate(&region);
         self.regions.insert((rx, rz), region);
         Ok(())
     }
@@ -509,10 +575,11 @@ impl Renderer {
             pass.set_pipeline(&self.overview_pipeline);
             pass.set_bind_group(0, &self.global_overview, &[]);
             pass.set_bind_group(1, &r.overview_group, &[]);
-            pass.dispatch_workgroups(32, 32, 1);
+            let groups = (256 / r.stride as u32).div_ceil(8);
+            pass.dispatch_workgroups(groups, groups, 1);
         }
         for (i, g) in r.mips.iter().enumerate() {
-            let size = 128u32 >> i;
+            let size = (128 / r.stride as u32) >> i;
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.mip_pipeline);
             pass.set_bind_group(0, g, &[]);
@@ -537,7 +604,7 @@ impl Renderer {
                     binding: 3,
                     resource: wgpu::BindingResource::Sampler(&self.atlas_sampler),
                 },
-                entry(4, &self.height_buffer),
+                entry(4, &self.heights.buffer),
             ],
         });
         self.global_overview = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -546,12 +613,15 @@ impl Renderer {
             entries: &[
                 entry(0, &self.params),
                 entry(1, &self.material_buffer),
-                entry(2, &self.height_buffer),
+                entry(2, &self.heights.buffer),
             ],
         });
     }
     pub fn cpu_bytes(&self) -> u32 {
-        (self.height_tree.len() * 4) as u32
+        0
+    }
+    pub fn height_bytes(&self) -> u32 {
+        self.heights.bytes() as u32
     }
     pub fn update_materials(&mut self, values: Vec<f32>) -> Result<(), JsValue> {
         if values.is_empty()
@@ -575,13 +645,14 @@ impl Renderer {
         &mut self,
         bounds: Vec<i32>,
         heights: Vec<f32>,
+        stride: usize,
     ) -> Result<(), JsValue> {
-        if bounds.len() != 4 {
+        if bounds.len() != 4 || ![1, 2, 4].contains(&stride) {
             return Err(js_error("height window bounds"));
         }
         let (width, height) = (
-            (bounds[2] - bounds[0]) as usize,
-            (bounds[3] - bounds[1]) as usize,
+            (bounds[2] - bounds[0]) as usize / stride,
+            (bounds[3] - bounds[1]) as usize / stride,
         );
         if width == 0
             || height == 0
@@ -591,24 +662,25 @@ impl Renderer {
         {
             return Err(js_error("height window size"));
         }
-        let tree = surface_core::height_pyramid(&heights, width, height);
-        if self.gpu_bytes() as usize - self.height_tree.len() * 4 + tree.len() * 8
-            > 256 * 1024 * 1024
-        {
-            return Err(js_error("Height coverage exceeds cache; zoom in"));
+        let bytes = height_field::HeightField::allocation_bytes(width, height).map_err(js_error)?;
+        if self.gpu_bytes() as usize - self.heights.bytes() + bytes > 256 * 1024 * 1024 {
+            return Err(js_error("GPU cache limit exceeded"));
         }
-        let buffer = storage(&self.device, bytemuck::cast_slice(&tree));
-        self.base_bytes = self.base_bytes - self.height_tree.len() * 4 + tree.len() * 4;
-        self.height_tree = tree;
-        let old = std::mem::replace(&mut self.height_buffer, buffer);
+        let field =
+            height_field::HeightField::new(&self.device, &self.queue, width, height, &heights)
+                .map_err(js_error)?;
+        self.base_bytes = self.base_bytes - self.heights.bytes() + field.bytes();
+        let old = std::mem::replace(&mut self.heights, field);
+        self.height_dirty = false;
         self.values[8..12].copy_from_slice(&[
             bounds[0] as f32,
             bounds[1] as f32,
             width as f32,
             height as f32,
         ]);
+        self.values[18] = stride as f32;
         self.rebind();
-        old.destroy();
+        old.buffer.destroy();
         for r in self.regions.values() {
             r.dirty.set(true);
         }
@@ -620,47 +692,46 @@ impl Renderer {
         rz: i32,
         values: Vec<f32>,
     ) -> Result<(), JsValue> {
-        let x = rx * 256 - self.values[8] as i32;
-        let z = rz * 256 - self.values[9] as i32;
-        if x < 0 || z < 0 || x + 256 > self.values[10] as i32 || z + 256 > self.values[11] as i32 {
+        let stride = self.values[18] as i32;
+        let side = 256 / stride;
+        let x = (rx * 256 - self.values[8] as i32) / stride;
+        let z = (rz * 256 - self.values[9] as i32) / stride;
+        if x < 0 || z < 0 || x + side > self.values[10] as i32 || z + side > self.values[11] as i32
+        {
             return Ok(());
         }
-        let ranges = surface_core::terrain::patch_height_tree(
-            &mut self.height_tree,
-            x as usize,
-            z as usize,
-            256,
-            256,
-            &values,
-        )
-        .map_err(js_error)?;
-        for (start, count) in ranges {
-            self.queue.write_buffer(
-                &self.height_buffer,
-                (start * 4) as u64,
-                bytemuck::cast_slice(&self.height_tree[start..start + count]),
-            );
-        }
+        self.heights
+            .patch(
+                &self.queue,
+                x as usize,
+                z as usize,
+                side as usize,
+                side as usize,
+                &values,
+            )
+            .map_err(js_error)?;
+        self.height_dirty = true;
         for r in self.regions.values() {
             r.dirty.set(true);
         }
         Ok(())
     }
     pub fn patch_chunk(&mut self, cx: i32, cz: i32, words: Vec<u32>) -> Result<(), JsValue> {
-        if words.len() != 256 * 8 {
-            return Err(js_error("invalid chunk GPU data"));
-        }
         let r = self
             .regions
             .get(&(cx.div_euclid(16), cz.div_euclid(16)))
             .ok_or_else(|| js_error("region not resident"))?;
-        let x = cx.rem_euclid(16) as usize * 16;
-        let z = cz.rem_euclid(16) as usize * 16;
-        for row in 0..16 {
+        let side = 16 / r.stride;
+        if words.len() != side * side * 8 {
+            return Err(js_error("invalid chunk GPU data"));
+        }
+        let x = cx.rem_euclid(16) as usize * side;
+        let z = cz.rem_euclid(16) as usize * side;
+        for row in 0..side {
             self.queue.write_buffer(
                 &r._data,
-                (((z + row) * 256 + x) * 32) as u64,
-                bytemuck::cast_slice(&words[row * 128..(row + 1) * 128]),
+                (((z + row) * (256 / r.stride) + x) * 32) as u64,
+                bytemuck::cast_slice(&words[row * side * 8..(row + 1) * side * 8]),
             );
         }
         r.dirty.set(true);
@@ -677,7 +748,13 @@ impl Renderer {
             + self
                 .regions
                 .values()
-                .map(|r| r.words * 4 + 349524)
+                .map(|r| {
+                    let side = 256 / r.stride;
+                    r.words * 4
+                        + (0..=side.ilog2())
+                            .map(|i| (side >> i).pow(2) * 4)
+                            .sum::<usize>()
+                })
                 .sum::<usize>()) as u32
     }
     pub fn is_lost(&self) -> bool {
@@ -708,6 +785,10 @@ impl Renderer {
         }
         if width == 0 || height == 0 {
             return Ok(false);
+        }
+        if self.height_dirty {
+            self.heights.rebuild(&self.device, &self.queue);
+            self.height_dirty = false;
         }
         if !elevation.is_finite()
             || !(15.0..=75.0).contains(&elevation)

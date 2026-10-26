@@ -291,7 +291,7 @@ test("unloaded terrain is distinct from a player outside the snapshot", async ({
     await page.setViewportSize({ width, height: 844 });
     const message = await page.locator("#message").boundingBox();
     const roster = await page.locator("#players-panel").boundingBox();
-    expect(message!.y + message!.height).toBeLessThanOrEqual(roster!.y);
+    expect(roster!.y + roster!.height).toBeLessThanOrEqual(message!.y);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

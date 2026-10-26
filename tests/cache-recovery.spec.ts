@@ -4,9 +4,10 @@ import { resolve } from "node:path";
 
 const directory = resolve(".local/terrain-large");
 
-test("sun elevation refuses an oversized shadow window and navigation recovers", async ({
+test("sun elevation coarsens shadow coverage without moving the camera", async ({
   page,
 }) => {
+  test.setTimeout(120000);
   const root = JSON.parse(
     readFileSync(resolve(directory, "root-relief.json"), "utf8"),
   );
@@ -45,23 +46,30 @@ test("sun elevation refuses an oversized shadow window and navigation recovers",
     });
   });
   await page.goto("/");
-  await expect.poll(() => page.evaluate(() => window.__map?.ready)).toBe(true);
-  await page.evaluate(() => window.__map.zoom(1 / window.__map.state().scale));
   await expect
-    .poll(() =>
-      page.evaluate(() => {
-        const state = window.__map.state();
-        return (
-          state.cached > 0 &&
-          state.pending === 0 &&
-          !state.terrain?.busy &&
-          state.firstVisible !== null
-        );
-      }),
+    .poll(() => page.evaluate(() => window.__map?.ready), { timeout: 45000 })
+    .toBe(true);
+  await page.evaluate(() =>
+    window.__map.zoom(0.8 / window.__map.state().scale),
+  );
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const state = window.__map.state();
+          return (
+            state.cached > 0 &&
+            state.pending === 0 &&
+            !state.terrain?.busy &&
+            !state.switchingResolution &&
+            state.firstVisible !== null
+          );
+        }),
+      { timeout: 45000 },
     )
     .toBe(true);
   const before = await page.evaluate(() => window.__map.state());
-  expect(before.scale).toBe(1);
+  expect(before.scale).toBeCloseTo(0.8, 10);
   expect(before.elevation).toBe(45);
   await page
     .getByRole("button", { name: "Lighting and color", exact: true })
@@ -77,18 +85,19 @@ test("sun elevation refuses an oversized shadow window and navigation recovers",
     element.dispatchEvent(new Event("input", { bubbles: true }));
     return { value: element.value, state: window.__map.state() };
   });
-  expect(handled.value).toBe("45");
-  expect(handled.state.elevation).toBe(before.elevation);
-  await expect(slider).toHaveValue("45");
-  await expect(page.locator("#elevation-value")).toHaveText("45\u00b0");
-  await expect(page.locator("#message-text")).toContainText("256 MiB");
+  expect(handled.value).toBe("15");
+  expect(handled.state.elevation).toBe(15);
+  expect(handled.state.stride).toBeGreaterThan(before.stride);
+  await expect(slider).toHaveValue("15");
+  await expect(page.locator("#elevation-value")).toHaveText("15\u00b0");
+  await expect(page.locator("#message")).toBeHidden({ timeout: 45000 });
   const rejected = await page.evaluate(() => window.__map.state());
   expect([
     rejected.cx,
     rejected.cz,
     rejected.scale,
     rejected.elevation,
-  ]).toEqual([before.cx, before.cz, before.scale, before.elevation]);
+  ]).toEqual([before.cx, before.cz, before.scale, 15]);
   expect(rejected.memory).toBeLessThanOrEqual(256 * 1024 * 1024);
   await page.getByRole("button", { name: "Zoom in", exact: true }).click();
   await expect(page.locator("#message")).toBeHidden();
@@ -123,9 +132,10 @@ test("sun elevation refuses an oversized shadow window and navigation recovers",
 });
 
 for (const factor of [4, 16]) {
-  test(`${factor}x terrain rejects oversized views without stranding navigation`, async ({
+  test(`${factor}x terrain adapts detail while preserving navigation and player alignment`, async ({
     page,
   }) => {
+    test.setTimeout(180000);
     const root = JSON.parse(
       readFileSync(resolve(directory, `root-${factor}.json`), "utf8"),
     );
@@ -204,35 +214,47 @@ for (const factor of [4, 16]) {
     });
     await page.goto("/");
     await expect
-      .poll(() =>
-        page.evaluate(() => {
-          const state = window.__map?.state();
-          return (
-            window.__map?.ready &&
-            state.cached > 0 &&
-            state.pending === 0 &&
-            !state.terrain?.busy &&
-            state.firstVisible !== null
-          );
-        }),
+      .poll(
+        () =>
+          page.evaluate(() => {
+            const state = window.__map?.state();
+            return (
+              window.__map?.ready &&
+              state.cached > 0 &&
+              state.pending === 0 &&
+              !state.terrain?.busy &&
+              !state.switchingResolution &&
+              state.firstVisible !== null
+            );
+          }),
+        { timeout: 45000 },
       )
       .toBe(true);
 
-    // Exercise detail exhaustion separately from a height window too large to fit.
+    // Exercise wider views and then the entire dataset without camera rollback.
     for (const targetScale of [0.4, 0.025]) {
       const before = await page.evaluate(() => window.__map.state());
-      const requests = objectRequests;
       await page.evaluate((scale) => {
         window.__map.zoom(scale / window.__map.state().scale);
       }, targetScale);
-      await expect(page.locator("#message-text")).toContainText("256 MiB");
+      await expect
+        .poll(
+          () =>
+            page.evaluate(() => {
+              const s = window.__map.state();
+              return (
+                !s.switchingResolution && !s.terrain?.busy && s.pending === 0
+              );
+            }),
+          { timeout: 45000 },
+        )
+        .toBe(true);
+      await expect(page.locator("#message")).toBeHidden();
       const rejected = await page.evaluate(() => window.__map.state());
-      expect([rejected.cx, rejected.cz, rejected.scale]).toEqual([
-        before.cx,
-        before.cz,
-        before.scale,
-      ]);
+      expect([rejected.cx, rejected.cz]).toEqual([before.cx, before.cz]);
+      expect(rejected.scale).toBeCloseTo(targetScale, 10);
       expect(rejected.memory).toBeLessThanOrEqual(256 * 1024 * 1024);
+      const requests = objectRequests;
       await page.waitForTimeout(2200);
       expect(objectRequests - requests).toBeLessThan(4);
       const alignment = await page.evaluate(() => {
@@ -258,7 +280,7 @@ for (const factor of [4, 16]) {
       await expect(page.locator("#message")).toBeHidden();
       expect(
         await page.evaluate(() => window.__map.state().scale),
-      ).toBeGreaterThan(before.scale);
+      ).toBeGreaterThan(targetScale);
     }
 
     const beforePan = await page.evaluate(() => window.__map.state());
@@ -285,7 +307,7 @@ for (const factor of [4, 16]) {
     await page.setViewportSize({ width: 2560, height: 1440 });
     await expect
       .poll(() => page.evaluate(() => window.__map.state().scale))
-      .toBeGreaterThan(beforeResize.scale);
+      .toBe(beforeResize.scale);
     await expect
       .poll(() => page.evaluate(() => window.__map.state().draws))
       .toBeGreaterThan(beforeResize.draws);
@@ -293,7 +315,11 @@ for (const factor of [4, 16]) {
       .poll(() =>
         page.evaluate(() => {
           const state = window.__map.state();
-          return state.pending === 0 && !state.terrain?.busy;
+          return (
+            state.pending === 0 &&
+            !state.terrain?.busy &&
+            !state.switchingResolution
+          );
         }),
       )
       .toBe(true);

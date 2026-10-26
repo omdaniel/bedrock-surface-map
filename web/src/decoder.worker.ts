@@ -1,7 +1,8 @@
 import init, {
-  decode_heights,
+  decode_height_samples,
   decode_region_words,
   decode_chunk_words,
+  reduce_surface_words,
 } from "../pkg/surface_gpu.js";
 import type { DecodeRequest, DecodeReply } from "./types";
 import { boundedBytes } from "./http";
@@ -25,12 +26,24 @@ scope.onmessage = async ({ data: r }) => {
     if (sha !== r.sha256) throw new Error("Map data checksum mismatch");
     const started = performance.now();
     const bytes = new Uint8Array(buffer);
-    const decoded =
+    let decoded =
       r.kind === "heights"
-        ? decode_heights(bytes, r.columns!)
+        ? decode_height_samples(
+            bytes,
+            r.columns!,
+            r.width ?? r.columns!,
+            r.stride ?? 1,
+          )
         : r.kind === "chunk"
           ? decode_chunk_words(bytes, r.rx!, r.rz!, r.materials!)
           : decode_region_words(bytes, r.rx!, r.rz!, r.materials!);
+    if ((r.stride ?? 1) !== 1 && r.kind !== "heights") {
+      decoded = reduce_surface_words(
+        decoded as Uint32Array,
+        r.kind === "chunk" ? 16 : 256,
+        r.stride!,
+      );
+    }
     scope.postMessage(
       { id: r.id, data: decoded, decodeMs: performance.now() - started },
       [decoded.buffer as ArrayBuffer],
