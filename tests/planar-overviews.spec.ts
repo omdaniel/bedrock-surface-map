@@ -38,6 +38,7 @@ async function settled(page: Page, stride: number, cached: number) {
             switching: s?.switchingResolution,
             pending: s?.pending,
             renderPending: s?.renderPending,
+            firstVisible: s?.firstVisible,
             terrainBusy: s?.terrain?.busy ?? false,
             failures: s?.failures,
             message: document.querySelector("#message-text")?.textContent,
@@ -52,6 +53,7 @@ async function settled(page: Page, stride: number, cached: number) {
       switching: false,
       pending: 0,
       renderPending: false,
+      firstVisible: expect.any(Number),
       terrainBusy: false,
       failures: [],
     });
