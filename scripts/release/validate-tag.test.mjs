@@ -2,13 +2,34 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
-import { validateTag } from "./validate-tag.mjs";
+import { publicationTag, validateTag } from "./validate-tag.mjs";
 
 const base = {
   version: "0.1.0",
   sourceCommit: "a".repeat(40),
   tagCommit: "a".repeat(40),
 };
+
+test("provider tag selection accepts GitHub tags and rejects branch and PR refs", () => {
+  for (const ref of [
+    "refs/heads/main",
+    "refs/pull/19/merge",
+    "refs/tags/v1.0/extra",
+  ])
+    assert.equal(
+      publicationTag({
+        GITHUB_ACTIONS: "true",
+        GITHUB_REF: ref,
+        CI_COMMIT_TAG: "v0.1.0",
+      }),
+      undefined,
+    );
+  assert.equal(
+    publicationTag({ GITHUB_ACTIONS: "true", GITHUB_REF: "refs/tags/v0.1.1" }),
+    "v0.1.1",
+  );
+  assert.equal(publicationTag({ CI_COMMIT_TAG: "v0.1.0" }), "v0.1.0");
+});
 
 test("matching, mismatching, missing, and wrong-commit tags", () => {
   assert.equal(

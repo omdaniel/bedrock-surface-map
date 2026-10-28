@@ -337,7 +337,7 @@ mod tests {
             root.join("release-manifest.json"),
             serde_json::to_vec(&serde_json::json!({
                 "schema_version":1,
-                "application_version":"0.1.0",
+                "application_version":env!("CARGO_PKG_VERSION"),
                 "commit":"a".repeat(40),
                 "target":"x86_64-unknown-linux-musl",
                 "files":files

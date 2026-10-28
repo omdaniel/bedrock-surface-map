@@ -188,7 +188,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-adapter"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bedrock-world",
@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "bedrock-map"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2111,7 +2111,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "surface-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bedrock-adapter",
@@ -2131,7 +2131,7 @@ dependencies = [
 
 [[package]]
 name = "surface-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "ruzstd",
@@ -2142,7 +2142,7 @@ dependencies = [
 
 [[package]]
 name = "surface-gpu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "surface-sync"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -2178,7 +2178,7 @@ dependencies = [
 
 [[package]]
 name = "surface-tracker"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "axum",
  "serde",

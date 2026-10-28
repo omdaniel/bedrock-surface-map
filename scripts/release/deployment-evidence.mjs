@@ -94,12 +94,16 @@ export function assertGeneratedEvidence(candidate, reports) {
 }
 
 export function authorizePublication(tag, env = process.env) {
-  if (
-    env.CI_COMMIT_TAG !== tag ||
-    env.CI_COMMIT_REF_PROTECTED !== "true" ||
-    env.CI_PIPELINE_SOURCE === "merge_request_event" ||
-    env.BEDROCK_MAP_PUBLISH_APPROVED !== "true"
-  )
+  const protectedTag =
+    env.GITHUB_ACTIONS === "true"
+      ? env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+        env.GITHUB_REPOSITORY === "omdaniel/bedrock-surface-map" &&
+        env.GITHUB_REF === `refs/tags/${tag}` &&
+        env.GITHUB_REF_PROTECTED === "true"
+      : env.CI_COMMIT_TAG === tag &&
+        env.CI_COMMIT_REF_PROTECTED === "true" &&
+        env.CI_PIPELINE_SOURCE !== "merge_request_event";
+  if (!protectedTag || env.BEDROCK_MAP_PUBLISH_APPROVED !== "true")
     throw Error(
       "publication requires the matching protected tag and explicit owner approval",
     );

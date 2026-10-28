@@ -161,3 +161,39 @@ test("public upload requires matching protected tag and explicit owner approval"
       /protected tag/,
     );
 });
+
+test("GitHub publication requires manual approval on a protected version tag in the owning repository", () => {
+  const env = {
+    GITHUB_ACTIONS: "true",
+    GITHUB_EVENT_NAME: "workflow_dispatch",
+    GITHUB_REPOSITORY: "omdaniel/bedrock-surface-map",
+    GITHUB_REF: "refs/tags/v0.1.1",
+    GITHUB_REF_PROTECTED: "true",
+    BEDROCK_MAP_PUBLISH_APPROVED: "true",
+  };
+  authorizePublication("v0.1.1", env);
+  for (const change of [
+    { GITHUB_EVENT_NAME: "pull_request" },
+    { GITHUB_EVENT_NAME: "push" },
+    { GITHUB_REPOSITORY: "someone/fork" },
+    { GITHUB_REF: "refs/heads/main" },
+    { GITHUB_REF: "refs/tags/v0.1.0" },
+    { GITHUB_REF_PROTECTED: "false" },
+    { BEDROCK_MAP_PUBLISH_APPROVED: "false" },
+  ])
+    assert.throws(
+      () => authorizePublication("v0.1.1", { ...env, ...change }),
+      /protected tag/,
+    );
+  // GitLab-looking variables cannot authorize a GitHub PR or unprotected ref.
+  assert.throws(
+    () =>
+      authorizePublication("v0.1.1", {
+        ...env,
+        GITHUB_EVENT_NAME: "pull_request",
+        CI_COMMIT_TAG: "v0.1.1",
+        CI_COMMIT_REF_PROTECTED: "true",
+      }),
+    /protected tag/,
+  );
+});

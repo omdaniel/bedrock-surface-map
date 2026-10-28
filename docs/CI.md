@@ -28,6 +28,42 @@ rebuild between validation and upload, or label untested cross-compilation as
 native acceptance. The optional protected GitLab publisher below automates this
 publication; a GitLab mirror is not required to develop or install the project.
 
+## GitHub Publication
+
+The `Publish Verified Release` workflow consumes a successful `Deployment
+Packaging` run from `main`. Select the matching version tag when running it;
+the tag, package version, checkout, source archives, images and native evidence
+must all identify the same commit. A PR candidate or failed run is refused.
+It downloads and validates existing artifacts without rebuilding them.
+
+1. Wait for source and deployment checks on `main` to pass. Record the deployment
+   run ID and commit. Confirm `package.json` and the Rust workspace agree on the
+   release version and that the version has no existing GitHub Release.
+2. Configure a repository tag ruleset matching `v*` that protects tags against
+   updates and deletion. Create the version tag at the tested commit and push it.
+   Publication requires GitHub to report that selected tag as protected.
+3. Open Actions → Publish Verified Release, select that tag, enter the exact
+   deployment run ID, and leave `publish` disabled for a validation-only run.
+4. Run the workflow again on the same tag and run ID with `publish` enabled.
+   It uses the short-lived `GITHUB_TOKEN` with package/release permissions, a
+   temporary owner-only registry credential, and the existing release validator.
+   No personal registry token or GitLab mirror is required.
+
+On first publication, GitHub may create the two container packages as private.
+In each package's settings, make `bedrock-surface-map-runtime` and
+`bedrock-surface-map-gateway` public, then retry the workflow. Both tested images
+are copied before visibility checks. Anonymous manifest reads must succeed before
+operator bundles or a GitHub Release can be published. Each retry uses fresh
+staging and the same verified artifacts; it does not replace existing release
+assets. The always-run cleanup step removes the temporary registry credential.
+The retained publication artifact contains only audited public release files and
+the source-run identity.
+
+The workflow is manual and has no PR trigger. Its `publish` option authorizes
+publication only; preparing an operator bundle does not deploy it to a server.
+
+## Optional GitLab Publication
+
 Configure these protected GitLab variables before enabling its jobs:
 
 - `BEDROCK_MAP_RELEASE_IMAGE`: a pinned image containing Node 26.8.1, Rust

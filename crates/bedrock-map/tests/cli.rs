@@ -38,7 +38,7 @@ fn package(root: &Path) -> std::path::PathBuf {
     fs::write(
         root.join("package/release-manifest.json"),
         serde_json::to_vec(&json!({
-            "schema_version":1,"application_version":"0.1.0","commit":"a".repeat(40),
+            "schema_version":1,"application_version":env!("CARGO_PKG_VERSION"),"commit":"a".repeat(40),
             "target":"x86_64-unknown-linux-musl","files":files
         }))
         .unwrap(),

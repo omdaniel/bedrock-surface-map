@@ -34,12 +34,24 @@ export function checkedTagCommit(tag) {
   }).trim();
 }
 
+export function publicationTag(env = process.env) {
+  return env.GITHUB_ACTIONS === "true"
+    ? env.GITHUB_REF?.match(/^refs\/tags\/(v[^/]+)$/)?.[1]
+    : env.CI_COMMIT_TAG;
+}
+
 export async function checkCurrentTag(required = false) {
   const version = JSON.parse(await readFile("package.json", "utf8")).version;
   const sourceCommit = currentCommit();
-  if (process.env.CI_COMMIT_SHA && process.env.CI_COMMIT_SHA !== sourceCommit)
+  const ciCommit =
+    process.env.GITHUB_ACTIONS === "true"
+      ? process.env.GITHUB_EVENT_NAME === "workflow_dispatch"
+        ? process.env.GITHUB_SHA
+        : undefined
+      : process.env.CI_COMMIT_SHA;
+  if (ciCommit && ciCommit !== sourceCommit)
     throw Error("CI source commit disagrees with the checkout");
-  const tag = process.env.CI_COMMIT_TAG;
+  const tag = publicationTag();
   return validateTag({
     tag,
     version,

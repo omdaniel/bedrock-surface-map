@@ -73,6 +73,12 @@ export async function publishDeployment(root, dist, version, commit) {
       ],
       { stdio: "inherit", timeout: 300_000 },
     );
+  }
+  // Copy both packages before checking visibility, so a first publication can
+  // make both packages public together and retry the same immutable images.
+  for (const name of ["runtime", "gateway"]) {
+    const repository = `ghcr.io/omdaniel/bedrock-surface-map-${name}`;
+    const image = candidate.images[name];
     // Anonymous reads are intentional: private/unavailable packages cannot
     // produce a downloadable public operator lock.
     for (const digest of [

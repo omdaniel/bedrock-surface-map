@@ -57,7 +57,21 @@ try {
   );
   await page.waitForSelector(".player-marker");
   await page.getByRole("button", { name: "Pause demo", exact: true }).click();
+  // Autoplay advances while the first map loads. Start the measurement at a
+  // known paused phase so slow software rendering cannot cross a terrain event
+  // during the player-only interval below.
+  await page.getByRole("button", { name: "Restart demo", exact: true }).click();
   await page.waitForTimeout(2400);
+  await page.waitForFunction(
+    () =>
+      window.__map.state().pending === 0 &&
+      !window.__map.state().renderPending &&
+      !window.__map.state().terrain?.busy &&
+      window.__map.state().draws > 0,
+    {},
+    { timeout: 90000 },
+  );
+  assert.equal(await page.locator("#demo-time").innerText(), "0:00 / 1:00");
   const initial = await page.evaluate(() => window.__map.state());
   const initialHttpBodyBytes = (await Promise.all(responses)).reduce(
     (a, b) => a + b,
