@@ -2,13 +2,21 @@ import assert from "node:assert/strict";
 
 // Synthetic observations use the public producer contracts and real ingest
 // listeners. Nothing is intercepted in the browser or written into the store.
-export function generatedProducer({ host, ports, tokens, world, generation }) {
+export function generatedProducer({
+  host,
+  hosts,
+  ports,
+  tokens,
+  world,
+  generation,
+  transport = fetch,
+}) {
   const started = Date.now();
   let playerSequence = 0,
     terrainSequence = 0;
   const send = async (name, body, token = tokens[name]) => {
-    const response = await fetch(
-      `http://${host}:${ports[name]}/ingest/v1/${name === "players" ? "snapshot" : "terrain"}`,
+    const response = await transport(
+      `http://${hosts?.[name] ?? host}:${ports[name]}/ingest/v1/${name === "players" ? "snapshot" : "terrain"}`,
       {
         method: "POST",
         headers: {

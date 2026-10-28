@@ -87,6 +87,11 @@ Open `http://127.0.0.1:5173/?map=/maps/fixture/manifest.json`.
 
 ## Optional Live Integration
 
+[Use an existing itzg BDS server](QUICKSTART-BDS.md) or
+[install through Crafty/AMP](PANELS.md). Operator bundles include compiled packs;
+the [pack-only contributor path](../CONTRIBUTING.md#work-on-server-packs-only)
+requires only Node.js and npm.
+
 [Player tracking](TRACKING.md) and [terrain synchronization](TERRAIN-SYNC.md)
 use separate server packs and services. They are explicitly configured; loading
 an offline map does not silently connect it to a server. Public Pages is a demo,

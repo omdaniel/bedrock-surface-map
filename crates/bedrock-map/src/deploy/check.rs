@@ -99,7 +99,7 @@ fn minimum(version: &str, required: [u64; 3]) -> bool {
     parts.is_some_and(|v| v.len() == 3 && v.as_slice() >= required.as_slice())
 }
 
-async fn prerequisites(root: &str) -> Result<()> {
+async fn prerequisites(root: &str, config: &Config) -> Result<()> {
     let info: Value = serde_json::from_slice(&docker(&["info", "--format", "{{json .}}"]).await?)?;
     ensure!(
         info["OSType"] == "linux"
@@ -120,6 +120,17 @@ async fn prerequisites(root: &str) -> Result<()> {
         minimum(std::str::from_utf8(&version)?, [2, 38, 2]),
         "reference host requires Docker Compose >=2.38.2"
     );
+    if let Some(network) = &config.bds.network {
+        let networks: Vec<Value> =
+            serde_json::from_slice(&docker(&["network", "inspect", network]).await?)?;
+        ensure!(
+            networks.len() == 1
+                && networks[0]["Name"] == network.as_str()
+                && networks[0]["Driver"] == "bridge"
+                && networks[0]["Internal"] == true,
+            "BDS ingestion requires the named dedicated internal bridge network"
+        );
+    }
     docker(&[
         "compose",
         "--project-directory",
@@ -279,11 +290,15 @@ pub async fn check(
     report.required("prepared", Ok(()), "Private configuration, identities, release and immutable preparation inventories match; terrain-store metadata is present.", "Review preparation without changing a live store.");
     report.required(
         "docker-compose",
-        prerequisites(root_str).await,
+        prerequisites(root_str, &config).await,
         "Supported local Docker/Compose and generated configuration validate.",
         "Install the documented rootful Linux Docker/Compose versions and validate this project.",
     );
-    report.checks.push(Check {id:"remote-network-boundary", status:"unknown", severity:"informational", message:"A local check cannot prove BDS-source filtering, public exposure or router forwarding.".into(), remediation:Some("Review/apply firewall-review.sh and test from authorized BDS and unauthorized LAN/Internet vantages.")});
+    if config.bds.network.is_some() {
+        report.checks.push(Check {id:"bds-network-membership", status:"unknown", severity:"informational", message:"Ingestion has no host-published ports. The dedicated internal network must contain only the intended BDS and collectors.".into(), remediation:Some("Review network membership and verify authenticated BDS heartbeats; never attach the public gateway to ingestion.")});
+    } else {
+        report.checks.push(Check {id:"remote-network-boundary", status:"unknown", severity:"informational", message:"A local check cannot prove BDS-source filtering, public exposure or router forwarding.".into(), remediation:Some("Review/apply firewall-review.sh and test from authorized BDS and unauthorized LAN/Internet vantages.")});
+    }
     if running {
         let inspected = report.required("containers", runtime(&root, &config, &lock).await, "Exact project images, non-root mounts, ports, isolation and listener health match.", "Inspect only this Compose project; do not start or replace it through this diagnostic.");
         if inspected {

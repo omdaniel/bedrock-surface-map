@@ -90,6 +90,53 @@ export function assertGeneratedEvidence(candidate, reports) {
         );
       }
     }
+    const existing = report.existing_server_evidence;
+    assert.equal(
+      existing?.scope,
+      "synthetic-existing-bds-network-and-https-proxy",
+    );
+    for (const field of [
+      "ok",
+      "no_host_ingest",
+      "internal_network",
+      "collector_dns",
+      "secret_redaction",
+      "unchanged_generated_compose",
+      "proxy_loopback_bind",
+      "authenticated_delivery",
+    ])
+      assert.equal(
+        existing[field],
+        true,
+        `missing existing-server evidence: ${field}`,
+      );
+    assert.equal(existing.browser?.ok, true);
+    assert.equal(existing.browser.browser_host, report.host);
+    assert.deepEqual(existing.browser.cases.map((c) => c.path).sort(), [
+      "/",
+      "/?players=off",
+      "/?terrain=off",
+    ]);
+    for (const c of existing.browser.cases) {
+      assert.ok(c.distinct_pixel_colors >= 8);
+      assert.equal(c.picking, "-9 / 65 / -9");
+      assert.equal(c.material, "grass");
+    }
+    const existingProtocol = existing.browser.cases.find(
+      (c) => c.path === "/",
+    ).protocol;
+    for (const field of [
+      "live_edit",
+      "picking",
+      "changed_pixels",
+      "marker_heading",
+      "marker_projection",
+      "empty_roster",
+      "stale_sample_expiry_and_recovery",
+      "rejected_writes",
+    ])
+      assert.equal(existingProtocol?.[field], true);
+    assert.equal(existingProtocol.player_only_redraws, 0);
   }
 }
 

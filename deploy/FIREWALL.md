@@ -1,5 +1,17 @@
 # Private Ingest Boundary
 
+With `[bds] network = "bedrock-map-ingest"`, ingestion stays on a dedicated
+existing internal Docker bridge and has no host-published ports. Attach only
+the intended BDS and map collectors; the gateway joins only the map's read
+network. `deploy check` verifies the network is internal, the runtime has the
+expected attachments, and no extra ports are published. In this mode the
+generated `firewall-review.sh check` checks the internal network; `apply` and
+`remove` report that there are no host-ingestion rules to change. No iptables
+backend is needed for this connection mode. Tokens remain required.
+
+The policy below applies to LAN/VPN ingestion using `ingest_bind` and
+`bds_source_ipv4`.
+
 The reference deployment requires Docker's **iptables firewall backend**, with
 `DOCKER-USER` traversed before Docker's accept rules. The `iptables-nft` command
 frontend is compatible; Docker's separate native nftables backend is not this
@@ -36,7 +48,7 @@ the extent that the selected LAN/VPN is trusted.
 - From a different LAN/VPN device, the same TCP connection must fail. A `401`
   response here means network isolation failed even though token checks work.
 - From outside the trusted network, ingest must be unreachable. Public TCP80/443
-  belong to the gateway, not the collectors. Collector reads, Caddy admin and
+  belong to the managed gateway or existing HTTPS proxy. Collector reads, Caddy admin and
   health details must not have published host ports.
 - Repeat after Docker/host restart. Arrange rule persistence through the host's
   existing firewall manager, after Docker creates its chains. Do not assume these

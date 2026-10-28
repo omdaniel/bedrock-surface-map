@@ -19,5 +19,22 @@
     "force_tls": "Omit this optional setting for BDS 1.26.45.1; false causes TLSOnlyError.",
     "restrictions": "Module-scoped collector URI, body-size and concurrency limits with a secret-backed token header"
   },
+  "runtime_acceptance": {
+    "host": "native Linux AMD64",
+    "panel": "Crafty Controller 4.11.0",
+    "fixture": "../.github/workflows/bds-panel-acceptance.yml",
+    "scope": [
+      "fresh official world initialization",
+      "compiled pack/configuration installation and readback",
+      "Bedrock UDP advertisement",
+      "recurring authenticated empty player/terrain heartbeats",
+      "panel-controlled restart and new producer"
+    ],
+    "operator_acceptance": [
+      "real-client joins and movement",
+      "loaded terrain extraction and changes",
+      "client/server performance"
+    ]
+  },
   "verification_guide": "../docs/TERRAIN-ACCEPTANCE.md"
 }

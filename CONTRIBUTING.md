@@ -22,6 +22,27 @@ lockfiles with dependency changes. Source is [AGPL-3.0-only](LICENSE).
 Keep generated maps, downloaded Mojang assets, release archives and private data
 outside Git. Use a `codex/` branch for substantive work.
 
+## Work on Server Packs Only
+
+For pack changes, install the pinned Node.js version from `.node-version`, then
+run the commands below from the checkout root. Rust, WebAssembly and the renderer
+build are not needed for this path.
+
+```sh
+npm ci
+npm run tracking:build
+npm run tracking:test
+npm run terrain:build
+npm run terrain:test
+```
+
+Compiled packs are in `.local/tracking/pack` and `.local/terrain/pack`; diagnostic
+probe packs are separate outputs. These commands compile and test code without
+installing anything in a server or enabling experiments. For an installed
+release, use [the server integration exporter](docs/PANELS.md#prepare-the-files)
+instead of rebuilding packs. Keep the collectors and packs on the same release;
+see [runtime compatibility and acceptance](docs/COMPATIBILITY.md).
+
 For bugs, include the release tag or commit, browser/version, OS, steps, expected
 result and actual result. Try the public demo or a synthetic fixture when possible.
 Share only redacted errors or screenshots. Never upload credentials, raw worlds,

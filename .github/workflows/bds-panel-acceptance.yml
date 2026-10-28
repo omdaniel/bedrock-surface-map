@@ -1,0 +1,122 @@
+name: Disposable Crafty BDS Acceptance
+on:
+  workflow_call:
+    inputs:
+      source_sha:
+        description: Exact application commit matching successful Deployment Packaging artifacts
+        type: string
+        required: true
+      packaging_run_id:
+        description: Successful Deployment Packaging run for exactly source_sha
+        type: string
+        required: true
+      download_bds:
+        description: Explicit opt-in to downloading the pinned official BDS Linux ZIP
+        type: boolean
+        required: true
+      accept_minecraft_eula:
+        description: Explicit acceptance of https://www.minecraft.net/en-us/eula
+        type: boolean
+        required: true
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-character application commit matching successful Deployment Packaging artifacts
+        type: string
+        required: true
+      packaging_run_id:
+        description: Successful Deployment Packaging run for exactly source_sha (new export-bds CLI required)
+        type: string
+        required: true
+      download_bds:
+        description: Opt in to downloading the pinned official BDS Linux ZIP on this disposable runner
+        type: boolean
+        default: false
+        required: true
+      accept_minecraft_eula:
+        description: I have read and accept https://www.minecraft.net/en-us/eula for this disposable BDS run
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: bds-panel-acceptance-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  crafty-bds:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CRAFTY_SOURCE_SHA: ${{ inputs.source_sha }}
+      CRAFTY_PACKAGING_RUN_ID: ${{ inputs.packaging_run_id }}
+      CRAFTY_DOWNLOAD_BDS: ${{ inputs.download_bds }}
+      CRAFTY_ACCEPT_MINECRAFT_EULA: ${{ inputs.accept_minecraft_eula }}
+    steps:
+      - name: Require manual explicit download and EULA opt-in
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          test "$CRAFTY_DOWNLOAD_BDS" = true
+          test "$CRAFTY_ACCEPT_MINECRAFT_EULA" = true
+          [[ "$CRAFTY_SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          [[ "$CRAFTY_PACKAGING_RUN_ID" =~ ^[1-9][0-9]{0,19}$ ]]
+      - name: Check out the acceptance harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          path: acceptance-harness
+          persist-credentials: false
+      - name: Check out the application under test
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "26.8.1"
+      - name: Verify exact successful packaging run and repository BDS lock
+        working-directory: candidate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node ../acceptance-harness/scripts/acceptance/crafty-inputs.mjs
+      - name: Check acceptance safeguards
+        working-directory: acceptance-harness
+        run: node --test scripts/acceptance/crafty-*.test.mjs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-oci-combined-${{ inputs.source_sha }}
+          path: candidate/.local/crafty-inputs/oci
+          run-id: ${{ inputs.packaging_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-native-amd64-${{ inputs.source_sha }}
+          path: candidate/.local/crafty-inputs/native
+          run-id: ${{ inputs.packaging_run_id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: deployment-fixture-amd64-${{ inputs.source_sha }}
+          path: candidate/.local/crafty-inputs/parser
+          run-id: ${{ inputs.packaging_run_id }}
+          github-token: ${{ github.token }}
+      - name: Install disposable OCI staging tool
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Run actual Crafty and pinned official BDS with compiled exported packs
+        working-directory: candidate
+        run: node ../acceptance-harness/scripts/acceptance/crafty-run.mjs .local/crafty-inputs/oci .local/crafty-inputs/native .local/crafty-inputs/parser .local/crafty-evidence.json
+      - name: Preserve only sanitized pass or failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: crafty-bds-evidence-${{ inputs.source_sha }}-${{ github.run_id }}
+          path: candidate/.local/crafty-evidence.json
+          if-no-files-found: warn
+          retention-days: 14

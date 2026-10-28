@@ -1,5 +1,5 @@
 use super::{
-    config::{Access, Config},
+    config::{Access, Config, Gateway},
     files,
     init::Lock,
 };
@@ -13,6 +13,11 @@ fn bind(source: &str, target: &str, writable: bool) -> Value {
 }
 
 pub fn firewall_review(config: &Config) -> String {
+    if let Some(network) = &config.bds.network {
+        return format!(
+            "#!/bin/sh\n# Docker ingestion has no host-published ports. Keep this network dedicated to BDS and collectors.\nset -eu\ncase \"${{1:-}}\" in\n  check) test \"$(docker network inspect --format '{{{{.Internal}}}}' '{network}')\" = true ;;\n  apply|remove) printf '%s\\n' 'No host-ingestion firewall rules are used by this deployment.' ;;\n  *) printf '%s\\n' 'Usage: sh firewall-review.sh check|apply|remove' >&2; exit 2 ;;\nesac\n"
+        );
+    }
     let ports: Vec<_> = [
         (config.features.terrain, config.ports.terrain),
         (config.features.players, config.ports.players),
@@ -37,13 +42,16 @@ for port in {ports}; do
 done
 "#,
         ports = ports.join(" "),
-        bind = config.ingest_bind,
-        source = config.bds_source_ipv4,
+        bind = config.ingest_bind.expect("validated LAN ingestion address"),
+        source = config
+            .bds_source_ipv4
+            .expect("validated BDS source address"),
         project = config.project
     )
 }
 
 pub fn compose(config: &Config, lock: &Lock) -> Result<Vec<u8>> {
+    config.validate()?;
     let mut services = serde_json::Map::new();
     for (name, enabled) in [
         ("gateway", true),
@@ -74,15 +82,26 @@ pub fn compose(config: &Config, lock: &Lock) -> Result<Vec<u8>> {
                 bind("./caddy-data", "/data", true),
                 bind("./caddy-config", "/config", true),
             ]);
-            service["sysctls"] = json!({"net.ipv4.ip_unprivileged_port_start":"0"});
-            service["ports"] = json!([{"target":80,"published":"80","protocol":"tcp"},{"target":443,"published":"443","protocol":"tcp"}]);
+            match config.gateway {
+                Gateway::Managed => {
+                    service["sysctls"] = json!({"net.ipv4.ip_unprivileged_port_start":"0"});
+                    service["ports"] = json!([{"target":80,"published":"80","protocol":"tcp"},{"target":443,"published":"443","protocol":"tcp"}]);
+                }
+                Gateway::Proxy { bind, port } => {
+                    service["ports"] = json!([{"target":8080,"published":port.to_string(),"host_ip":bind.to_string(),"protocol":"tcp"}]);
+                }
+            }
         } else {
             let (port, internal) = if name == "terrain" {
                 (config.ports.terrain, 8082)
             } else {
                 (config.ports.players, 8081)
             };
-            service["ports"] = json!([{"target":internal,"published":port.to_string(),"host_ip":config.ingest_bind.to_string(),"protocol":"tcp"}]);
+            if config.bds.network.is_some() {
+                service["networks"] = json!({"app":{"gw_priority":1},"ingest":{"aliases":[config.ingest_alias(name)]}});
+            } else {
+                service["ports"] = json!([{"target":internal,"published":port.to_string(),"host_ip":config.ingest_bind.expect("validated LAN address").to_string(),"protocol":"tcp"}]);
+            }
             mounts.push(bind(
                 &format!("./secrets/{name}.token"),
                 &format!("/run/secrets/{name}.token"),
@@ -97,8 +116,12 @@ pub fn compose(config: &Config, lock: &Lock) -> Result<Vec<u8>> {
         service["volumes"] = json!(mounts);
         services.insert(name.into(), service);
     }
+    let mut networks = json!({"app":{"driver":"bridge"}});
+    if let Some(network) = &config.bds.network {
+        networks["ingest"] = json!({"external":true,"name":network});
+    }
     Ok(serde_json::to_vec_pretty(
-        &json!({"name":config.project,"services":services,"networks":{"app":{"driver":"bridge"}}}),
+        &json!({"name":config.project,"services":services,"networks":networks}),
     )?)
 }
 
@@ -135,9 +158,16 @@ pub fn gateway(
     web: &BTreeMap<String, String>,
     public: &BTreeMap<String, String>,
 ) -> Result<String> {
+    let site = match config.gateway {
+        Gateway::Managed => config.public_origin.clone(),
+        Gateway::Proxy { .. } => format!(
+            "http://{}:8080",
+            config.public_origin.trim_start_matches("https://")
+        ),
+    };
     let mut out = format!(
         "{{\n  admin off\n  skip_install_trust\n}}\n{} {{\n  route {{\n",
-        config.public_origin
+        site
     );
     if config.viewer.access == Access::Password {
         out.push_str("    import /etc/bedrock-map/viewer-auth.caddy\n    header Cache-Control \"private, no-store\" {\n      defer\n    }\n");
@@ -235,13 +265,11 @@ fn handoff(
     files::mkdir(&handoff.join("packs"))?;
     files::mkdir(&handoff.join("config"))?;
     let mut entries = Vec::new();
-    for (name, pack, enabled, port, route, key, max) in [
+    for (name, pack, enabled, key, max) in [
         (
             "players",
             "tracking",
             config.features.players,
-            config.ports.players,
-            "snapshot",
             "tracker_token",
             16384,
         ),
@@ -249,8 +277,6 @@ fn handoff(
             "terrain",
             "terrain",
             config.features.terrain,
-            config.ports.terrain,
-            "terrain",
             "terrain_token",
             262144,
         ),
@@ -319,7 +345,7 @@ fn handoff(
         files::copy_inventory(&source, &target, &inventory)?;
         let module_dir = handoff.join("config").join(module);
         files::mkdir(&module_dir)?;
-        let url = format!("http://{}:{port}/ingest/v1/{route}", config.ingest_bind);
+        let url = config.ingest_url(name)?;
         let mut variables = json!({"world_id":lock.world_id});
         if name == "players" {
             variables["collector_url"] = url.clone().into();

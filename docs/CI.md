@@ -13,10 +13,10 @@ the same release scripts on both native Linux architectures after an owner
 creates a mirror. Neither source nor native-test jobs publish binary releases.
 GitHub retains `native-amd64-<commit>` candidate artifacts for fourteen days;
 successful CI does not create a version tag or a GitHub Release. Deployment CI
-also validates both native archives. The published
-[v0.1.0 release](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
-contains those native runtimes and source-bound evidence, without live operator
-bundles. Publication is a separate owner action, never a side effect of a test.
+also validates both native archives. [Published releases](https://github.com/omdaniel/bedrock-surface-map/releases)
+provide native runtimes and source-bound evidence; live releases also include
+paired operator bundles and registry image locks. Publication is a separate owner
+action, never a side effect of a test.
 
 For a native-only GitHub release, collect both successful architecture artifacts
 from the **same exact-commit** Deployment Packaging run with `ci/collect-release.mjs`,
@@ -61,6 +61,33 @@ the source-run identity.
 
 The workflow is manual and has no PR trigger. Its `publish` option authorizes
 publication only; preparing an operator bundle does not deploy it to a server.
+
+## Disposable Panel Acceptance
+
+`bds-panel-acceptance.yml` checks a pinned Crafty Controller and the official BDS
+binary recorded in `tracking/compatibility.json`. It runs only by manual dispatch
+on a disposable GitHub-hosted AMD64 runner. Downloading BDS and accepting its EULA
+are separate, explicit inputs. Ordinary PR checks do neither.
+
+Select an exact source commit with a successful Deployment Packaging run. The
+fixture requires that run's matching native archive, OCI images and synthetic
+parser inputs. Through Crafty's API it imports, starts, stops and restarts a new
+disposable server, verifies its Bedrock UDP advertisement, installs the compiled
+integration, and checks recurring empty player/terrain heartbeats across a restart.
+The panel retains ordinary outbound networking alongside private ingestion; no
+panel or game ports are published. Only sanitized classifications enter the retained
+evidence. It does not connect players or establish gameplay/browser performance.
+
+Use **Actions → Deployment Packaging → Run workflow** with the desired code ref,
+then supply `source_sha`, `packaging_run_id`, `download_bds` and
+`accept_minecraft_eula`. Manual runs call the panel fixture instead of rebuilding
+release packages. The dedicated panel workflow exposes the same inputs.
+Real-client acceptance remains the operator's [separate check](TERRAIN-ACCEPTANCE.md).
+
+The selected workflow ref supplies the test harness; `source_sha` selects the
+application and its exact successful packaging run. Both commits are recorded in
+the result. This permits fixture fixes without rebuilding an unchanged application
+candidate. Archive/image provenance checks still require that application commit.
 
 ## Optional GitLab Publication
 

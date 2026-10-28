@@ -11,7 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { resolve, relative } from "node:path";
+import { dirname, resolve, relative } from "node:path";
 import { verifyCommon } from "./verify-common.mjs";
 
 const [target, nativeArg, commonArg, outputArg] = process.argv.slice(2);
@@ -106,11 +106,23 @@ await cp(
 for (const file of ["LICENSE", "THIRD_PARTY.md"])
   await cp(file, resolve(root, file));
 await mkdir(resolve(root, "docs"), { recursive: true });
-for (const file of ["INSTALL.md", "CI.md", "DEPLOYMENT.md"])
-  await cp(resolve("docs", file), resolve(root, "docs", file));
+const markdown = execFileSync("git", ["ls-files", "-z", "--", "docs/*.md"], {
+  encoding: "utf8",
+})
+  .split("\0")
+  .filter(Boolean);
+for (const file of markdown) {
+  await mkdir(dirname(resolve(root, file)), { recursive: true });
+  await cp(file, resolve(root, file));
+}
 await mkdir(resolve(root, "deploy"));
 await cp("deploy/FIREWALL.md", resolve(root, "deploy/FIREWALL.md"));
-await cp("CONTRIBUTING.md", resolve(root, "docs/CONTRIBUTING.md"));
+await cp("CONTRIBUTING.md", resolve(root, "CONTRIBUTING.md"));
+await mkdir(resolve(root, "tracking"));
+await cp(
+  "tracking/compatibility.json",
+  resolve(root, "tracking/compatibility.json"),
+);
 await cp("sources/build-tools.json", resolve(root, "docs/build-tools.json"));
 await writeFile(
   resolve(root, "BUILDING.txt"),

@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
+import { startGeneratedMap } from "./generated-startup.mjs";
 
 export async function verifyGeneratedBrowser({
   port,
@@ -65,26 +66,25 @@ export async function verifyGeneratedBrowser({
       const page = await context.newPage();
       const requests = [],
         errors = [],
+        transportFailures = [],
         consoleMessages = [];
       page.on("request", (request) => requests.push(request.url()));
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("requestfailed", (request) => {
+        if (request.failure()?.errorText === "net::ERR_NETWORK_CHANGED")
+          transportFailures.push("net::ERR_NETWORK_CHANGED");
+      });
       page.on("console", (message) => {
         if (["error", "warning"].includes(message.type()))
           consoleMessages.push(message.text());
       });
       try {
-        await page.goto(`${origin}${suffix}`, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await page.waitForFunction(
-          () =>
-            window.__map?.ready &&
-            window.__map.state().cached > 0 &&
-            window.__map.state().pending === 0 &&
-            window.__map.state().draws > 0,
-          undefined,
-          { timeout: 30_000 },
+        const startupNetworkRecoveries = await startGeneratedMap(
+          page,
+          `${origin}${suffix}`,
+          errors,
+          consoleMessages,
+          transportFailures,
         );
         await page.evaluate(() => {
           const map = window.__map,
@@ -261,6 +261,7 @@ export async function verifyGeneratedBrowser({
         assert.deepEqual(errors, []);
         cases.push({
           path: suffix,
+          startup_network_recoveries: startupNetworkRecoveries,
           picking: "-9 / 65 / -9",
           material: "grass",
           distinct_pixel_colors: colors.size,
@@ -283,9 +284,11 @@ export async function verifyGeneratedBrowser({
       } catch (error) {
         if (evidenceDirectory) {
           await mkdir(evidenceDirectory, { recursive: true });
-          await page.screenshot({
-            path: join(evidenceDirectory, `case-${cases.length}.png`),
-          });
+          await page
+            .screenshot({
+              path: join(evidenceDirectory, `case-${cases.length}.png`),
+            })
+            .catch(() => {});
           await writeFile(
             join(evidenceDirectory, `case-${cases.length}.json`),
             JSON.stringify(
@@ -293,10 +296,14 @@ export async function verifyGeneratedBrowser({
                 path: suffix,
                 errors,
                 consoleMessages,
-                state: await page.evaluate(() => ({
-                  map: window.__map?.state(),
-                  message: document.querySelector("#message")?.textContent,
-                })),
+                transportFailures,
+                failure: { name: error.name, message: error.message },
+                state: await page
+                  .evaluate(() => ({
+                    map: window.__map?.state(),
+                    message: document.querySelector("#message")?.textContent,
+                  }))
+                  .catch(() => ({ unavailable_during_navigation: true })),
               },
               null,
               2,

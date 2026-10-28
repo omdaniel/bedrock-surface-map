@@ -1,4 +1,4 @@
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::net::Ipv4Addr;
 
@@ -8,8 +8,12 @@ pub struct Config {
     pub schema_version: u8,
     pub project: String,
     pub public_origin: String,
-    pub ingest_bind: Ipv4Addr,
-    pub bds_source_ipv4: Ipv4Addr,
+    pub ingest_bind: Option<Ipv4Addr>,
+    pub bds_source_ipv4: Option<Ipv4Addr>,
+    #[serde(default)]
+    pub bds: Bds,
+    #[serde(default)]
+    pub gateway: Gateway,
     pub world_id: Option<String>,
     #[serde(default)]
     pub features: Features,
@@ -19,6 +23,33 @@ pub struct Config {
     pub ports: Ports,
     #[serde(default)]
     pub terrain_pack: TerrainPack,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct Bds {
+    /// An existing dedicated internal Docker network shared with BDS.
+    pub network: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Gateway {
+    #[default]
+    Managed,
+    Proxy {
+        #[serde(default = "proxy_bind")]
+        bind: Ipv4Addr,
+        #[serde(default = "proxy_port")]
+        port: u16,
+    },
+}
+
+fn proxy_bind() -> Ipv4Addr {
+    Ipv4Addr::LOCALHOST
+}
+fn proxy_port() -> u16 {
+    8080
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -96,6 +127,29 @@ pub fn identifier(value: &str, maximum: usize) -> bool {
 }
 
 impl Config {
+    pub fn ingest_alias(&self, service: &str) -> String {
+        format!("{}-{service}-ingest", self.project.replace('_', "-"))
+    }
+
+    pub fn ingest_url(&self, service: &str) -> Result<String> {
+        let (internal, published, route) = match service {
+            "players" => (8081, self.ports.players, "snapshot"),
+            "terrain" => (8082, self.ports.terrain, "terrain"),
+            _ => anyhow::bail!("E_CONFIG_INVALID: unknown ingest service"),
+        };
+        let (host, port) = if self.bds.network.is_some() {
+            (self.ingest_alias(service), internal)
+        } else {
+            (
+                self.ingest_bind
+                    .context("E_CONFIG_INVALID: ingest_bind is required")?
+                    .to_string(),
+                published,
+            )
+        };
+        Ok(format!("http://{host}:{port}/ingest/v1/{route}"))
+    }
+
     pub fn parse(text: &str) -> Result<Self> {
         ensure!(
             text.len() <= 16 * 1024,
@@ -137,10 +191,38 @@ impl Config {
                         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')),
             "E_CONFIG_INVALID: use a dedicated lowercase hostname HTTPS origin, without port, trailing slash, path or credentials"
         );
-        ensure!(
-            self.ingest_bind.is_private() && self.bds_source_ipv4.is_private(),
-            "E_CONFIG_INVALID: ingest and BDS source must be explicit RFC1918 IPv4 addresses on a trusted LAN/VPN"
-        );
+        if let Some(network) = &self.bds.network {
+            ensure!(
+                self.ingest_bind.is_none()
+                    && self.bds_source_ipv4.is_none()
+                    && (1..=63).contains(&network.len())
+                    && network.as_bytes()[0].is_ascii_alphanumeric()
+                    && network
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+                    && network != &format!("{}_app", self.project),
+                "E_CONFIG_INVALID: bds.network must name a dedicated internal Docker network; omit LAN ingestion addresses"
+            );
+        } else {
+            ensure!(
+                self.ingest_bind.is_some_and(|a| a.is_private())
+                    && self.bds_source_ipv4.is_some_and(|a| a.is_private()),
+                "E_CONFIG_INVALID: ingest and BDS source must be explicit RFC1918 IPv4 addresses on a trusted LAN/VPN"
+            );
+        }
+        if let Gateway::Proxy { bind, port } = self.gateway {
+            ensure!(
+                (bind.is_loopback() || bind.is_private()) && port >= 1024,
+                "E_CONFIG_INVALID: proxy gateway requires a loopback/private IPv4 bind and an unprivileged port"
+            );
+            ensure!(
+                self.bds.network.is_some()
+                    || self.ingest_bind != Some(bind)
+                    || ((!self.features.players || self.ports.players != port)
+                        && (!self.features.terrain || self.ports.terrain != port)),
+                "E_CONFIG_INVALID: proxy and ingestion ports conflict"
+            );
+        }
         ensure!(
             self.features.terrain || self.features.players,
             "E_CONFIG_INVALID: enable at least one live feed; snapshots use the snapshot commands"
@@ -249,7 +331,7 @@ mod tests {
             "255.255.255.255",
         ] {
             let mut c = Config::parse(&input()).unwrap();
-            c.ingest_bind = address.parse().unwrap();
+            c.ingest_bind = Some(address.parse().unwrap());
             assert!(c.validate().is_err(), "{address}");
         }
     }
@@ -260,5 +342,63 @@ mod tests {
         assert!(c.validate().is_err());
         c.viewer.acknowledge_public_locations = true;
         c.validate().unwrap();
+    }
+
+    #[test]
+    fn docker_ingestion_uses_service_dns_without_host_addresses() {
+        let input = input()
+            .replace("ingest_bind='10.20.0.10'\n", "")
+            .replace("bds_source_ipv4='10.20.0.20'\n", "")
+            + "[bds]\nnetwork='minecraft-map-ingest'\n";
+        let config = Config::parse(&input).unwrap();
+        assert_eq!(
+            config.ingest_url("players").unwrap(),
+            "http://fixture-map-players-ingest:8081/ingest/v1/snapshot"
+        );
+        assert_eq!(
+            config.ingest_url("terrain").unwrap(),
+            "http://fixture-map-terrain-ingest:8082/ingest/v1/terrain"
+        );
+        assert_eq!(
+            Config::parse(&toml::to_string(&config).unwrap()).unwrap(),
+            config
+        );
+        assert!(Config::parse(&(self::input() + "[bds]\nnetwork='private'\n")).is_err());
+        for name in ["", "../unsafe", "fixture-map_app", "bad network", "-bad"] {
+            assert!(Config::parse(&input.replace("minecraft-map-ingest", name)).is_err());
+        }
+    }
+
+    #[test]
+    fn proxy_requires_a_private_listener_and_preserves_public_https_origin() {
+        let config = Config::parse(&(input() + "[gateway]\nmode='proxy'\n")).unwrap();
+        assert_eq!(
+            config.gateway,
+            Gateway::Proxy {
+                bind: Ipv4Addr::LOCALHOST,
+                port: 8080
+            }
+        );
+        assert_eq!(
+            Config::parse(&toml::to_string(&config).unwrap()).unwrap(),
+            config
+        );
+        for fields in [
+            "bind='0.0.0.0'",
+            "bind='1.1.1.1'",
+            "port=80",
+            "port=65536",
+            "port='8080'",
+            "unknown=true",
+        ] {
+            assert!(
+                Config::parse(&(input() + "[gateway]\nmode='proxy'\n" + fields)).is_err(),
+                "{fields}"
+            );
+        }
+        assert!(
+            Config::parse(&(input() + "[gateway]\nmode='proxy'\nbind='10.20.0.10'\nport=18081\n"))
+                .is_err()
+        );
     }
 }

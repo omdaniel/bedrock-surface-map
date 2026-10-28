@@ -43,6 +43,7 @@ textures, and two fictional players. It has **no connection to a Minecraft
 server**, and its simulated edits do not alter the original world.
 
 [Install a snapshot viewer](docs/INSTALL.md) ·
+[Add to an existing Bedrock server](docs/QUICKSTART-BDS.md) ·
 [Run locally or import your world](docs/GETTING_STARTED.md) ·
 [Development and architecture](docs/DEVELOPMENT.md) · [Contributing](CONTRIBUTING.md) ·
 [Live players](docs/TRACKING.md) · [Live terrain](docs/TERRAIN-SYNC.md)
