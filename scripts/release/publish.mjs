@@ -167,6 +167,7 @@ execFileSync(
     expectedTag,
     "--repo",
     "omdaniel/bedrock-surface-map",
+    "--verify-tag",
     ...expected.map((name) => resolve(dist, name)),
     resolve(dist, "SHA256SUMS"),
     resolve(dist, "release-evidence.json"),

@@ -1,0 +1,68 @@
+name: Publish Verified Release
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run:
+        description: Successful Deployment Packaging main run ID for this exact tag
+        required: true
+        type: string
+      publish:
+        description: Publish verified public images and GitHub Release (false validates only)
+        required: true
+        default: false
+        type: boolean
+permissions:
+  contents: read
+concurrency:
+  group: publication-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    if: github.repository == 'omdaniel/bedrock-surface-map'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BEDROCK_MAP_PUBLISH_APPROVED: ${{ inputs.publish && 'true' || 'false' }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+      - name: Download and validate the exact tested candidate
+        run: node scripts/release/prepare-publication.mjs --run "$CANDIDATE_RUN" --output .local/publication
+      - name: Install registry tool
+        if: inputs.publish
+        run: sudo apt-get update && sudo apt-get install -y skopeo
+      - name: Authenticate with the short-lived workflow token
+        if: inputs.publish
+        run: |
+          umask 077
+          publication_auth="$RUNNER_TEMP/surface-registry-auth.json"
+          printf 'BEDROCK_MAP_REGISTRY_AUTH_FILE=%s\n' "$publication_auth" >> "$GITHUB_ENV"
+          printf '%s' "$GH_TOKEN" | skopeo login --authfile "$publication_auth" --username "$GITHUB_ACTOR" --password-stdin ghcr.io
+      - name: Publish unchanged images and operator bundles
+        if: inputs.publish
+        run: |
+          OCI=".local/publication/input/deployment-oci-combined-$GITHUB_SHA"
+          node scripts/release/publish.mjs --publish --dist .local/publication/dist --deployment "$OCI"
+      - name: Preserve public release files and source-run identity
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: verified-publication-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            .local/publication/dist/
+            .local/publication/source-run.json
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Remove registry credential
+        if: always()
+        run: rm -f -- "$RUNNER_TEMP/surface-registry-auth.json"
