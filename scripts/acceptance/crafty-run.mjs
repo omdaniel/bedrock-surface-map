@@ -213,7 +213,7 @@ export async function downloadBds(destination) {
   return { ...BDS, bytes: size, verified_sha256: sha256(bytes) };
 }
 
-function panelClient(port, certificate, recordFailure = () => {}) {
+function panelClient(host, port, certificate, recordFailure = () => {}) {
   const pin = new X509Certificate(certificate).fingerprint256;
   let token;
   const api = (path, method = "GET", body, anonymous = false) =>
@@ -222,7 +222,7 @@ function panelClient(port, certificate, recordFailure = () => {}) {
       const bytes = body === undefined ? undefined : JSON.stringify(body);
       const req = request(
         {
-          hostname: "127.0.0.1",
+          hostname: host,
           servername: "localhost",
           port,
           path,
@@ -701,8 +701,6 @@ export async function runCraftyAcceptance(
       "max-size=5m",
       "--log-opt",
       "max-file=2",
-      "-p",
-      "127.0.0.1::8443",
       "-e",
       "TZ=UTC",
       CRAFTY.image,
@@ -710,33 +708,32 @@ export async function runCraftyAcceptance(
     panelStarted = true;
     const info = JSON.parse(docker("inspect", panel))[0];
     assert.equal(info.HostConfig.Privileged, false);
-    assert.deepEqual(Object.keys(info.HostConfig.PortBindings), ["8443/tcp"]);
-    assert.equal(
-      info.HostConfig.PortBindings["8443/tcp"][0].HostIp,
-      "127.0.0.1",
+    assert.ok(
+      !Object.values(info.HostConfig.PortBindings ?? {}).some((v) => v?.length),
+    );
+    const panelAddress = info.NetworkSettings.Networks[network].IPAddress;
+    assert.match(
+      panelAddress,
+      /^(?:10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.)/,
     );
     assert.equal(
       JSON.parse(docker("network", "inspect", network))[0].Internal,
       true,
     );
     report.stage = "crafty-certificate";
-    const certificate = await waitFor(
-      () =>
-        docker(
-          "exec",
-          panel,
-          "cat",
-          "/crafty/app/config/web/certs/commander.cert.pem",
-        ),
-      "Crafty certificate",
-    );
-    client = panelClient(
-      info.NetworkSettings.Ports["8443/tcp"][0].HostPort,
-      certificate,
-      (failure) => {
-        report.panel_api_failure = { stage: report.stage, ...failure };
-      },
-    );
+    const certificate = await waitFor(() => {
+      const pem = docker(
+        "exec",
+        panel,
+        "cat",
+        "/crafty/app/config/web/certs/commander.cert.pem",
+      );
+      new X509Certificate(pem);
+      return pem;
+    }, "Crafty certificate");
+    client = panelClient(panelAddress, 8443, certificate, (failure) => {
+      report.panel_api_failure = { stage: report.stage, ...failure };
+    });
     report.stage = "crafty-credentials";
     const credentials = JSON.parse(
       await waitFor(
