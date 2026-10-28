@@ -82,6 +82,11 @@ then supply `source_sha`, `packaging_run_id`, `download_bds` and
 release packages. The dedicated panel workflow exposes the same inputs.
 Real-client acceptance remains the operator's [separate check](TERRAIN-ACCEPTANCE.md).
 
+The selected workflow ref supplies the test harness; `source_sha` selects the
+application and its exact successful packaging run. Both commits are recorded in
+the result. This permits fixture fixes without rebuilding an unchanged application
+candidate. Archive/image provenance checks still require that application commit.
+
 ## Optional GitLab Publication
 
 Configure these protected GitLab variables before enabling its jobs:

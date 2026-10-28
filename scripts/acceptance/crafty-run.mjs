@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { randomBytes, X509Certificate } from "node:crypto";
 import {
   chmod,
@@ -14,7 +14,7 @@ import {
 import { request } from "node:https";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { stageLocalCandidate } from "../deploy/stage-oci.mjs";
 import {
   BDS,
@@ -29,6 +29,112 @@ import {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+const failureCodes = new Set([
+  "ERR_ASSERTION",
+  "SUBPROCESS_FAILURE",
+  "WAIT_TIMEOUT",
+  "ACCEPTANCE_FAILURE",
+  "ENOENT",
+  "EACCES",
+  "ENOBUFS",
+  "ETIMEDOUT",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "EAI_AGAIN",
+  "ENOTFOUND",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "ERR_TLS_CERT_ALTNAME_INVALID",
+  "CERT_HAS_EXPIRED",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "ERR_TLS_CERT_SIGNATURE_ALGORITHM_UNSUPPORTED",
+]);
+const failureCode = (error) =>
+  failureCodes.has(error?.code) ? error.code : "ACCEPTANCE_FAILURE";
+
+// Fixed classifications only: neither a line, a matched substring, nor an
+// exception message is ever retained in the report.
+export function classifyPanelLogs(text) {
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const count = (pattern) => lines.filter((line) => pattern.test(line)).length;
+  return {
+    lines_inspected: lines.length,
+    wrapper_launch: count(/Wrapper.*Launching crafty/i),
+    config_initialization: count(
+      /Config not found|Initialization complete|Fresh install detected/i,
+    ),
+    certificate_generation: count(
+      /Generating a self signed SSL|Generating a key pair/i,
+    ),
+    web_listening: count(
+      /Starting Web Server|is up and ready for connections/i,
+    ),
+    ready: count(/fully started and is now ready for use/i),
+    python_tracebacks: count(/Traceback \(most recent call last\)/),
+    fatal_errors: count(/\bCRITICAL\b|\bFATAL\b|uncaught|failed to start/i),
+    permission_errors: count(
+      /PermissionError|permission denied|operation not permitted/i,
+    ),
+    missing_files: count(/FileNotFoundError|No such file or directory/i),
+    missing_modules: count(/ModuleNotFoundError|ImportError|No module named/i),
+    certificate_errors: count(
+      /SSLError|certificate.*(?:invalid|verify failed)|SSL.*(?:error|fail)/i,
+    ),
+    network_errors: count(
+      /NameResolutionError|Temporary failure in name resolution|Network is unreachable|ConnectionError|Connection(?:Refused|Reset|Aborted)Error|Connection refused|ConnectTimeout|ReadTimeout|timed out/i,
+    ),
+    port_conflicts: count(/Address already in use|port is already allocated/i),
+    storage_errors: count(
+      /No space left on device|database is locked|database.*malformed/i,
+    ),
+  };
+}
+
+export function sanitizePanelState(info) {
+  const states = new Set([
+    "created",
+    "running",
+    "paused",
+    "restarting",
+    "removing",
+    "exited",
+    "dead",
+  ]);
+  return {
+    exists: true,
+    status: states.has(info.State?.Status) ? info.State.Status : "unknown",
+    running: info.State?.Running === true,
+    exit_code: Number.isSafeInteger(info.State?.ExitCode)
+      ? info.State.ExitCode
+      : null,
+    oom_killed: info.State?.OOMKilled === true,
+    restart_count: Number.isSafeInteger(info.RestartCount)
+      ? info.RestartCount
+      : null,
+    engine_error_present: Boolean(info.State?.Error),
+    engine_error_classifications: classifyPanelLogs(
+      String(info.State?.Error ?? ""),
+    ),
+    image_matches_pin: info.Image === CRAFTY.amd64_config,
+  };
+}
+
+// Application identity comes from cwd; harness identity comes from this module's
+// checkout even when it is invoked from a separate exact-commit candidate tree.
+export function acceptanceCommits() {
+  const commit = execute("git", ["rev-parse", "HEAD"]);
+  const harness_commit = execute("git", [
+    "-C",
+    dirname(fileURLToPath(import.meta.url)),
+    "rev-parse",
+    "HEAD",
+  ]);
+  assert.match(commit, /^[a-f0-9]{40}$/);
+  assert.match(harness_commit, /^[a-f0-9]{40}$/);
+  return { commit, harness_commit };
+}
+
 // No inherited child output: a failed panel, CLI or BDS command can contain
 // credentials. The reviewable report uses fixed stage names and classifications.
 function execute(command, args, options = {}) {
@@ -41,23 +147,38 @@ function execute(command, args, options = {}) {
       ...options,
     }).trim();
   } catch (error) {
-    throw Error(
-      `${command} failed (status ${error.status ?? error.code ?? "unknown"}); private output omitted`,
-    );
+    const failure = Error("subprocess failed; private output omitted");
+    failure.code = "SUBPROCESS_FAILURE";
+    failure.subprocess = {
+      exit_code: Number.isSafeInteger(error.status) ? error.status : null,
+      timed_out: error.code === "ETIMEDOUT",
+      output_bound_exceeded: error.code === "ENOBUFS",
+      signal: ["SIGTERM", "SIGKILL", "SIGABRT"].includes(error.signal)
+        ? error.signal
+        : null,
+      stderr_classifications: classifyPanelLogs(String(error.stderr ?? "")),
+    };
+    throw failure;
   }
 }
 
 async function waitFor(callback, label, timeout = 120000) {
   const end = Date.now() + timeout;
+  let last;
   while (Date.now() < end) {
     try {
       return await callback();
-    } catch {
+    } catch (error) {
+      last = error;
       /* retry without logging private values */
     }
     await sleep(1000);
   }
-  throw Error(`timed out: ${label}`);
+  const failure = Error(`timed out: ${label}`);
+  failure.code = "WAIT_TIMEOUT";
+  failure.last_code = failureCode(last);
+  if (last?.subprocess) failure.last_subprocess = last.subprocess;
+  throw failure;
 }
 
 // Download only the exact official origin/path. Redirects, HTML error pages,
@@ -92,7 +213,7 @@ export async function downloadBds(destination) {
   return { ...BDS, bytes: size, verified_sha256: sha256(bytes) };
 }
 
-function panelClient(port, certificate) {
+function panelClient(port, certificate, recordFailure = () => {}) {
   const pin = new X509Certificate(certificate).fingerprint256;
   let token;
   const api = (path, method = "GET", body, anonymous = false) =>
@@ -129,7 +250,13 @@ function panelClient(port, certificate) {
               req.destroy(Error("panel response bound"));
             else parts.push(part);
           });
-          res.on("error", fail);
+          res.on("error", (error) => {
+            recordFailure({
+              kind: "response-transport",
+              code: failureCode(error),
+            });
+            fail(Error("panel response transport failed; details omitted"));
+          });
           res.on("end", () => {
             try {
               const result = JSON.parse(Buffer.concat(parts));
@@ -137,12 +264,22 @@ function panelClient(port, certificate) {
                 res.statusCode < 200 ||
                 res.statusCode >= 300 ||
                 result.status !== "ok"
-              )
+              ) {
+                recordFailure({
+                  kind: "api-rejected",
+                  http_status: res.statusCode,
+                });
                 throw Error(
                   `panel ${method} request failed (${res.statusCode}); details omitted`,
                 );
+              }
               ok(result.data);
-            } catch {
+            } catch (error) {
+              if (error instanceof SyntaxError)
+                recordFailure({
+                  kind: "invalid-json",
+                  http_status: res.statusCode,
+                });
               fail(
                 Error(
                   `panel ${method} response failed (${res.statusCode}); details omitted`,
@@ -152,10 +289,16 @@ function panelClient(port, certificate) {
           });
         },
       );
-      req.on("error", () =>
-        fail(Error("disposable panel HTTPS request failed")),
-      );
-      req.on("timeout", () => req.destroy());
+      req.on("error", (error) => {
+        recordFailure({ kind: "request-transport", code: failureCode(error) });
+        const failure = Error("disposable panel HTTPS request failed");
+        failure.code = failureCode(error);
+        fail(failure);
+      });
+      req.on("timeout", () => {
+        recordFailure({ kind: "request-timeout", code: "ETIMEDOUT" });
+        req.destroy();
+      });
       req.end(bytes);
     });
   return {
@@ -191,7 +334,7 @@ export async function runCraftyAcceptance(
 ) {
   requireDisposable();
   assert.ok(process.getuid() > 0, "use the non-root hosted runner operator");
-  const commit = execute("git", ["rev-parse", "HEAD"]);
+  const { commit, harness_commit } = acceptanceCommits();
   assert.equal(commit, process.env.CRAFTY_SOURCE_SHA);
   await mkdir(dirname(output), { recursive: true });
   try {
@@ -223,6 +366,7 @@ export async function runCraftyAcceptance(
     schema_version: 1,
     scope: "disposable-crafty-real-bds-empty-server",
     commit,
+    harness_commit,
     packaging_run_id: process.env.CRAFTY_PACKAGING_RUN_ID,
     crafty: CRAFTY,
     bds: BDS,
@@ -245,6 +389,37 @@ export async function runCraftyAcceptance(
     serverId,
     serverPath;
   const logLines = new Set();
+  const capturePanelFailure = () => {
+    try {
+      const info = JSON.parse(
+        execute("docker", ["inspect", panel], {
+          timeout: 10000,
+          maxBuffer: 1024 ** 2,
+        }),
+      )[0];
+      report.panelState = sanitizePanelState(info);
+      // Also remove a container left behind by an unsuccessful docker run.
+      panelStarted = true;
+    } catch {
+      report.panelState = { exists: null, inspect_available: false };
+    }
+    try {
+      // Docker may place either stream on stderr; collect both privately.
+      const logs = spawnSync("docker", ["logs", "--tail", "300", panel], {
+        encoding: "utf8",
+        timeout: 10000,
+        maxBuffer: 1024 ** 2,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      report.panel_logs = {
+        capture_succeeded: logs.status === 0,
+        output_bound_exceeded: logs.error?.code === "ENOBUFS",
+        ...classifyPanelLogs(`${logs.stdout ?? ""}\n${logs.stderr ?? ""}`),
+      };
+    } catch {
+      report.panel_logs = { capture_succeeded: false };
+    }
+  };
   const collectLogs = async () => {
     if (!client || !serverId) return;
     const lines = await client.api(`/api/v2/servers/${serverId}/logs`);
@@ -496,8 +671,9 @@ export async function runCraftyAcceptance(
       no_accepted_synthetic_writes: true,
       unauthenticated_ingest_rejected: true,
     };
-    report.stage = "crafty-start-and-authenticate";
+    report.stage = "crafty-image-pull";
     docker("pull", "--platform", "linux/amd64", CRAFTY.image);
+    report.stage = "crafty-image-identity";
     const image = JSON.parse(docker("image", "inspect", CRAFTY.image))[0];
     assert.equal(image.Architecture, "amd64");
     assert.equal(image.Id, CRAFTY.amd64_config);
@@ -505,6 +681,7 @@ export async function runCraftyAcceptance(
       image.Config.Labels["org.opencontainers.image.revision"],
       CRAFTY.revision,
     );
+    report.stage = "crafty-container-boot";
     docker(
       "run",
       "-d",
@@ -542,6 +719,7 @@ export async function runCraftyAcceptance(
       JSON.parse(docker("network", "inspect", network))[0].Internal,
       true,
     );
+    report.stage = "crafty-certificate";
     const certificate = await waitFor(
       () =>
         docker(
@@ -555,7 +733,11 @@ export async function runCraftyAcceptance(
     client = panelClient(
       info.NetworkSettings.Ports["8443/tcp"][0].HostPort,
       certificate,
+      (failure) => {
+        report.panel_api_failure = { stage: report.stage, ...failure };
+      },
     );
+    report.stage = "crafty-credentials";
     const credentials = JSON.parse(
       await waitFor(
         () =>
@@ -563,6 +745,7 @@ export async function runCraftyAcceptance(
         "Crafty fresh credentials",
       ),
     );
+    report.stage = "crafty-authenticate";
     await waitFor(
       () =>
         client.authenticate({
@@ -573,6 +756,7 @@ export async function runCraftyAcceptance(
     );
     // Delete the bootstrap credential file as soon as the private in-memory
     // session exists. Neither password nor session token enters evidence.
+    report.stage = "crafty-bootstrap-cleanup-and-import-staging";
     docker("exec", panel, "rm", "/crafty/app/config/default-creds.txt");
     credentials.password = undefined;
     docker("exec", panel, "mkdir", "-p", "/crafty/import/upload");
@@ -791,10 +975,16 @@ export async function runCraftyAcceptance(
     // assertion's actual secret, panel response, raw log, or subprocess stderr.
     report.ok = false;
     report.failure = {
-      code: /^[A-Z_0-9]+$/.test(error.code ?? "")
-        ? error.code
-        : "ACCEPTANCE_FAILURE",
+      code: failureCode(error),
+      ...(failureCodes.has(error.last_code)
+        ? { last_code: error.last_code }
+        : {}),
+      ...(error.subprocess ? { subprocess: error.subprocess } : {}),
+      ...(error.last_subprocess
+        ? { last_subprocess: error.last_subprocess }
+        : {}),
     };
+    capturePanelFailure();
   } finally {
     const cleanup = [];
     if (panelStarted) {
@@ -808,6 +998,7 @@ export async function runCraftyAcceptance(
           if (report.ok) {
             report.ok = false;
             report.stage = "final-stop-and-log-inspection";
+            capturePanelFailure();
           }
         }
       }

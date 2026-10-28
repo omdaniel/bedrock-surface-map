@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
+import {
+  acceptanceCommits,
+  classifyPanelLogs,
+  sanitizePanelState,
+} from "./crafty-run.mjs";
 import {
   BDS,
   CRAFTY,
@@ -20,6 +28,65 @@ const authorized = {
   CRAFTY_ACCEPT_MINECRAFT_EULA: "true",
   CRAFTY_SOURCE_SHA: "a".repeat(40),
 };
+test("panel diagnostics classify failures without preserving credential canaries", () => {
+  const secret = "SYNTHETIC-NOT-FOR-EVIDENCE";
+  const state = sanitizePanelState({
+    State: {
+      Status: "exited",
+      Running: false,
+      ExitCode: 1,
+      Error: `Permission denied ${secret}`,
+    },
+    Config: { Env: [`PASSWORD=${secret}`] },
+    Image: CRAFTY.amd64_config,
+    RestartCount: 0,
+  });
+  assert.equal(state.running, false);
+  assert.equal(state.engine_error_classifications.permission_errors, 1);
+  const logs = classifyPanelLogs(
+    `Password: ${secret}\nTraceback (most recent call last)\nConnection refused`,
+  );
+  assert.equal(logs.python_tracebacks, 1);
+  assert.equal(logs.network_errors, 1);
+  assert.ok(!JSON.stringify({ state, logs }).includes(secret));
+});
+test("application identity stays distinct from the harness checkout", async () => {
+  const original = process.cwd();
+  const expectedHarness = acceptanceCommits().harness_commit;
+  const candidate = await mkdtemp(join(tmpdir(), "crafty-candidate-"));
+  try {
+    execFileSync("git", ["init", "--quiet", candidate]);
+    execFileSync("git", [
+      "-C",
+      candidate,
+      "-c",
+      "user.name=Fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "-c",
+      "commit.gpgsign=false",
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      "synthetic candidate",
+    ]);
+    const expected = execFileSync(
+      "git",
+      ["-C", candidate, "rev-parse", "HEAD"],
+      { encoding: "utf8" },
+    ).trim();
+    process.chdir(candidate);
+    assert.deepEqual(acceptanceCommits(), {
+      commit: expected,
+      harness_commit: expectedHarness,
+    });
+    assert.notEqual(expected, expectedHarness);
+  } finally {
+    process.chdir(original);
+    await rm(candidate, { recursive: true, force: true });
+  }
+});
 test("game download requires manual hosted Linux AMD64 and independent EULA opt-in", () => {
   requireDisposable(authorized, "linux", "x64");
   for (const key of Object.keys(authorized))
@@ -233,6 +300,13 @@ test("manual workflow pins every Action and cannot execute on pull requests", as
     assert.match(action[1], /@[a-f0-9]{40}$/);
   assert.match(yaml, /persist-credentials: false/);
   assert.match(yaml, /ref: \$\{\{ inputs\.source_sha \}\}/);
+  assert.match(yaml, /ref: \$\{\{ github\.sha \}\}/);
+  assert.match(yaml, /path: acceptance-harness/);
+  assert.match(yaml, /working-directory: candidate/);
+  assert.match(
+    yaml,
+    /node \.\.\/acceptance-harness\/scripts\/acceptance\/crafty-run\.mjs/,
+  );
   assert.match(yaml, /contents: read/);
   assert.match(yaml, /actions: read/);
 });
