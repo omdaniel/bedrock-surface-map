@@ -8,7 +8,7 @@ Python, Git, Zig, Vite, or a Minecraft server.
 
 ## Download and Run
 
-[Download v0.1.0](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
+[Download a release](https://github.com/omdaniel/bedrock-surface-map/releases/latest)
 for **Linux AMD64** (Intel/AMD x86-64) or **Linux ARM64**. The release includes
 checksums, source and native test evidence. macOS users can use the
 [public demo](https://omdaniel.github.io/bedrock-surface-map/) or the
@@ -20,7 +20,7 @@ and `sha256sum`; do not run them with `sudo`.
 
 ```sh
 set -eu
-version=v0.1.0
+version=v0.1.1
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64) arch=amd64 ;;
   Linux:aarch64|Linux:arm64) arch=arm64 ;;
@@ -57,9 +57,9 @@ uses the separate [initial live deployment](DEPLOYMENT.md), paired image/operato
 release and explicit BDS handoff. The [player](TRACKING-REFERENCE.md) and
 [terrain](TERRAIN-SYNC.md) guides describe the service interfaces for other operator
 integrations. The snapshot command is not a replacement for that setup.
-**v0.1.0 includes snapshot runtimes, not published live operator bundles or OCI
-image locks.** CI candidate artifacts are for release verification, not a simpler
-install path.
+Live installation requires the operator bundle and image lock from the same
+release. CI candidate artifacts are for release verification, not a simpler
+install path. Follow the documentation bundled with your selected version.
 
 ## Import Your World
 

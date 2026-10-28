@@ -9,11 +9,12 @@ acceptance are separate from passing synthetic CI.
 For an existing itzg Docker installation and an HTTPS proxy or tunnel, start
 with the [existing-server quickstart](QUICKSTART-BDS.md).
 
-**Release availability:** [v0.1.0](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
-provides the snapshot runtime. It does not include the published operator bundle
-and image lock required below. This guide documents the implemented deployment
-commands and requirements; it is not a claim that the snapshot download alone
-installs a live service. For the available install path, use [snapshot setup](INSTALL.md).
+Use a checksum-verified **operator** bundle from [Releases](https://github.com/omdaniel/bedrock-surface-map/releases).
+It includes the paired native runtime and registry image lock. Use its bundled
+documentation and keep all components on that release; a snapshot-only archive
+does not supply the image lock. Docker ingestion, proxy mode and the integration
+exporter/checker require version **0.2.0 or later**. For loopback viewing alone,
+use [snapshot setup](INSTALL.md).
 
 ## Requirements
 

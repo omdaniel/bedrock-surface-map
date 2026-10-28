@@ -13,10 +13,10 @@ the same release scripts on both native Linux architectures after an owner
 creates a mirror. Neither source nor native-test jobs publish binary releases.
 GitHub retains `native-amd64-<commit>` candidate artifacts for fourteen days;
 successful CI does not create a version tag or a GitHub Release. Deployment CI
-also validates both native archives. The published
-[v0.1.0 release](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
-contains those native runtimes and source-bound evidence, without live operator
-bundles. Publication is a separate owner action, never a side effect of a test.
+also validates both native archives. [Published releases](https://github.com/omdaniel/bedrock-surface-map/releases)
+provide native runtimes and source-bound evidence; live releases also include
+paired operator bundles and registry image locks. Publication is a separate owner
+action, never a side effect of a test.
 
 For a native-only GitHub release, collect both successful architecture artifacts
 from the **same exact-commit** Deployment Packaging run with `ci/collect-release.mjs`,
