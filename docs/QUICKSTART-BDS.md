@@ -9,8 +9,9 @@ Use an operator bundle that supports `[bds]`, `[gateway]` and `deploy export-bds
 the snapshot-only download is insufficient. See [release availability and host
 requirements](DEPLOYMENT.md). The map host needs supported Linux Docker/Compose,
 an existing trusted HTTPS hostname, a consistent offline world export, and access
-to the existing BDS files. Clients need an ordinary current Bedrock game and a
-WebGPU browser. The integration is BDS-only; Realms does not provide its networking
+to the existing BDS files. Players need a retail Bedrock client compatible with
+their server version; map viewers need a WebGPU browser. The integration is BDS-only;
+Realms does not provide its networking
 APIs. Test on a backed-up disposable world before installing on a persistent one.
 
 ## 1. Connect the Existing Server

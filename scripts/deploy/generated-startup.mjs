@@ -14,12 +14,20 @@ export function recoverableStartup(
     env.RUNNER_ENVIRONMENT === "github-hosted" &&
     !state.ready &&
     !state.draws &&
-    (transport.test(error.message) || transport.test(state.message ?? "")) &&
+    (transport.test(error.message) ||
+      transport.test(state.message ?? "") ||
+      state.networkChanged === true) &&
     pageErrors.every((message) => transport.test(message))
   );
 }
 
-export async function startGeneratedMap(page, url, errors, consoleMessages) {
+export async function startGeneratedMap(
+  page,
+  url,
+  errors,
+  consoleMessages,
+  transportFailures = [],
+) {
   let recoveries = 0;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -35,15 +43,29 @@ export async function startGeneratedMap(page, url, errors, consoleMessages) {
       );
       return recoveries;
     } catch (error) {
-      const state = await page.evaluate(() => ({
-        ready: Boolean(window.__map?.ready),
-        draws: window.__map?.state().draws ?? 0,
-        message: document.querySelector("#message")?.textContent,
-      }));
+      const readState = () =>
+        page.evaluate(() => ({
+          ready: Boolean(window.__map?.ready),
+          draws: window.__map?.state().draws ?? 0,
+          message: document.querySelector("#message")?.textContent,
+          networkChanged:
+            document.body?.innerText.includes("ERR_NETWORK_CHANGED") === true,
+        }));
+      const state = await readState().catch(async () => {
+        await page
+          .waitForLoadState("domcontentloaded", { timeout: 5000 })
+          .catch(() => {});
+        return readState().catch(() => ({}));
+      });
+      state.networkChanged ||= transportFailures.includes(
+        "net::ERR_NETWORK_CHANGED",
+      );
       if (attempt || !recoverableStartup(error, state, errors)) throw error;
       recoveries++;
       errors.length = 0;
       consoleMessages.length = 0;
+      transportFailures.length = 0;
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
   throw Error("unreachable startup state");

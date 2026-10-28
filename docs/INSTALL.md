@@ -20,7 +20,7 @@ and `sha256sum`; do not run them with `sudo`.
 
 ```sh
 set -eu
-version=v0.1.1
+version=v0.2.0
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64) arch=amd64 ;;
   Linux:aarch64|Linux:arm64) arch=arm64 ;;

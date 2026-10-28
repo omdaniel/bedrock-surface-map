@@ -66,9 +66,14 @@ export async function verifyGeneratedBrowser({
       const page = await context.newPage();
       const requests = [],
         errors = [],
+        transportFailures = [],
         consoleMessages = [];
       page.on("request", (request) => requests.push(request.url()));
       page.on("pageerror", (error) => errors.push(error.message));
+      page.on("requestfailed", (request) => {
+        if (request.failure()?.errorText === "net::ERR_NETWORK_CHANGED")
+          transportFailures.push("net::ERR_NETWORK_CHANGED");
+      });
       page.on("console", (message) => {
         if (["error", "warning"].includes(message.type()))
           consoleMessages.push(message.text());
@@ -79,6 +84,7 @@ export async function verifyGeneratedBrowser({
           `${origin}${suffix}`,
           errors,
           consoleMessages,
+          transportFailures,
         );
         await page.evaluate(() => {
           const map = window.__map,
@@ -278,9 +284,11 @@ export async function verifyGeneratedBrowser({
       } catch (error) {
         if (evidenceDirectory) {
           await mkdir(evidenceDirectory, { recursive: true });
-          await page.screenshot({
-            path: join(evidenceDirectory, `case-${cases.length}.png`),
-          });
+          await page
+            .screenshot({
+              path: join(evidenceDirectory, `case-${cases.length}.png`),
+            })
+            .catch(() => {});
           await writeFile(
             join(evidenceDirectory, `case-${cases.length}.json`),
             JSON.stringify(
@@ -288,10 +296,14 @@ export async function verifyGeneratedBrowser({
                 path: suffix,
                 errors,
                 consoleMessages,
-                state: await page.evaluate(() => ({
-                  map: window.__map?.state(),
-                  message: document.querySelector("#message")?.textContent,
-                })),
+                transportFailures,
+                failure: { name: error.name, message: error.message },
+                state: await page
+                  .evaluate(() => ({
+                    map: window.__map?.state(),
+                    message: document.querySelector("#message")?.textContent,
+                  }))
+                  .catch(() => ({ unavailable_during_navigation: true })),
               },
               null,
               2,

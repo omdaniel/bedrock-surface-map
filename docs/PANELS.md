@@ -44,6 +44,12 @@ Module configuration goes in `config/<script-module-uuid>`, never `config/defaul
 
 ## Crafty Controller
 
+The reference is Crafty **4.11.0** with official BDS **1.26.45.1**. Its isolated
+acceptance fixture uses the panel API and administrator file copies to verify
+startup, installed exports, authenticated empty-server heartbeats and restart.
+The file-manager steps below follow Crafty's documented interface; the fixture
+does not automate that UI. See [compatibility scope](COMPATIBILITY.md).
+
 1. Select the intended Bedrock server. Take and verify its backup, then stop it
    using Crafty's server controls.
 2. Open that server's **Files** view. Upload `bedrock-map-bds.zip` to the BDS root

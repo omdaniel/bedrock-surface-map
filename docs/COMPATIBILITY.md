@@ -10,7 +10,9 @@ definitions alone cannot prove it.
 |---|---|---|
 | Player pack | `@minecraft/server` runtime `2.9.0`; net/admin runtime `1.0.0-beta` | Exact dependencies are in the shipped pack manifest. |
 | Terrain pack | Same runtime dependencies, separate pack/module UUIDs | Its compatibility decision is independent of player tracking. |
-| Recorded BDS target | `1.26.45.1` | The [target record](../tracking/compatibility.json) is configuration metadata, not a guarantee for other builds. |
+| BDS runtime target | `1.26.45.1` | Isolated native AMD64 acceptance covers fresh-world creation, pack loading, authenticated empty-server heartbeats and restart. Other builds require their own acceptance. |
+| Crafty Controller | `4.11.0`, pinned image | The manual fixture imports and manages real BDS through its API, installs exports, checks installed readback and queries Bedrock status across restart. File-manager UI interaction is not automated. |
+| AMP | Documented file-manager/SFTP recipe | No executable AMP acceptance is claimed. |
 | TypeScript declarations | Server `2.9.0`; net/admin `1.0.0-beta.1.26.40-stable` | Build-time definitions pinned in `package-lock.json`; not runtime version strings. |
 | Map service host | Native Linux AMD64/ARM64, documented Docker/Compose versions | Native packaging and generated deployments have separate CI gates for both architectures. ARM map support does not imply ARM BDS support. |
 | Browser | WebGPU and a secure origin | Current Chrome/Safari are the reference browsers; an unsupported browser shows an explicit error. |
@@ -44,6 +46,11 @@ feature. Client/server version compatibility remains BDS's responsibility.
    Marker movement and terrain replacement are separate observations. A loaded
    snapshot, green container health or successful synthetic test is insufficient
    proof of actual BDS/player behavior.
+
+The [target record](../tracking/compatibility.json) pins the binary hash and
+declares the executable acceptance scope. Empty-server success does not establish
+client joins, moving players or loaded terrain scans. Docker/proxy browser CI uses
+synthetic producers separately; it does not substitute for real game behavior.
 
 The recorded target omits the optional `force_tls` setting because explicitly
 setting it to false can produce `TLSOnlyError` on that build. Do not broaden
