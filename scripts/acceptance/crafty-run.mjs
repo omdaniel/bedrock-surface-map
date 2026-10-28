@@ -308,6 +308,10 @@ function panelClient(host, port, certificate, recordFailure = () => {}) {
       assert.equal(typeof auth.token, "string");
       assert.ok(auth.token.length > 20);
       token = auth.token;
+      // A login response alone is insufficient: fresh-account token validation
+      // uses a whole-second issue time. Require an authenticated read before
+      // the bounded startup loop admits administrative writes.
+      await api("/api/v2/servers");
     },
   };
 }
