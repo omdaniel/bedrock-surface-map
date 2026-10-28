@@ -12,6 +12,14 @@ backup before enabling experiments on a persistent world. Use a disposable world
 for initial acceptance. Never upload an entire older world to install an update
 to these packs.
 
+**Beta APIs is a world experiment**, not a `server.properties` switch. If it is
+not enabled, use a consistent exported copy in a Bedrock client, enable it under
+the world's Experiments settings, and export that copy for isolated testing.
+Adopting that world on a persistent server requires its own backup and maintenance
+window. The pack exporter does not change `level.dat`. Follow [Microsoft's world
+experiment guidance](https://learn.microsoft.com/en-us/minecraft/creator/documents/experimentalfeaturestoggle?view=minecraft-bedrock-stable);
+removing the packs does not undo experimental status.
+
 ## Prepare the Files
 
 Where the map operator can read the existing BDS directory:
@@ -70,6 +78,13 @@ manager documentation](https://docs.craftycontrol.com/pages/user-guide/file-mana
 These are AMP's documented file-transfer conventions; see [its add-on installation
 guide](https://discourse.cubecoders.com/t/adding-add-ons-to-a-minecraft-bedrock-server/29000).
 This project does not require an AMP plugin or change the panel's launch command.
+
+File-manager uploads may use broader default permissions. Before starting BDS,
+use the panel's permission controls or a shell under the BDS service account to
+set each installed `config/<module-uuid>/secrets.json` to mode `0600`. Keep the
+BDS service account as owner. If the hosting plan provides neither mechanism,
+ask its administrator to set these permissions; the checker rejects group/world
+readable credentials.
 
 ## Verify the Installation
 

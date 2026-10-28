@@ -5,6 +5,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { PNG } from "pngjs";
 import { chromium } from "playwright";
+import { startGeneratedMap } from "./generated-startup.mjs";
 
 export async function verifyGeneratedBrowser({
   port,
@@ -73,18 +74,11 @@ export async function verifyGeneratedBrowser({
           consoleMessages.push(message.text());
       });
       try {
-        await page.goto(`${origin}${suffix}`, {
-          waitUntil: "domcontentloaded",
-          timeout: 30_000,
-        });
-        await page.waitForFunction(
-          () =>
-            window.__map?.ready &&
-            window.__map.state().cached > 0 &&
-            window.__map.state().pending === 0 &&
-            window.__map.state().draws > 0,
-          undefined,
-          { timeout: 30_000 },
+        const startupNetworkRecoveries = await startGeneratedMap(
+          page,
+          `${origin}${suffix}`,
+          errors,
+          consoleMessages,
         );
         await page.evaluate(() => {
           const map = window.__map,
@@ -261,6 +255,7 @@ export async function verifyGeneratedBrowser({
         assert.deepEqual(errors, []);
         cases.push({
           path: suffix,
+          startup_network_recoveries: startupNetworkRecoveries,
           picking: "-9 / 65 / -9",
           material: "grass",
           distinct_pixel_colors: colors.size,
