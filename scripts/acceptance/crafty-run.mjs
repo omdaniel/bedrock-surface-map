@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { stageLocalCandidate } from "../deploy/stage-oci.mjs";
+import { pingBedrock } from "./crafty-bedrock-ping.mjs";
 import {
   BDS,
   CRAFTY,
@@ -354,6 +355,7 @@ export async function runCraftyAcceptance(
   await chmod(temp, 0o700);
   const project = `surface-crafty-${randomBytes(6).toString("hex")}`;
   const network = `${project}-ingest`,
+    controlNetwork = `${project}-control`,
     panel = `${project}-panel`,
     registry = `${project}-registry`;
   const deployment = join(temp, "deployment"),
@@ -380,6 +382,7 @@ export async function runCraftyAcceptance(
     ok: false,
     stage: "initialize",
     checks: [],
+    game_status_checks: [],
     limitations: [
       "No game client or player connected",
       "No player movement, terrain scans, production worlds or public HTTPS tested",
@@ -390,6 +393,7 @@ export async function runCraftyAcceptance(
   };
   let registryStarted = false,
     networkStarted = false,
+    controlNetworkStarted = false,
     panelStarted = false,
     composeStarted = false,
     client,
@@ -589,6 +593,8 @@ export async function runCraftyAcceptance(
     );
     docker("network", "create", "--internal", network);
     networkStarted = true;
+    docker("network", "create", controlNetwork);
+    controlNetworkStarted = true;
     const config = join(temp, "deployment.toml"),
       passwordFile = join(temp, "viewer-password");
     await writeFile(passwordFile, randomBytes(32).toString("hex"), {
@@ -697,7 +703,7 @@ export async function runCraftyAcceptance(
       "--hostname",
       "crafty-acceptance",
       "--network",
-      network,
+      controlNetwork,
       "--memory",
       "4g",
       "--cpus",
@@ -713,6 +719,7 @@ export async function runCraftyAcceptance(
       CRAFTY.image,
     );
     panelStarted = true;
+    docker("network", "connect", network, panel);
     const info = JSON.parse(docker("inspect", panel))[0];
     assert.equal(info.HostConfig.Privileged, false);
     assert.ok(
@@ -727,6 +734,20 @@ export async function runCraftyAcceptance(
       JSON.parse(docker("network", "inspect", network))[0].Internal,
       true,
     );
+    const gameReady = async (phase) => {
+      const status = await waitFor(async () => {
+        assert.equal(processCount(), 1);
+        const status = await pingBedrock(panelAddress);
+        assert.ok(
+          [BDS.version, BDS.version.split(".").slice(0, 3).join(".")].includes(
+            status.version,
+          ),
+        );
+        assert.equal(status.players, 0);
+        return status;
+      }, "Bedrock UDP advertisement");
+      report.game_status_checks.push({ phase, ...status });
+    };
     report.stage = "crafty-certificate";
     const certificate = await waitFor(() => {
       const pem = docker(
@@ -810,11 +831,8 @@ export async function runCraftyAcceptance(
     );
     report.stage = "fresh-world-generation";
     await action("start_server");
-    await waitFor(async () => {
-      await checkLogs();
-      assert.ok(report.bds_console.starts >= 1);
-      assert.equal(processCount(), 1);
-    }, "fresh official world startup");
+    await gameReady("fresh-world");
+    await checkLogs();
     await action("stop_server");
     await stopped();
     await checkLogs();
@@ -929,10 +947,12 @@ export async function runCraftyAcceptance(
     report.stage = "bds-packs-first-start";
     await action("start_server");
     const first = await observe();
+    await gameReady("packs-loaded");
     const recurring = await observe(first);
     report.stage = "crafty-bds-restart";
     await action("restart_server");
     const restarted = await observe(undefined, first.instance_id);
+    await gameReady("after-restart");
     const after = await observe(restarted);
     assert.equal(processCount(), 1);
     await waitFor(
@@ -962,10 +982,7 @@ export async function runCraftyAcceptance(
       true,
       "BDS did not report pinned version",
     );
-    assert.ok(
-      report.bds_console.starts >= 3,
-      "require fresh start, pack start and panel restart",
-    );
+    assert.equal(report.game_status_checks.length, 3);
     report.checks.push(
       "authenticated-empty-roster-recurs",
       "terrain-empty-health-recurs",
@@ -1024,6 +1041,13 @@ export async function runCraftyAcceptance(
         docker("network", "rm", network);
       } catch {
         cleanup.push("private-network-removal");
+      }
+    }
+    if (controlNetworkStarted) {
+      try {
+        docker("network", "rm", controlNetwork);
+      } catch {
+        cleanup.push("panel-control-network-removal");
       }
     }
     if (registryStarted) {

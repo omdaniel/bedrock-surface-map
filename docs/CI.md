@@ -72,8 +72,10 @@ are separate, explicit inputs. Ordinary PR checks do neither.
 Select an exact source commit with a successful Deployment Packaging run. The
 fixture requires that run's matching native archive, OCI images and synthetic
 parser inputs. Through Crafty's API it imports, starts, stops and restarts a new
-disposable server, installs the compiled integration, and checks recurring empty
-player/terrain heartbeats. Only sanitized classifications enter the retained
+disposable server, verifies its Bedrock UDP advertisement, installs the compiled
+integration, and checks recurring empty player/terrain heartbeats across a restart.
+The panel retains ordinary outbound networking alongside private ingestion; no
+panel or game ports are published. Only sanitized classifications enter the retained
 evidence. It does not connect players or establish gameplay/browser performance.
 
 Use **Actions → Deployment Packaging → Run workflow** with the desired code ref,
