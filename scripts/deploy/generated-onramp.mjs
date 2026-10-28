@@ -145,17 +145,22 @@ export async function verifyExistingServerTopology({
       tokens = {};
     for (const service of ["players", "terrain"]) {
       hosts[service] = `${name}-${service}-ingest`;
-      addresses[hosts[service]] =
-        inspect(service).NetworkSettings.Networks[network].IPAddress;
-      assert.ok(
-        docker(
-          "exec",
-          producerName,
-          "/bin/busybox",
-          "nslookup",
-          hosts[service],
-        ).includes(addresses[hosts[service]]),
-        "BDS namespace must resolve the generated collector alias",
+      const endpoint = inspect(service).NetworkSettings.Networks[network];
+      assert.ok(endpoint.Aliases.includes(hosts[service]));
+      addresses[hosts[service]] = endpoint.IPAddress;
+      await waitFor(() =>
+        assert.ok(
+          docker(
+            "exec",
+            producerName,
+            "/bin/busybox",
+            "nslookup",
+            "-type=A",
+            `${hosts[service]}.`,
+            "127.0.0.11",
+          ).includes(addresses[hosts[service]]),
+          "BDS namespace must resolve the generated collector alias",
+        ),
       );
       tokens[service] = await readFile(
         join(root, `secrets/${service}.token`),
