@@ -233,7 +233,8 @@ function panelClient(host, port, certificate, recordFailure = () => {}) {
             cert.fingerprint256 === pin
               ? undefined
               : Error("disposable panel certificate changed"),
-          timeout: 5000,
+          timeout:
+            method === "POST" && path === "/api/v2/servers" ? 120000 : 10000,
           headers: {
             "content-type": "application/json",
             ...(token && !anonymous
@@ -297,7 +298,9 @@ function panelClient(host, port, certificate, recordFailure = () => {}) {
       });
       req.on("timeout", () => {
         recordFailure({ kind: "request-timeout", code: "ETIMEDOUT" });
-        req.destroy();
+        const failure = Error("private panel request deadline");
+        failure.code = "ETIMEDOUT";
+        req.destroy(failure);
       });
       req.end(bytes);
     });
