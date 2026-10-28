@@ -72,6 +72,31 @@ enum Command {
 
 #[derive(Subcommand)]
 enum DeployCommand {
+    /// Export BDS templates, or merged server-root files with --server-dir.
+    ExportBds {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// BDS world folder (must match server.properties when reading a server).
+        #[arg(long)]
+        world: String,
+        /// Read existing registration/settings to prepare ready-to-copy merged output.
+        #[arg(long)]
+        server_dir: Option<PathBuf>,
+        /// Explicit NEW owner-private directory for separate credentials/templates.
+        #[arg(long)]
+        secrets_dir: Option<PathBuf>,
+    },
+    /// Read-only BDS file/settings checks; no Docker, LevelDB or restart.
+    CheckBds {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        server_dir: PathBuf,
+        #[arg(long)]
+        world: String,
+    },
     /// Read-only local preflight, optionally checking this running project.
     Check {
         #[arg(long)]
@@ -229,6 +254,12 @@ fn command_name(command: &Command) -> &'static str {
         Command::Deploy {
             command: DeployCommand::Check { .. },
         } => "deploy.check",
+        Command::Deploy {
+            command: DeployCommand::ExportBds { .. },
+        } => "deploy.export-bds",
+        Command::Deploy {
+            command: DeployCommand::CheckBds { .. },
+        } => "deploy.check-bds",
         Command::InternalHealth { .. } => "internal-health",
         Command::Init => "init",
         Command::Demo { .. } => "demo",
@@ -248,6 +279,39 @@ fn command_name(command: &Command) -> &'static str {
 async fn run(args: Args) -> Result<u8> {
     if let Command::Deploy { command } = &args.command {
         match command {
+            DeployCommand::ExportBds {
+                dir,
+                output,
+                world,
+                server_dir,
+                secrets_dir,
+            } => {
+                let report = bedrock_map::deploy::integration::export_bds(
+                    dir,
+                    output,
+                    world,
+                    server_dir.as_deref(),
+                    secrets_dir.as_deref(),
+                )?;
+                print(result("deploy.export-bds", report)?, args.json);
+            }
+            DeployCommand::CheckBds {
+                dir,
+                server_dir,
+                world,
+            } => {
+                let report = bedrock_map::deploy::integration::check_bds(dir, server_dir, world)?;
+                let ok = report.ok();
+                print(
+                    serde_json::to_string(&json!({
+                        "schema_version":1,"ok":ok,"command":"deploy.check-bds",
+                        "world_id":report.world_id,"world":report.world,
+                        "checks":report.checks,"notice":report.notice
+                    }))?,
+                    args.json,
+                );
+                return Ok(if ok { 0 } else { 3 });
+            }
             DeployCommand::Check {
                 dir,
                 running,

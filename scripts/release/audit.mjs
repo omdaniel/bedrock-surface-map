@@ -113,7 +113,12 @@ try {
     "THIRD_PARTY.md",
     "docs/INSTALL.md",
     "docs/CI.md",
-    "docs/CONTRIBUTING.md",
+    "CONTRIBUTING.md",
+    "docs/DEPLOYMENT.md",
+    "docs/QUICKSTART-BDS.md",
+    "docs/PANELS.md",
+    "docs/COMPATIBILITY.md",
+    "tracking/compatibility.json",
     "docs/build-tools.json",
     "share/bedrock-surface-map/provenance/common-manifest.json",
   ])

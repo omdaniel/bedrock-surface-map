@@ -10,6 +10,7 @@ import { verifyGeneratedBrowser } from "./generated-browser.mjs";
 import { generatedProducer } from "./generated-producer.mjs";
 import { firewallVantages } from "./generated-firewall.mjs";
 import { fixtureTransport } from "./generated-transport.mjs";
+import { verifyExistingServerTopology } from "./generated-onramp.mjs";
 import { operatorBundle } from "../release/operator-bundle.mjs";
 import { sha256 } from "../release/oci.mjs";
 
@@ -572,6 +573,19 @@ try {
       run("down", "--remove-orphans", "-t", "5");
     }
   }
+  const existingServer = await verifyExistingServerTopology({
+    temp,
+    project,
+    cli,
+    state,
+    assets: join(fixture, "assets.zip"),
+    image: images.gateway,
+    password,
+    passwordFile,
+    docker,
+    waitFor,
+    evidenceDirectory: join(dirname(output), "browser-existing-server"),
+  });
   await writeFile(
     output,
     JSON.stringify(
@@ -605,6 +619,7 @@ try {
         browser_evidence: browserEvidence,
         firewall_evidence: firewallEvidence,
         single_feed_evidence: combinations,
+        existing_server_evidence: existingServer,
         actual_bds_verified: false,
       },
       null,

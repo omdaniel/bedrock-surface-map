@@ -6,6 +6,9 @@ remains independently managed. Use a restored/disposable world before adopting
 the packs on a persistent world. Public image publication and actual-BDS
 acceptance are separate from passing synthetic CI.
 
+For an existing itzg Docker installation and an HTTPS proxy or tunnel, start
+with the [existing-server quickstart](QUICKSTART-BDS.md).
+
 **Release availability:** [v0.1.0](https://github.com/omdaniel/bedrock-surface-map/releases/tag/v0.1.0)
 provides the snapshot runtime. It does not include the published operator bundle
 and image lock required below. This guide documents the implemented deployment
@@ -25,15 +28,17 @@ installs a live service. For the available install path, use [snapshot setup](IN
   A snapshot-only archive or an unpublished OCI candidate is not this bundle.
 - A consistent offline BDS world archive and explicitly obtained compatible
   texture assets. Never point the importer at a running world database.
-- A dedicated DNS hostname whose A record reaches this map host, incoming TCP
-  80/443 (including any NAT forwarding), and persistent Caddy certificate storage.
-  Remove incorrect AAAA records rather than directing IPv6 clients elsewhere.
-- Explicit private IPv4 addresses for the map host and BDS source on a trusted
-  LAN/VPN, with Docker-aware source filtering. Private HTTP is not encryption.
+- A dedicated HTTPS hostname. Managed gateway mode needs DNS reaching the map
+  host, incoming TCP80/443 and persistent Caddy certificate storage. Proxy mode
+  uses an existing trusted HTTPS reverse proxy or tunnel.
+- A dedicated internal Docker network shared with BDS, or explicit private IPv4
+  addresses on a trusted LAN/VPN with Docker-aware source filtering. Private HTTP
+  is not encryption.
 
-The gateway owns ports 80/443 and obtains public certificates. Reverse-proxy
-integration, DNS-challenge plugins, internal CAs and non-root URL prefixes are
-not additional production topologies in this reference. An ARM map host does
+The default managed gateway owns ports 80/443 and obtains public certificates.
+`gateway.mode = "proxy"` publishes HTTP on an explicit loopback/private address
+behind your existing HTTPS service. URL prefixes and automatic DNS-challenge
+configuration are outside this reference. An ARM map host does
 not imply ARM BDS support. No compiler, Node or Minecraft installation is needed
 on the map host's runtime path.
 
@@ -89,6 +94,17 @@ routes and viewer bindings are omitted. Ingest ports default to 18082 (terrain)
 and 18081 (players); `[ports]` can explicitly change them. The public origin must
 be lowercase HTTPS with no path, port, trailing slash or credentials.
 
+For Docker-hosted BDS, omit `ingest_bind` and `bds_source_ipv4` and add
+`[bds] network = "bedrock-map-ingest"`, naming an existing dedicated internal
+bridge. The generated collectors join it using project-specific DNS aliases and
+publish no ingestion ports on the host. The gateway does not join that network.
+Attach that internal network to the existing BDS service as well.
+
+For an existing HTTPS proxy, add `[gateway] mode = "proxy"`, with optional
+`bind` (default `127.0.0.1`) and `port` (default `8080`). Only loopback/private
+IPv4 listeners and unprivileged ports are accepted. Forward the public hostname
+to that listener, preserving its `Host` header. The public origin remains HTTPS.
+
 Optional `[terrain_pack]` settings control the generated BDS module variables:
 `view_distance` is the chunk discovery radius (4-16, default 16), and
 `scan_budget_ms` is the cooperative per-tick time budget (1-4, default 1).
@@ -134,10 +150,11 @@ before starting services; do not delete or reseed it as failed temporary output.
 
 ## Start and Check
 
-Review and apply the generated [Docker-aware firewall policy](../deploy/FIREWALL.md)
-as the host administrator **before** publishing the ingest listeners. It must
-restrict those private ports to the configured BDS source. Do not forward ingest
-ports at the router. Neither `init`, `prepare`, `check` nor Compose applies rules.
+For LAN ingestion, review and apply the generated [Docker-aware firewall
+policy](../deploy/FIREWALL.md) before publishing the ingest listeners. It must
+restrict those ports to the configured BDS source. Docker-network ingestion
+publishes no host ports; review its dedicated network membership instead. Neither
+mode exposes ingestion through the HTTPS gateway or forwards it at the router.
 
 ```sh
 docker compose --project-directory ./map-deploy -f ./map-deploy/compose.yaml config --quiet
@@ -145,8 +162,9 @@ docker compose --project-directory ./map-deploy -f ./map-deploy/compose.yaml up 
 ./bedrock-map deploy check --dir ./map-deploy --running
 ```
 
-Caddy needs working DNS and incoming TCP80/443 to issue its certificate. Complete
-any router forwarding only after the hostname and intended service are ready.
+Managed Caddy mode needs DNS and incoming TCP80/443 to issue its certificate.
+Proxy mode needs your existing HTTPS service forwarding to the configured private
+listener; it obtains no new public certificate through the map gateway.
 The running check asks for the viewer password again; its stored bcrypt hash
 cannot recover it. Open the configured HTTPS URL and sign in with the shared
 viewer account. No browser certificate installation is needed with a valid public
@@ -173,6 +191,16 @@ separate checks, never inferred from localhost success.
 `map-deploy/prepared/bds-handoff/` is **private** and contains ingest credentials.
 Transfer it securely to the BDS administrator; never place it under a web root.
 Its pack files and runtime requirements belong to the same operator release.
+
+`deploy export-bds --dir ./map-deploy --world 'Bedrock level' --output ./bds.zip
+--server-dir /path/to/bds --secrets-dir ./bds-private` prepares a conventional
+server-root ZIP after merging the selected BDS installation's registrations and
+module settings. Credentials are written only to the separate private directory.
+Without `--server-dir`, configuration is a template requiring manual merging.
+The export never installs into BDS. After copying through the server's maintenance
+or panel workflow, use `deploy check-bds --dir ./map-deploy --server-dir /path/to/bds
+--world 'Bedrock level'` to verify installed files, registrations and required
+settings. The checker never reads live LevelDB or prints secret values.
 
 1. Identify the intended BDS installation and world. Confirm that the imported
    snapshot belongs to that world; a friendly name cannot prove this association.

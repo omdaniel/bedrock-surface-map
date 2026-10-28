@@ -67,6 +67,18 @@ function fixture() {
           cases: cases(enabled === "terrain"),
         },
       })),
+      existing_server_evidence: {
+        scope: "synthetic-existing-bds-network-and-https-proxy",
+        ok: true,
+        no_host_ingest: true,
+        internal_network: true,
+        collector_dns: true,
+        secret_redaction: true,
+        unchanged_generated_compose: true,
+        proxy_loopback_bind: true,
+        authenticated_delivery: true,
+        browser: { ok: true, browser_host: host, cases: structuredClone(both) },
+      },
     };
   });
   return { candidate, reports };
@@ -118,6 +130,12 @@ test("deployment release evidence binds both native generated stacks and protoco
     },
     (r) => {
       r[0].single_feed_evidence[1].browser.cases[0].terrain_live_binding = true;
+    },
+    (r) => {
+      r[0].existing_server_evidence.no_host_ingest = false;
+    },
+    (r) => {
+      r[0].existing_server_evidence.browser.cases[0].protocol.live_edit = false;
     },
   ]) {
     const altered = structuredClone(reports);

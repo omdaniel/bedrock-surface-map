@@ -29,6 +29,12 @@ pub fn containers(root: &Path, config: &Config, lock: &Lock, values: &[Value]) -
             "{name}: project or image identity differs"
         );
         let host = &value["HostConfig"];
+        let mut networks = std::collections::BTreeSet::from([format!("{}_app", config.project)]);
+        if name != "gateway"
+            && let Some(network) = &config.bds.network
+        {
+            networks.insert(network.clone());
+        }
         ensure!(
             value["State"]["Running"] == true
                 && value["State"]["Restarting"] == false
@@ -51,7 +57,9 @@ pub fn containers(root: &Path, config: &Config, lock: &Lock, values: &[Value]) -
                     }
                 && host["PidsLimit"] == 128
                 && host["RestartPolicy"]["Name"] == "unless-stopped"
-                && host["NetworkMode"] == format!("{}_app", config.project)
+                && host["NetworkMode"]
+                    .as_str()
+                    .is_some_and(|mode| networks.contains(mode))
                 && host["Devices"].as_array().is_none_or(Vec::is_empty)
                 && host["PidMode"].as_str().is_none_or(str::is_empty),
             "{name}: runtime state or isolation differs"
@@ -64,8 +72,11 @@ pub fn containers(root: &Path, config: &Config, lock: &Lock, values: &[Value]) -
         ensure!(
             value["NetworkSettings"]["Networks"]
                 .as_object()
-                .is_some_and(|networks| networks.len() == 1
-                    && networks.contains_key(&format!("{}_app", config.project))),
+                .is_some_and(|actual| actual
+                    .keys()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    == networks),
             "{name}: unexpected attached networks"
         );
         if name != "gateway" {
@@ -94,7 +105,7 @@ pub fn containers(root: &Path, config: &Config, lock: &Lock, values: &[Value]) -
             );
         }
         let mut ports: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
-        for p in service["ports"].as_array().unwrap() {
+        for p in service["ports"].as_array().into_iter().flatten() {
             let bind = p["host_ip"].as_str().unwrap_or("0.0.0.0");
             ports.insert(
                 format!("{}/tcp", p["target"]),
@@ -112,6 +123,9 @@ fn validate_ports(
     expected: &BTreeMap<String, Vec<(String, String)>>,
     runtime: bool,
 ) -> Result<()> {
+    if actual.is_null() && expected.is_empty() {
+        return Ok(());
+    }
     let map = actual.as_object().context("missing port bindings")?;
     let mut matched = std::collections::BTreeSet::new();
     for (port, list) in map {
@@ -149,10 +163,14 @@ mod tests {
             serde_json::from_slice(&generate::compose(config, lock).unwrap()).unwrap();
         generated["services"].as_object().unwrap().iter().map(|(name,s)| {
             let mut ports=serde_json::Map::new();
-            for p in s["ports"].as_array().unwrap() {
+            for p in s["ports"].as_array().into_iter().flatten() {
                 ports.insert(format!("{}/tcp",p["target"]),json!([{"HostIp":p["host_ip"].as_str().unwrap_or(""),"HostPort":p["published"]}]));
             }
             let mounts:Vec<_>=s["volumes"].as_array().unwrap().iter().map(|v|json!({"Type":"bind","Source":format!("/fixture/{}",v["source"].as_str().unwrap().trim_start_matches("./")),"Destination":v["target"],"RW":!v["read_only"].as_bool().unwrap()})).collect();
+            let mut networks = json!({format!("{}_app", config.project): {}});
+            if name != "gateway" && let Some(network) = &config.bds.network {
+                networks[network] = json!({});
+            }
             json!({
                 "Config": {
                     "Labels": {
@@ -174,7 +192,7 @@ mod tests {
                     "PortBindings": ports, "LogConfig": {"Type":"json-file", "Config":s["logging"]["options"]}
                 },
                 "Mounts": mounts,
-                "NetworkSettings": {"Ports": ports, "Networks": {format!("{}_app", config.project): {}}}
+                "NetworkSettings": {"Ports": ports, "Networks": networks}
             })
         }).collect()
     }
@@ -227,5 +245,60 @@ mod tests {
         let mut values = fixture(&config, &lock);
         values[1]["HostConfig"]["PortBindings"]["8081/tcp"][0]["HostIp"] = json!("0.0.0.0");
         assert!(containers(Path::new("/fixture"), &config, &lock, &values).is_err());
+    }
+
+    #[test]
+    fn docker_ingestion_and_proxy_keep_ports_and_networks_narrow() {
+        let (mut config, lock) = super::super::check::tests::fixture();
+        config.ingest_bind = None;
+        config.bds_source_ipv4 = None;
+        config.bds.network = Some("minecraft-map-ingest".into());
+        config.gateway = super::super::config::Gateway::Proxy {
+            bind: std::net::Ipv4Addr::LOCALHOST,
+            port: 8080,
+        };
+        config.validate().unwrap();
+        let generated: Value =
+            serde_json::from_slice(&generate::compose(&config, &lock).unwrap()).unwrap();
+        assert_eq!(
+            generated["networks"]["ingest"],
+            json!({"external":true,"name":"minecraft-map-ingest"})
+        );
+        for name in ["terrain", "players"] {
+            assert!(generated["services"][name]["ports"].is_null());
+            assert_eq!(
+                generated["services"][name]["networks"]["ingest"]["aliases"],
+                json!([config.ingest_alias(name)])
+            );
+        }
+        assert!(
+            generated["services"]["gateway"]["networks"]
+                .as_array()
+                .is_some()
+        );
+        assert_eq!(
+            generated["services"]["gateway"]["ports"],
+            json!([{"target":8080,"published":"8080","host_ip":"127.0.0.1","protocol":"tcp"}])
+        );
+        let values = fixture(&config, &lock);
+        containers(Path::new("/fixture"), &config, &lock, &values).unwrap();
+        let mut exposed = values.clone();
+        exposed[1]["HostConfig"]["PortBindings"]["8081/tcp"] =
+            json!([{"HostIp":"0.0.0.0","HostPort":"8081"}]);
+        assert!(containers(Path::new("/fixture"), &config, &lock, &exposed).is_err());
+        let mut joined = values.clone();
+        joined[0]["NetworkSettings"]["Networks"]["minecraft-map-ingest"] = json!({});
+        assert!(containers(Path::new("/fixture"), &config, &lock, &joined).is_err());
+        let gateway = generate::gateway(
+            &config,
+            &lock,
+            &BTreeMap::from([("index.html".into(), "a".repeat(64))]),
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert!(gateway.contains("http://map.example.test:8080 {"));
+        assert!(gateway.contains("import /etc/bedrock-map/viewer-auth.caddy"));
+        assert!(!gateway.contains("https://"));
+        assert!(!generate::firewall_review(&config).contains("iptables"));
     }
 }
