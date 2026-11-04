@@ -130,6 +130,9 @@ pub fn viewer(config: &Config, lock: &Lock, dataset: &ActiveDataset) -> Value {
     if config.features.terrain {
         viewer["terrain"] = json!({"world_id":lock.world_id,"generation":lock.generation,
         "url":format!("/api/v1/worlds/{}/terrain/manifest.json",lock.world_id)});
+        if config.features.terrain_lod {
+            viewer["lod_url"] = format!("/api/v1/worlds/{}/terrain/lod.json", lock.world_id).into();
+        }
     }
     if config.features.players {
         viewer["players"] = json!({"world_id":lock.world_id,"source_sha256":dataset.source_sha256,
@@ -203,7 +206,7 @@ pub fn gateway(
             format!("path /api/v1/worlds/{}/players", lock.world_id)
         } else {
             format!(
-                "path_regexp terrain ^/api/v1/worlds/{}/terrain/(manifest\\.json|status|objects/[a-f0-9]{{64}}\\.(zst|json|png|txt))$",
+                "path_regexp terrain ^/api/v1/worlds/{}/terrain/(manifest\\.json|lod\\.json|status|objects/[a-f0-9]{{64}}\\.(zst|json|png|txt))$",
                 lock.world_id
             )
         };
@@ -221,9 +224,24 @@ pub fn write_projection(
     dataset: &ActiveDataset,
     resources: &Resources,
 ) -> Result<()> {
+    let snapshot = root.join("public/maps").join(&dataset.dataset_id);
+    let mut binding = viewer(config, lock, dataset);
+    binding.as_object_mut().unwrap().remove("map");
+    binding.as_object_mut().unwrap().extend(
+        crate::dataset::viewer_binding(&snapshot, &dataset.dataset_id)?
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    // There is one canonical LOD selection. An explicitly enabled live feed
+    // takes precedence over an optional prepared snapshot companion.
+    if config.features.terrain_lod {
+        binding["lod_url"] = format!("/api/v1/worlds/{}/terrain/lod.json", lock.world_id).into();
+        binding.as_object_mut().unwrap().remove("lod_identity");
+    }
     files::write_new(
         &root.join("public/viewer-config.json"),
-        &serde_json::to_vec_pretty(&viewer(config, lock, dataset))?,
+        &serde_json::to_vec_pretty(&binding)?,
     )?;
     files::mkdir(&root.join("gateway"))?;
     let mut web = files::inventory(&resources.web())?;

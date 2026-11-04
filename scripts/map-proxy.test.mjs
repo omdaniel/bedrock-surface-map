@@ -44,6 +44,10 @@ test("terrain proxy allows only fixed destination and exact read routes", async 
     ["/api/v1/worlds/test/terrain/ingest", "GET", 404],
     ["/api/v1/worlds/test/terrain/manifest.json?url=http://evil", "GET", 404],
     ["/api/v1/worlds/test/terrain/status", "POST", 405],
+    ["/api/v1/worlds/test/terrain/lod.json", "POST", 405],
+    ["/api/v1/worlds/test/terrain/lod.json?url=http://evil", "GET", 404],
+    ["/api/v1/worlds/test/terrain/%6cod.json", "GET", 404],
+    ["/api/v1/worlds/test/terrain/lod.json/", "GET", 404],
     ["/viewer-config.json", "GET", 200],
     ["/api/v1/worlds/test/terrain/objects/../current.sqlite3", "GET", 404],
   ]) {
@@ -64,6 +68,28 @@ test("terrain proxy allows only fixed destination and exact read routes", async 
       const c = JSON.parse(body);
       assert.equal(c.players, null);
       assert.equal(c.terrain.generation, "generation");
+      assert.equal(c.terrain.lod_url, undefined);
     }
   }
+});
+
+test("live LOD configuration has one canonical top-level opt-in", async () => {
+  let body;
+  const res = {
+    setHeader() {},
+    writeHead() {
+      return this;
+    },
+    end(value) {
+      body = value;
+    },
+  };
+  await mapProxy({ ...config, terrainLod: true })(
+    { url: "/viewer-config.json", method: "GET" },
+    res,
+    () => assert.fail("fallthrough"),
+  );
+  const binding = JSON.parse(body);
+  assert.equal(binding.lod_url, "/api/v1/worlds/test/terrain/lod.json");
+  assert.equal(binding.terrain.lod_url, undefined);
 });

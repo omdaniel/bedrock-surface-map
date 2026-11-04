@@ -59,6 +59,15 @@ enum Command {
         #[arg(long)]
         bind: Option<String>,
     },
+    /// Explicitly convert an offline snapshot, or register verified prepare-lod output.
+    PrepareLod {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long, default_value_t = bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES)]
+        max_output_bytes: u64,
+        #[arg(long)]
+        replace_active: bool,
+    },
     Status,
     Doctor {
         #[arg(long)]
@@ -265,6 +274,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Demo { .. } => "demo",
         Command::Import { .. } => "import",
         Command::Serve { .. } => "serve",
+        Command::PrepareLod { .. } => "prepare-lod",
         Command::Status => "status",
         Command::Doctor { .. } => "doctor",
         Command::Assets {
@@ -514,6 +524,25 @@ async fn run(args: Args) -> Result<u8> {
                 args.json,
             );
         }
+        Command::PrepareLod {
+            input,
+            max_output_bytes,
+            replace_active,
+        } => {
+            let active = bedrock_map::preparation::prepare_lod(
+                &state,
+                input,
+                *max_output_bytes,
+                *replace_active,
+            )?;
+            print(
+                result(
+                    "prepare-lod",
+                    json!({"dataset":active.dataset_id,"source_sha256":active.source_sha256}),
+                )?,
+                args.json,
+            );
+        }
         Command::Serve { bind } => {
             let config = state.config()?;
             let address = config::socket_address(&config, bind.as_deref())?;
@@ -663,6 +692,7 @@ fn error_code(error: &anyhow::Error) -> &'static str {
         "E_STATE_UNSAFE",
         "E_STATE_BUSY",
         "E_PREPARE_SYNC",
+        "E_PREPARE_LOD",
         "E_PREPARED_DURABILITY",
         "E_RESOURCE_MISMATCH",
         "E_NO_DATASET",

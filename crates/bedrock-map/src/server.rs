@@ -128,8 +128,12 @@ fn viewer_config(app: &App, request: &Request) -> Result<Response> {
         .state
         .active_validated()?
         .context("E_NO_DATASET: no selected dataset")?;
+    let public = app
+        .state
+        .registered(&active.dataset_id)?
+        .context("registered dataset unavailable")?;
     json_response_with_request(
-        serde_json::json!({"map": format!("maps/{}/manifest.json", active.dataset_id)}),
+        crate::dataset::viewer_binding(&public, &active.dataset_id)?,
         request.headers(),
         "no-store",
     )
@@ -345,6 +349,125 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn serves_standalone_lod_at_root_and_subpath_with_verified_objects() {
+        use tower::ServiceExt;
+        let temporary = tempfile::tempdir().unwrap();
+        let input = temporary.path().join("input");
+        let converted = temporary.path().join("converted");
+        surface_cli::create_synthetic_fixture(&input).unwrap();
+        surface_cli::lod::prepare_lod(&input.join("manifest.json"), &converted).unwrap();
+        let state = State::new(temporary.path().join("state")).unwrap();
+        let active = crate::preparation::prepare_lod(
+            &state,
+            &converted,
+            crate::preparation::DEFAULT_LOD_MAX_BYTES,
+            false,
+        )
+        .unwrap();
+        let root = temporary.path().join("package/share/bedrock-surface-map");
+        fs::create_dir_all(root.join("web")).unwrap();
+        fs::write(root.join("web/index.html"), "fixture").unwrap();
+        let resources = Resources::discover(Some(root)).unwrap();
+        for base in ["/", "/map/"] {
+            let router = router(App {
+                state: state.clone(),
+                resources: resources.clone(),
+                base_path: base.into(),
+                map_hashes: Arc::new(Mutex::new(HashMap::new())),
+            });
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("{base}viewer-config.json"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let config: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(response.into_body(), 16384)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert!(config.get("map").is_none());
+            let path = format!("{base}{}", config["lod_url"].as_str().unwrap());
+            let response = router
+                .clone()
+                .oneshot(Request::builder().uri(&path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+            let tag = response.headers()[header::ETAG].clone();
+            let lod = surface_core::lod::LodManifest::decode(
+                &axum::body::to_bytes(response.into_body(), 65536)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            for method in ["GET", "HEAD"] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(method)
+                            .uri(&path)
+                            .header(header::IF_NONE_MATCH, tag.clone())
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+            }
+            for object in [&lod.roots[0].index, &lod.atlas, &lod.catalog[0].object] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("{base}maps/{}/{}", active.dataset_id, object.url))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024 * 1024)
+                    .await
+                    .unwrap();
+                assert_eq!(format!("{:x}", Sha256::digest(&bytes)), object.sha256);
+            }
+            for path in [
+                format!("{base}ingest/v1/terrain"),
+                format!("{base}maps/{}/private.sqlite3", active.dataset_id),
+                format!("{base}maps/{}/objects/../lod.json", active.dataset_id),
+            ] {
+                let response = router
+                    .clone()
+                    .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::NOT_FOUND);
+            }
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        }
     }
 
     #[tokio::test]

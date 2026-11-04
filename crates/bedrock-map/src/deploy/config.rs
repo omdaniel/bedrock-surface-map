@@ -73,6 +73,14 @@ impl Default for TerrainPack {
 pub struct Features {
     pub terrain: bool,
     pub players: bool,
+    /// Opt into live multiresolution publication; legacy deployments retain
+    /// their serialized configuration and preparation identity when omitted.
+    #[serde(skip_serializing_if = "is_false")]
+    pub terrain_lod: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -163,6 +171,10 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.features.terrain_lod || self.features.terrain,
+            "E_CONFIG_INVALID: terrain_lod requires terrain"
+        );
         ensure!(
             self.schema_version == 1,
             "E_CONFIG_SCHEMA: unsupported deployment schema"

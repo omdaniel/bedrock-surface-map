@@ -58,7 +58,17 @@ pub fn prepare(
     let input = source
         .registered(&dataset.dataset_id)?
         .context("E_NO_DATASET: snapshot is unavailable")?;
-    let manifest = dataset::validate(&input)?;
+    let manifest = dataset::inventory(&input)?;
+    if let Some((world, generation)) = &manifest.lod_identity {
+        ensure!(
+            *world == lock.world_id && lock.generation.as_ref().is_none_or(|g| g == generation),
+            "E_RESOURCE_MISMATCH: LOD snapshot world/generation differs from deployment identity"
+        );
+    }
+    ensure!(
+        !config.features.terrain || manifest.legacy,
+        "E_CONFIG_INVALID: live terrain seeding requires a legacy snapshot with optional LOD companion; standalone LOD is read-only"
+    );
     ensure!(
         manifest.source_sha256 == dataset.source_sha256,
         "E_RESOURCE_MISMATCH: snapshot source fingerprint mismatch"
@@ -107,7 +117,7 @@ pub fn prepare(
     fs::create_dir_all(output.join("public/maps").join(&dataset.dataset_id))?;
     let copied = output.join("public/maps").join(&dataset.dataset_id);
     files::copy_inventory(&input, &copied, &inventory)?;
-    dataset::validate(&copied)?;
+    dataset::inventory(&copied)?;
     if let Some(asset) = asset {
         let library = staging.path().join("library");
         files::mkdir(&library)?;
@@ -245,7 +255,7 @@ pub fn load(root: &Path) -> Result<Preparation> {
         "E_RESOURCE_MISMATCH: immutable preparation files differ"
     );
     let snapshot = dir.join("public/maps").join(&record.dataset_id);
-    let validated = dataset::validate(&snapshot)?;
+    let validated = dataset::inventory(&snapshot)?;
     ensure!(
         validated.source_sha256 == record.source_sha256,
         "E_RESOURCE_MISMATCH: prepared fingerprint differs"

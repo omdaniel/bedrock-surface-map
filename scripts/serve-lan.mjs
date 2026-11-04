@@ -16,6 +16,7 @@ const { values } = parseArgs({
     "map-fingerprint": { type: "string" },
     map: { type: "string" },
     "terrain-origin": { type: "string" },
+    "terrain-lod": { type: "boolean", default: false },
     generation: { type: "string" },
     port: { type: "string", default: "8443" },
     "ca-port": { type: "string", default: "8444" },
@@ -40,6 +41,7 @@ const playerProxy = mapProxy({
   fingerprint: values["map-fingerprint"],
   map: values.map,
   terrainOrigin: values["terrain-origin"],
+  terrainLod: values["terrain-lod"],
   generation: values.generation,
 });
 const localAddresses = Object.values(networkInterfaces())

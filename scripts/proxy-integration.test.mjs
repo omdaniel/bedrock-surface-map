@@ -15,8 +15,15 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
   try {
     const reader = (feed) => (req, res) => {
       requests.push({ feed, path: req.url, headers: req.headers });
+      if (req.headers["if-none-match"] === '"synthetic-etag"') {
+        res.writeHead(304, { ETag: '"synthetic-etag"' }).end();
+        return;
+      }
       res
-        .writeHead(200, { "Content-Type": "application/json" })
+        .writeHead(200, {
+          "Content-Type": "application/json",
+          ETag: '"synthetic-etag"',
+        })
         .end(JSON.stringify({ feed }));
     };
     const players = await listen(reader("players")),
@@ -24,6 +31,7 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
     const proxy = mapProxy({
       origin: players,
       terrainOrigin: terrain,
+      terrainLod: true,
       world: "independent-world",
       generation: "independent-generation",
       fingerprint: "a".repeat(64),
@@ -39,24 +47,50 @@ test("real proxies use ephemeral read ports without exposing arbitrary routes or
     for (const [path, feed] of [
       [configuration.players.url, "players"],
       [configuration.terrain.url, "terrain"],
+      [configuration.lod_url, "terrain"],
+      [
+        configuration.terrain.url.replace(
+          "manifest.json",
+          `objects/${"a".repeat(64)}.json`,
+        ),
+        "terrain",
+      ],
     ]) {
       const response = await fetch(viewer + path, {
-        headers: { Cookie: "private=fixture", Authorization: "Bearer fixture" },
+        headers: {
+          Cookie: "private=fixture",
+          Authorization: "Bearer fixture",
+          "X-Terrain-Token": "private-fixture",
+        },
       });
       assert.equal(response.status, 200);
       assert.equal((await response.json()).feed, feed);
       const seen = requests.at(-1);
       assert.equal(seen.headers.cookie, undefined);
       assert.equal(seen.headers.authorization, undefined);
+      assert.equal(seen.headers["x-terrain-token"], undefined);
       assert.equal(
         (await fetch(viewer + path, { method: "HEAD" })).status,
         200,
       );
     }
+    const revalidated = await fetch(viewer + configuration.lod_url, {
+      headers: { "If-None-Match": '"synthetic-etag"' },
+    });
+    assert.equal(revalidated.status, 304);
+    assert.equal(revalidated.headers.get("etag"), '"synthetic-etag"');
+    assert.equal(revalidated.headers.get("cache-control"), "no-cache");
     const count = requests.length;
     for (const [path, method, status] of [
       [configuration.players.url, "POST", 405],
       [configuration.terrain.url, "POST", 405],
+      [configuration.lod_url, "PUT", 405],
+      [configuration.lod_url + "?url=http://example.test", "GET", 404],
+      [
+        configuration.lod_url.replace("independent-world", "another-world"),
+        "GET",
+        404,
+      ],
       ["/api/ingest", "GET", 404],
       [configuration.terrain.url + "?url=http://example.test", "GET", 404],
     ])

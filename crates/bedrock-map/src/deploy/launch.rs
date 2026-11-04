@@ -18,6 +18,7 @@ pub fn validate_marker(marker: &Preparation, commit: &str, common: &[u8]) -> Res
             && files::valid_hash(&marker.dataset_id, 64)
             && files::valid_hash(&marker.source_sha256, 64)
             && marker.generation.is_some() == marker.features.terrain
+            && (!marker.features.terrain_lod || marker.features.terrain)
             && marker
                 .generation
                 .as_ref()
@@ -110,6 +111,12 @@ pub fn run(service: Service) -> Result<()> {
                 "--read",
                 "0.0.0.0:8111",
             ]);
+            if marker.features.terrain_lod {
+                cmd.arg("--lod");
+            }
+            // The immutable preparation marker owns the opt-in; ambient process
+            // environment must not silently enable an unconfigured publisher.
+            cmd.env_remove("TERRAIN_LOD");
             cmd
         }
         Service::Players => {

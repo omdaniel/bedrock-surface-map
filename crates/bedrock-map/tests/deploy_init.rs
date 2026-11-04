@@ -37,6 +37,24 @@ fn release() -> Release {
 fn password() -> String {
     "synthetic-only-password".into()
 }
+
+#[test]
+fn lod_opt_in_preserves_legacy_configuration_identity_and_requires_terrain() {
+    let mut config = config();
+    let legacy = serde_json::to_value(&config).unwrap();
+    assert!(legacy["features"].get("terrain_lod").is_none());
+    config.features.terrain_lod = true;
+    config.validate().unwrap();
+    assert_eq!(
+        serde_json::to_value(&config).unwrap()["features"]["terrain_lod"],
+        true
+    );
+    config.features.terrain = false;
+    assert!(config.validate().is_err());
+    config.features.terrain = true;
+    config.features.terrain_lod = false;
+    assert_eq!(serde_json::to_value(&config).unwrap(), legacy);
+}
 fn tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
         for entry in fs::read_dir(dir).unwrap() {

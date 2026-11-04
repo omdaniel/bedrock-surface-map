@@ -7,7 +7,7 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -82,7 +82,7 @@ impl State {
     }
     pub fn operation(&self, prefix: &str) -> Result<tempfile::TempDir> {
         ensure!(
-            matches!(prefix, "demo" | "import"),
+            matches!(prefix, "demo" | "import" | "prepare-lod"),
             "E_STATE_UNSAFE: invalid operation kind"
         );
         let root = self.staging();
@@ -170,7 +170,11 @@ impl State {
         let active = self.active()?;
         if let Some(selected) = &active {
             let public = self.datasets().join(&selected.dataset_id).join("public");
-            validate_public_tree(&public)?;
+            let snapshot = validate_public_tree(&public)?;
+            ensure!(
+                snapshot.legacy || snapshot.source_sha256 == selected.source_sha256,
+                "E_RESOURCE_MISMATCH: LOD source fingerprint mismatch"
+            );
             ensure!(
                 tree_hash(&public)? == selected.dataset_id,
                 "E_RESOURCE_MISMATCH: selected immutable dataset differs from its identity"
@@ -243,7 +247,11 @@ impl State {
         );
         let current = self.active()?;
         reject_symlink(staged_public)?;
-        validate_public_tree(staged_public)?;
+        let snapshot = validate_public_tree(staged_public)?;
+        ensure!(
+            snapshot.legacy || snapshot.source_sha256 == source_sha256,
+            "E_RESOURCE_MISMATCH: LOD source fingerprint mismatch"
+        );
         let id = tree_hash(staged_public)?;
         let active = ActiveDataset {
             schema_version: 1,
@@ -338,32 +346,9 @@ fn valid_hash(value: &str) -> bool {
     valid_id(value)
 }
 
-fn validate_public_tree(root: &Path) -> Result<()> {
-    ensure!(
-        root.join("manifest.json").is_file(),
-        "E_RESOURCE_MISMATCH: dataset has no manifest"
-    );
-    let manifest = dataset::validate(root)?;
-    let mut expected = HashSet::from([
-        PathBuf::from("manifest.json"),
-        PathBuf::from(&manifest.atlas),
-        PathBuf::from(&manifest.heights),
-    ]);
-    expected.extend(
-        manifest
-            .regions
-            .iter()
-            .map(|region| PathBuf::from(&region.url)),
-    );
-    for notice in ["assets/NOTICE.txt", "assets/MOJANG-LICENSE.md"] {
-        if root.join(notice).exists() {
-            ensure!(
-                fs::metadata(root.join(notice))?.len() <= 1024 * 1024,
-                "E_RESOURCE_MISMATCH: oversized asset notice"
-            );
-            expected.insert(PathBuf::from(notice));
-        }
-    }
+fn validate_public_tree(root: &Path) -> Result<dataset::Inventory> {
+    let snapshot = dataset::inventory(root)?;
+    let mut expected = snapshot.files.clone();
     walk(root, &mut |path| {
         ensure!(
             expected.remove(path.strip_prefix(root)?),
@@ -376,7 +361,7 @@ fn validate_public_tree(root: &Path) -> Result<()> {
         expected.is_empty(),
         "E_RESOURCE_MISMATCH: missing public dataset file"
     );
-    Ok(())
+    Ok(snapshot)
 }
 
 fn tree_hash(root: &Path) -> Result<String> {

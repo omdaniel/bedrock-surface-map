@@ -59,7 +59,31 @@ export async function verifyCommon(root, expectedCommit) {
   }
   await walk(root);
   if (found.size !== declared.size) throw Error("missing common artifact file");
+  if (declared.has("web/viewer-config.json")) {
+    const bytes = await readFile(resolve(root, "web/viewer-config.json"));
+    if (bytes.length > 16 * 1024)
+      throw Error("viewer configuration exceeds limit");
+    validateOptionalLodConfig(JSON.parse(bytes));
+  }
   return manifest;
+}
+
+// LOD remains optional; an empty packaged configuration still selects the
+// native server's binding. URL checks use the literal input before normalization.
+export function validateOptionalLodConfig(config) {
+  if (config.terrain && Object.hasOwn(config.terrain, "lod_url"))
+    throw Error("lod_url must be top-level, not nested under terrain");
+  if (Object.hasOwn(config, "lod_url")) {
+    const url = config.lod_url;
+    if (
+      typeof url !== "string" ||
+      url.length > 512 ||
+      !/^\/?[A-Za-z0-9_./-]+\.json$/.test(url) ||
+      url.includes("//") ||
+      url.split("/").some((part) => part === "." || part === "..")
+    )
+      throw Error("invalid same-origin lod_url");
+  }
 }
 
 export function assertReleaseCommon(common, release) {

@@ -1,11 +1,22 @@
 use anyhow::{Context, Result, ensure};
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, fs, path::Path};
+use std::{
+    collections::{BTreeSet, HashSet},
+    fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 use surface_core::{
     CELLS, MAX_DECOMPRESSED, MISSING_HEIGHT, MapManifest, SIDE, VERSION, decode_region, decompress,
 };
 
 use crate::resources::safe_relative;
+
+mod lod;
+pub use lod::{ValidatedLod, validate_lod};
+
+#[cfg(test)]
+mod tests;
 
 const MAX_MANIFEST: u64 = 16 * 1024 * 1024;
 const MAX_REGION: u64 = 16 * 1024 * 1024;
@@ -19,7 +30,15 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         "E_RESOURCE_MISMATCH: missing, unsafe, or oversized dataset object: {}",
         path.display()
     );
-    Ok(fs::read(path)?)
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(limit + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= limit,
+        "E_RESOURCE_MISMATCH: dataset object grew beyond limit"
+    );
+    Ok(bytes)
 }
 
 fn object(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
@@ -29,6 +48,11 @@ fn object(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
         path.parent().is_some_and(|parent| parent != root),
         "E_RESOURCE_MISMATCH: object must be in a dataset subdirectory"
     );
+    read_relative(root, reference, limit)
+}
+
+fn read_relative(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
+    let relative = safe_relative(reference)?;
     // Reject symlinks in every path component, not just the final file.
     let mut current = root.to_path_buf();
     for component in relative.components() {
@@ -39,11 +63,143 @@ fn object(root: &Path, reference: &str, limit: u64) -> Result<Vec<u8>> {
             "E_RESOURCE_MISMATCH: dataset symlink"
         );
     }
-    read_bounded(&path, limit)
+    read_bounded(&root.join(relative), limit)
 }
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn validate_atlas(atlas: &[u8]) -> Result<()> {
+    ensure!(
+        atlas.len() >= 24 && atlas[..8] == [137, 80, 78, 71, 13, 10, 26, 10],
+        "E_RESOURCE_MISMATCH: atlas is not a PNG"
+    );
+    let width = u32::from_be_bytes(atlas[16..20].try_into()?);
+    let height = u32::from_be_bytes(atlas[20..24].try_into()?);
+    ensure!(
+        width > 0
+            && height > 0
+            && width <= 8192
+            && height <= 8192
+            && u64::from(width) * u64::from(height) <= 8 * 1024 * 1024,
+        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
+    );
+    let image = image::load_from_memory_with_format(atlas, image::ImageFormat::Png)
+        .context("E_RESOURCE_MISMATCH: atlas is not a valid PNG")?;
+    ensure!(
+        image.width() == width && image.height() == height,
+        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
+    );
+    Ok(())
+}
+
+pub struct Inventory {
+    pub source_sha256: String,
+    pub legacy: bool,
+    pub files: BTreeSet<PathBuf>,
+    pub lod_identity: Option<(String, String)>,
+}
+
+/// Verify the exact referenced closure, accepting a legacy snapshot, an optional
+/// matching LOD companion, or standalone output from surface-map prepare-lod.
+/// Private/unreferenced input files are never part of the returned inventory.
+pub fn inventory(root: &Path) -> Result<Inventory> {
+    let metadata = fs::symlink_metadata(root)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "E_RESOURCE_MISMATCH: unsafe dataset root"
+    );
+    let lod = validate_lod(root)?;
+    let legacy = match fs::symlink_metadata(root.join("manifest.json")) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        result => {
+            result?;
+            true
+        }
+    };
+    let mut files = BTreeSet::new();
+    let source_sha256 = if legacy {
+        let manifest = validate(root)?;
+        let source = &manifest.source_sha256;
+        let fingerprint = if source.len() == 64 && source.bytes().all(|b| b.is_ascii_hexdigit()) {
+            source.to_ascii_lowercase()
+        } else {
+            digest(&read_bounded(&root.join("manifest.json"), MAX_MANIFEST)?)
+        };
+        if let Some(lod) = &lod {
+            ensure!(
+                lod.root.source_sha256 == fingerprint
+                    && lod.root.bounds == manifest.bounds
+                    && lod.root.spawn == manifest.spawn
+                    && lod.root.name == manifest.name
+                    && lod.root.material_count == manifest.materials.len()
+                    && lod.root.world_id.is_none()
+                    && lod.catalog_hash == manifest.catalog_version
+                    && lod.root.atlas.sha256 == digest(&object(root, &manifest.atlas, MAX_ATLAS)?),
+                "E_RESOURCE_MISMATCH: snapshot/LOD identity or appearance mismatch"
+            );
+        }
+        files.extend([
+            PathBuf::from("manifest.json"),
+            PathBuf::from(manifest.atlas),
+            PathBuf::from(manifest.heights),
+        ]);
+        files.extend(manifest.regions.into_iter().map(|r| PathBuf::from(r.url)));
+        fingerprint
+    } else {
+        lod.as_ref()
+            .context("E_RESOURCE_MISMATCH: dataset has no manifest or LOD descriptor")?
+            .root
+            .source_sha256
+            .clone()
+    };
+    let lod_identity = lod.as_ref().and_then(|lod| {
+        lod.root
+            .world_id
+            .clone()
+            .map(|world| (world, lod.root.generation.clone()))
+    });
+    if let Some(lod) = lod {
+        files.extend(lod.files);
+    }
+    for notice in ["assets/NOTICE.txt", "assets/MOJANG-LICENSE.md"] {
+        match fs::symlink_metadata(root.join(notice)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            result => {
+                result?;
+            }
+        }
+        read_relative(root, notice, 1024 * 1024)?;
+        files.insert(PathBuf::from(notice));
+    }
+    Ok(Inventory {
+        source_sha256,
+        legacy,
+        files,
+        lod_identity,
+    })
+}
+
+/// App-relative URLs preserve both root and subpath mounts. Call after inventory
+/// validation; no origin, query-string or browser request chooses a file path.
+pub fn viewer_binding(root: &Path, dataset: &str) -> Result<serde_json::Value> {
+    let mut value = serde_json::json!({});
+    if root.join("manifest.json").is_file() {
+        value["map"] = format!("maps/{dataset}/manifest.json").into();
+    }
+    if root.join("lod.json").is_file() {
+        let lod = surface_core::lod::LodManifest::decode(&read_bounded(
+            &root.join("lod.json"),
+            surface_core::lod::MAX_DESCRIPTOR_BYTES as u64,
+        )?)?;
+        value["lod_url"] = format!("maps/{dataset}/lod.json").into();
+        if let Some(world) = lod.world_id {
+            value["lod_identity"] =
+                serde_json::json!({"world_id":world,"generation":lod.generation});
+        }
+    }
+    Ok(value)
 }
 
 pub fn validate(root: &Path) -> Result<MapManifest> {
@@ -112,26 +268,7 @@ pub fn validate(root: &Path) -> Result<MapManifest> {
         "E_RESOURCE_MISMATCH: too many regions"
     );
     let atlas = object(root, &manifest.atlas, MAX_ATLAS)?;
-    ensure!(
-        atlas.len() >= 24 && atlas[..8] == [137, 80, 78, 71, 13, 10, 26, 10],
-        "E_RESOURCE_MISMATCH: atlas is not a PNG"
-    );
-    let atlas_width = u32::from_be_bytes(atlas[16..20].try_into()?);
-    let atlas_height = u32::from_be_bytes(atlas[20..24].try_into()?);
-    ensure!(
-        atlas_width > 0
-            && atlas_height > 0
-            && atlas_width <= 8192
-            && atlas_height <= 8192
-            && u64::from(atlas_width) * u64::from(atlas_height) <= 8 * 1024 * 1024,
-        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
-    );
-    let image = image::load_from_memory_with_format(&atlas, image::ImageFormat::Png)
-        .context("E_RESOURCE_MISMATCH: atlas is not a valid PNG")?;
-    ensure!(
-        image.width() == atlas_width && image.height() == atlas_height,
-        "E_RESOURCE_MISMATCH: invalid atlas dimensions"
-    );
+    validate_atlas(&atlas)?;
     let packed_heights = object(root, &manifest.heights, MAX_HEIGHTS as u64)?;
     ensure!(
         digest(&packed_heights) == manifest.heights_sha256,

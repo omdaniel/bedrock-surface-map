@@ -69,6 +69,35 @@ fn output(mut cmd: Command, expected: i32) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+#[test]
+fn explicit_prepare_lod_cli_registers_converted_output_without_resources() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input");
+    let converted = temp.path().join("converted");
+    let state = temp.path().join("state");
+    surface_cli::create_synthetic_fixture(&input).unwrap();
+    surface_cli::lod::prepare_lod(&input.join("manifest.json"), &converted).unwrap();
+    let invoke = |limit: u64| {
+        let mut cmd = Command::new(binary());
+        cmd.env_remove("HOME")
+            .args(["--json", "--state"])
+            .arg(&state)
+            .args(["prepare-lod", "--input"])
+            .arg(&converted)
+            .arg("--max-output-bytes")
+            .arg(limit.to_string());
+        cmd
+    };
+    let error = output(invoke(1), 1);
+    assert_eq!(error["error"]["code"], "E_PREPARE_LOD");
+    let registered = output(invoke(1 << 30), 0);
+    assert_eq!(registered["command"], "prepare-lod");
+    let before = fs::read(converted.join("lod.json")).unwrap();
+    let second = output(invoke(1 << 30), 0);
+    assert_eq!(registered["dataset"], second["dataset"]);
+    assert_eq!(fs::read(converted.join("lod.json")).unwrap(), before);
+}
+
 fn unrelated_response(state: &Path, resources: &Path, response: &'static str) -> Value {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

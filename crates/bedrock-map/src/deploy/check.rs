@@ -313,6 +313,12 @@ pub async fn check(
                 .timeout(Duration::from_secs(5))
                 .build()?;
             let probe = async {
+                let snapshot = root.join("prepared/public/maps").join(&marker.dataset_id);
+                let descriptor = if snapshot.join("manifest.json").is_file() {
+                    "manifest.json"
+                } else {
+                    "lod.json"
+                };
                 for (path, file) in [
                     ("/".to_owned(), resources.web().join("index.html")),
                     (
@@ -320,11 +326,8 @@ pub async fn check(
                         root.join("prepared/public/viewer-config.json"),
                     ),
                     (
-                        format!("/maps/{}/manifest.json", marker.dataset_id),
-                        root.join(format!(
-                            "prepared/public/maps/{}/manifest.json",
-                            marker.dataset_id
-                        )),
+                        format!("/maps/{}/{descriptor}", marker.dataset_id),
+                        snapshot.join(descriptor),
                     ),
                 ] {
                     if config.viewer.access == Access::Password {
@@ -358,6 +361,24 @@ pub async fn check(
                             && manifest["generation"] == serde_json::json!(lock.generation),
                         "live terrain store identity differs"
                     );
+                    if config.features.terrain_lod {
+                        let path = format!("/api/v1/worlds/{}/terrain/lod.json", lock.world_id);
+                        let (status, body) = response(
+                            &client,
+                            &config,
+                            &path,
+                            password,
+                            surface_core::lod::MAX_DESCRIPTOR_BYTES,
+                        )
+                        .await?;
+                        ensure!(status == 200, "live LOD publication is not ready");
+                        let lod = surface_core::lod::LodManifest::decode(&body)?;
+                        ensure!(
+                            lod.world_id.as_deref() == Some(&lock.world_id)
+                                && Some(lod.generation.as_str()) == lock.generation.as_deref(),
+                            "live LOD identity differs"
+                        );
+                    }
                 }
                 Ok(())
             };

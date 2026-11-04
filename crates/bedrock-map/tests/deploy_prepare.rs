@@ -47,11 +47,84 @@ struct Fixture {
     resources: Resources,
     assets: PathBuf,
 }
+
+#[test]
+fn live_lod_is_opt_in_and_preparation_does_not_run_conversion() {
+    let f = Fixture::with_lod(true, false, false, true);
+    // An existing snapshot companion must not override the live root selection.
+    let active = f.source.active().unwrap().unwrap();
+    let input = f.source.registered(&active.dataset_id).unwrap().unwrap();
+    bedrock_map::preparation::prepare_lod(
+        &f.source,
+        &input,
+        bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+        true,
+    )
+    .unwrap();
+    let marker = f.prepare().unwrap();
+    assert!(marker.features.terrain_lod);
+    let binding: Value = serde_json::from_slice(
+        &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        binding["lod_url"],
+        format!("/api/v1/worlds/{}/terrain/lod.json", marker.world_id)
+    );
+    assert!(binding["terrain"].get("lod_url").is_none());
+    let db = rusqlite::Connection::open(f.root.join("prepared/terrain/current.sqlite3")).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM meta WHERE key='lod_manifest'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    let caddy = fs::read_to_string(f.root.join("prepared/gateway/Caddyfile")).unwrap();
+    assert!(caddy.contains("lod\\.json"));
+    assert!(!caddy.contains("ingest"));
+}
+
+#[test]
+fn preconverted_standalone_lod_is_packaged_for_read_only_deployment() {
+    let f = Fixture::new(false, true);
+    let active = f.source.active().unwrap().unwrap();
+    let original = f.source.registered(&active.dataset_id).unwrap().unwrap();
+    let converted = f._temp.path().join("converted");
+    surface_cli::lod::prepare_lod(&original.join("manifest.json"), &converted).unwrap();
+    let next = bedrock_map::preparation::prepare_lod(
+        &f.source,
+        &converted,
+        bedrock_map::preparation::DEFAULT_LOD_MAX_BYTES,
+        true,
+    )
+    .unwrap();
+    let marker = f.prepare().unwrap();
+    assert_eq!(marker.dataset_id, next.dataset_id);
+    let binding: Value = serde_json::from_slice(
+        &fs::read(f.root.join("prepared/public/viewer-config.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(binding.get("map").is_none());
+    assert!(binding.get("terrain").is_none());
+    assert_eq!(
+        binding["lod_url"],
+        format!("maps/{}/lod.json", next.dataset_id)
+    );
+    let caddy = fs::read_to_string(f.root.join("prepared/gateway/Caddyfile")).unwrap();
+    assert!(caddy.contains(&format!("/maps/{}/lod.json", next.dataset_id)));
+    assert_eq!(prepare::load(&f.root).unwrap(), marker);
+    assert_eq!(f.prepare().unwrap(), marker);
+}
 impl Fixture {
     fn new(terrain: bool, players: bool) -> Self {
         Self::with_access(terrain, players, false)
     }
     fn with_access(terrain: bool, players: bool, public_access: bool) -> Self {
+        Self::with_lod(terrain, players, public_access, false)
+    }
+    fn with_lod(terrain: bool, players: bool, public_access: bool, terrain_lod: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("deploy");
         let source = State::new(temp.path().join("snapshot")).unwrap();
@@ -166,7 +239,7 @@ impl Fixture {
         } else {
             ""
         };
-        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\n[terrain_pack]\nview_distance=4\nscan_budget_ms=4\n{viewer}")).unwrap();
+        let config=Config::parse(&format!("schema_version=1\nproject='fixture-map'\npublic_origin='https://map.example.test'\ningest_bind='10.20.0.10'\nbds_source_ipv4='10.20.0.20'\n[features]\nterrain={terrain}\nplayers={players}\nterrain_lod={terrain_lod}\n[terrain_pack]\nview_distance=4\nscan_budget_ms=4\n{viewer}")).unwrap();
         init::initialize(
             &root,
             &config,
@@ -523,6 +596,13 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         .unwrap();
         assert_eq!(config.get("terrain").is_some(), terrain);
         assert_eq!(config.get("players").is_some(), players);
+        assert!(config.get("lod_url").is_none());
+        assert!(config["terrain"].get("lod_url").is_none());
+        assert!(
+            !f.root
+                .join(format!("prepared/public/maps/{}/lod.json", p.dataset_id))
+                .exists()
+        );
         if players {
             assert_eq!(config["players"]["source_sha256"], p.source_sha256);
             assert_eq!(config["players"]["poll_interval_ms"], 100);
@@ -533,6 +613,7 @@ fn feature_combinations_match_mounts_routes_and_world_module_ids() {
         assert_eq!(compose["services"].get("players").is_some(), players);
         let caddy = fs::read_to_string(f.root.join("prepared/gateway/Caddyfile")).unwrap();
         assert_eq!(caddy.contains("terrain:8111"), terrain);
+        assert_eq!(caddy.contains("lod\\.json"), terrain);
         assert_eq!(caddy.contains("players:8110"), players);
         assert!(!caddy.contains("8081") && !caddy.contains("8082") && !caddy.contains("ingest"));
         for service in compose["services"].as_object().unwrap().values() {
