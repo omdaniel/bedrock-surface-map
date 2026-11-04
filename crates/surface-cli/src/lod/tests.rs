@@ -710,6 +710,176 @@ fn lod_scale_layouts_have_bounded_coordinates_and_exact_leaf_counts() {
 }
 
 #[test]
+fn lod_preserves_known_notices_with_bounded_reads_and_quota_before_publication() {
+    for version in [1, 2] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let output = temp.path().join("output");
+        let (path, mut value) = small_source(&source, [-128, -128, 0, 0]);
+        if version == 2 {
+            let catalog = object(
+                &source,
+                "json",
+                &serde_json::to_vec(&value["materials"]).unwrap(),
+            )
+            .unwrap();
+            let atlas = object(
+                &source,
+                "png",
+                &fs::read(source.join(value["atlas"].as_str().unwrap())).unwrap(),
+            )
+            .unwrap();
+            let region = value["regions"][0].clone();
+            value["format_version"] = json!(2);
+            value["catalog"] = json!(catalog);
+            value["atlas"] = json!(atlas);
+            value["regions"] = json!([{"rx":-1,"rz":-1,"surface":{
+                "url":region["url"],"sha256":region["sha256"],"bytes":region["bytes"]}}]);
+            atomic_write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        let original_source = fs::read(&path).unwrap();
+        let (manifest, baseline) =
+            prepare_lod_with_options(&path, &output, PrepareLodOptions::default()).unwrap();
+        assert!(NOTICE_PATHS.iter().all(|name| !output.join(name).exists()));
+        let descriptor = fs::read(output.join("lod.json")).unwrap();
+        let notice = b"Existing synthetic source attribution\r\n";
+        let license = b"Existing license fixture bytes; preserve verbatim.\n";
+        atomic_write(&source.join(NOTICE_PATHS[0]), notice).unwrap();
+        atomic_write(&source.join(NOTICE_PATHS[1]), license).unwrap();
+        atomic_write(
+            &source.join("assets/OTHER-LICENSE.txt"),
+            b"not an allowlisted notice",
+        )
+        .unwrap();
+        let required = baseline["charged_output_bytes"].as_u64().unwrap()
+            + (notice.len() + license.len()) as u64;
+        let estimate = estimate_lod(&path).unwrap();
+        assert_eq!(
+            estimate["output_bytes_upper_bound"].as_u64().unwrap(),
+            baseline["estimate"]["output_bytes_upper_bound"]
+                .as_u64()
+                .unwrap()
+                + (notice.len() + license.len()) as u64
+        );
+        let (_, report) = prepare_lod_with_options(
+            &path,
+            &output,
+            PrepareLodOptions {
+                max_output_bytes: Some(required),
+            },
+        )
+        .unwrap();
+        assert_eq!(report["charged_output_bytes"], required);
+        assert_eq!(fs::read(output.join(NOTICE_PATHS[0])).unwrap(), notice);
+        assert_eq!(fs::read(output.join(NOTICE_PATHS[1])).unwrap(), license);
+        assert!(!output.join("assets/OTHER-LICENSE.txt").exists());
+        assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+        assert_eq!(fs::read(&path).unwrap(), original_source);
+        for name in NOTICE_PATHS {
+            assert_eq!(
+                fs::read(output.join(name)).unwrap(),
+                fs::read(source.join(name)).unwrap()
+            );
+        }
+        // An exact-budget repeat charges notices even when all files are reused.
+        let (_, repeat) = prepare_lod_with_options(
+            &path,
+            &output,
+            PrepareLodOptions {
+                max_output_bytes: Some(required),
+            },
+        )
+        .unwrap();
+        assert_eq!(repeat["charged_output_bytes"], required);
+        let error = prepare_lod_with_options(
+            &path,
+            &output,
+            PrepareLodOptions {
+                max_output_bytes: Some(required - 1),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("quota"));
+        value["name"] = json!("Changed source publication");
+        atomic_write(&path, &serde_json::to_vec(&value).unwrap()).unwrap();
+        atomic_write(&source.join(NOTICE_PATHS[0]), &vec![b'n'; 4096]).unwrap();
+        let error = prepare_lod_with_options(
+            &path,
+            &output,
+            PrepareLodOptions {
+                max_output_bytes: Some(required),
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("quota"));
+        assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+        assert_eq!(fs::read(output.join(NOTICE_PATHS[0])).unwrap(), notice);
+        assert_eq!(fs::read(output.join(NOTICE_PATHS[1])).unwrap(), license);
+        for root in &manifest.roots {
+            node(&output, root);
+        }
+        atomic_write(&path, &original_source).unwrap();
+        atomic_write(&source.join(NOTICE_PATHS[0]), &vec![b'n'; MAX_NOTICE_BYTES]).unwrap();
+        assert_eq!(
+            read_source(&path).unwrap().notices[0].1.len(),
+            MAX_NOTICE_BYTES
+        );
+        atomic_write(
+            &source.join(NOTICE_PATHS[0]),
+            &vec![b'n'; MAX_NOTICE_BYTES + 1],
+        )
+        .unwrap();
+        assert!(
+            prepare_lod(&path, &output)
+                .unwrap_err()
+                .to_string()
+                .contains("byte limit")
+        );
+        assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+        atomic_write(&source.join(NOTICE_PATHS[0]), notice).unwrap();
+        let snapshot = read_source(&path).unwrap();
+        atomic_write(&source.join(NOTICE_PATHS[0]), b"changed during conversion").unwrap();
+        assert!(
+            snapshot
+                .verify_unchanged()
+                .unwrap_err()
+                .to_string()
+                .contains("notices changed")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = temp.path().join("outside-notice");
+            atomic_write(&outside, b"outside source directory").unwrap();
+            fs::remove_file(source.join(NOTICE_PATHS[0])).unwrap();
+            symlink(&outside, source.join(NOTICE_PATHS[0])).unwrap();
+            assert!(
+                prepare_lod(&path, &output)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("escapes map directory")
+            );
+            fs::remove_file(source.join(NOTICE_PATHS[0])).unwrap();
+            symlink(source.join("missing-notice"), source.join(NOTICE_PATHS[0])).unwrap();
+            assert!(prepare_lod(&path, &output).is_err());
+            assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+            fs::remove_file(source.join(NOTICE_PATHS[0])).unwrap();
+            atomic_write(&source.join(NOTICE_PATHS[0]), notice).unwrap();
+            fs::remove_file(output.join(NOTICE_PATHS[0])).unwrap();
+            symlink(&outside, output.join(NOTICE_PATHS[0])).unwrap();
+            assert!(
+                prepare_lod(&path, &output)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("escapes map directory")
+            );
+            assert_eq!(fs::read(&outside).unwrap(), b"outside source directory");
+            assert_eq!(fs::read(output.join("lod.json")).unwrap(), descriptor);
+        }
+    }
+}
+
+#[test]
 fn lod_quota_is_inclusive_reused_objects_are_charged_and_failure_keeps_publication() {
     let temp = tempfile::tempdir().unwrap();
     let (path, mut source) = small_source(&temp.path().join("source"), [-128, -128, 0, 0]);

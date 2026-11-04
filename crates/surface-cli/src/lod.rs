@@ -18,6 +18,8 @@ use surface_core::{
 };
 
 const MAX_SOURCE_JSON: usize = 64 * 1024 * 1024;
+const MAX_NOTICE_BYTES: usize = 1024 * 1024;
+const NOTICE_PATHS: [&str; 2] = ["assets/NOTICE.txt", "assets/MOJANG-LICENSE.md"];
 const FIXTURE_SIDE: usize = 1024;
 const FIXTURE_HEIGHT_BYTES: usize = FIXTURE_SIDE * FIXTURE_SIDE * 2;
 
@@ -45,7 +47,7 @@ impl Default for LodFixtureOptions {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PrepareLodOptions {
-    /// Budget for this publication, including reused objects and lod.json.
+    /// Budget for this publication, including reused objects, notices and lod.json.
     pub max_output_bytes: Option<u64>,
 }
 
@@ -117,6 +119,24 @@ fn source_path(root: &Path, url: &str) -> Result<PathBuf> {
         "source object escapes map directory"
     );
     Ok(path)
+}
+
+/// Preserve only existing known attribution files, without interpreting or
+/// generating license text. A dangling or escaping symlink is an error, not an
+/// absent optional notice. Both v1 and v2 use paths relative to their manifest.
+fn read_notices(root: &Path) -> Result<Vec<(&'static str, Vec<u8>)>> {
+    let mut notices = Vec::new();
+    for relative in NOTICE_PATHS {
+        match fs::symlink_metadata(root.join(relative)) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error).context("inspect source asset notice"),
+        }
+        let path = source_path(root, relative)?;
+        ensure!(path.is_file(), "source asset notice must be a regular file");
+        notices.push((relative, read_bounded(&path, MAX_NOTICE_BYTES)?));
+    }
+    Ok(notices)
 }
 
 fn read_object(root: &Path, object: &ObjectRef, limit: usize) -> Result<Vec<u8>> {
@@ -374,6 +394,7 @@ struct SourceSnapshot {
     roots: Vec<TileKey>,
     materials: Vec<Material>,
     atlas_bytes: Vec<u8>,
+    notices: Vec<(&'static str, Vec<u8>)>,
     regions: BTreeMap<(i32, i32), SourceRegion>,
 }
 
@@ -418,6 +439,7 @@ fn read_source(map: &Path) -> Result<SourceSnapshot> {
         atlas_bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
         "source atlas must be PNG"
     );
+    let notices = read_notices(source)?;
     let mut regions = BTreeMap::new();
     for entry in manifest["regions"]
         .as_array()
@@ -469,6 +491,7 @@ fn read_source(map: &Path) -> Result<SourceSnapshot> {
         roots,
         materials,
         atlas_bytes,
+        notices,
         regions,
     })
 }
@@ -502,13 +525,40 @@ impl SourceSnapshot {
                 && read_bounded(&self.map, MAX_SOURCE_JSON)? == self.source_bytes,
             "source publication changed during conversion; lod.json was not replaced"
         );
+        ensure!(
+            read_notices(&self.source)? == self.notices,
+            "source asset notices changed during conversion; lod.json was not replaced"
+        );
         Ok(())
     }
 
     fn publish(&self, store: &mut OutputStore<'_>, manifest: &LodManifest) -> Result<Vec<u8>> {
         let descriptor = manifest.encode()?;
         store.charge(descriptor.len())?;
+        // Reserve every notice before replacing any existing attribution. In
+        // particular, quota failure keeps both old notices and the old root.
+        for (_, bytes) in &self.notices {
+            store.charge(bytes.len())?;
+        }
         self.verify_unchanged()?;
+        if !self.notices.is_empty() {
+            fs::create_dir_all(store.root.join("assets"))?;
+            source_path(store.root, "assets")?;
+            // Check existing destinations before the first write too, so an
+            // output assets/ symlink or notice symlink cannot escape the root.
+            for (relative, _) in &self.notices {
+                match fs::symlink_metadata(store.root.join(relative)) {
+                    Ok(_) => {
+                        source_path(store.root, relative)?;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error).context("inspect output asset notice"),
+                }
+            }
+            for (relative, bytes) in &self.notices {
+                atomic_write(&store.root.join(relative), bytes)?;
+            }
+        }
         atomic_write(&store.root.join("lod.json"), &descriptor)?;
         Ok(descriptor)
     }
@@ -535,7 +585,12 @@ impl SourceSnapshot {
         let ceiling = nodes * (2 * MAX_TILE_BYTES + MAX_NODE_BYTES) as u64
             + indexed_regions * 256 * MAX_TILE_BYTES as u64
             + (MAX_DESCRIPTOR_BYTES + 256 * MAX_CATALOG_PAGE_BYTES) as u64
-            + self.atlas_bytes.len() as u64;
+            + self.atlas_bytes.len() as u64
+            + self
+                .notices
+                .iter()
+                .map(|(_, bytes)| bytes.len() as u64)
+                .sum::<u64>();
         Ok(
             json!({"schema_version":1,"source_publication":self.identity(),
             "source_regions":self.regions.len(),"bounds":self.bounds,"root_count":self.roots.len(),
