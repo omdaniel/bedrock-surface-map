@@ -6,7 +6,11 @@ import type {
   RegionRef,
 } from "./types";
 import { boundedBytes } from "./http";
-import { heightWindowBytes } from "./cache-budget";
+import {
+  heightWindowBytes,
+  SURFACE_STRIDES,
+  type SurfaceStride,
+} from "./cache-budget";
 
 export interface LiveRoot {
   format_version: 2;
@@ -137,12 +141,17 @@ export class TerrainClient {
   etag: string | null = null;
   private indexes = new Map<string, RegionIndex>();
   changedChunks = 0;
+  changedRegions = 0;
   bytesReceived = 0;
   constructor(
     readonly url: URL,
     root: LiveRoot,
     private decode: Decode,
     private pollRoot?: () => Promise<LiveRoot>,
+    private local?: {
+      prepare: (root: LiveRoot) => Promise<void>;
+      read: (ref: ObjectRef) => Promise<ArrayBuffer>;
+    },
   ) {
     validateRoot(root);
     this.root = root;
@@ -159,6 +168,8 @@ export class TerrainClient {
   }
   async checked<T>(ref: ObjectRef): Promise<T> {
     reference(ref);
+    if (this.local)
+      return JSON.parse(new TextDecoder().decode(await this.local.read(ref)));
     const response = await fetch(this.asset(ref.url), {
       signal: AbortSignal.timeout(10000),
     });
@@ -220,6 +231,7 @@ export class TerrainClient {
     };
   }
   async initialize() {
+    await this.local?.prepare(this.root);
     this.manifest = await this.normalize(this.root);
     return this.manifest;
   }
@@ -290,7 +302,7 @@ export class TerrainClient {
     availableHeightBytes: number,
     stride = 1,
   ): Promise<TerrainUpdate> {
-    if (stride !== 1 && stride !== 2 && stride !== 4)
+    if (!SURFACE_STRIDES.includes(stride as SurfaceStride))
       throw Error("Invalid terrain stride");
     let root = this.root,
       etag = this.etag;
@@ -328,6 +340,7 @@ export class TerrainClient {
       )
         throw Error("Obsolete terrain source");
     }
+    if (poll) await this.local?.prepare(root);
     const manifest = await this.normalize(root);
     const requested = this.needed(view, elevation, root, 256);
     let window = this.window;
@@ -430,6 +443,21 @@ export class TerrainClient {
     for (const r of manifest.regions) {
       const cached = resident.get(key(r));
       if (!cached || cached.ref.sha256 === r.sha256) continue;
+      // The complete local dataset owns publication downloads, independently
+      // of the camera. Its current region objects supply resident replacements.
+      if (this.local || stride > 16) {
+        const words = (await this.decode({
+          kind: "region",
+          url: this.asset(r.url),
+          sha256: r.sha256,
+          rx: r.rx,
+          rz: r.rz,
+          materials: manifest.materials.length,
+          stride,
+        })) as Uint32Array;
+        replacements.push({ ref: r, words });
+        continue;
+      }
       try {
         if (!cached.ref.index || !r.index)
           throw Error("No previous chunk index");
@@ -489,5 +517,6 @@ export class TerrainClient {
     this.stride = update.stride;
     this.pages = update.pages;
     this.changedChunks += update.patches.length;
+    this.changedRegions += update.replacements.length;
   }
 }

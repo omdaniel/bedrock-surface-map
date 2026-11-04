@@ -98,8 +98,8 @@ acceptance and active-update performance use the separate
 
 Biome interpolation, complex models, water layers and canopy shading are
 top-surface approximations. Overview filtering is per region. Wider views use
-reduced 2×2 or 4×4 surface and height records. Views that exceed the 256 MiB
-budget even at 4×4 require zooming in. Offline and live height coverage differ
+power-of-two reduced surface and height records through 256×256. Views that exceed
+the 256 MiB budget at the coarsest spacing require zooming in. Offline and live height sources differ
 as described in [Format and Rendering](FORMAT.md).
 
 Generate the diagonal coastline fixture with
@@ -108,6 +108,11 @@ Generate the diagonal coastline fixture with
 retained frames and approximate picking. Compare warm pan timings separately
 from downloads and overview generation; a successful functional test does not
 establish a 60 FPS hardware result.
+
+`tests/local-planar.spec.ts` checks whole-view resolution changes and native-detail
+navigation with terrain HTTP requests blocked after synchronization. Local-store
+tests cover persistence, quotas, publication changes, corruption and concurrent
+tabs. `node --test tests/planar-window.test.ts` checks spacing and bounded heights.
 
 Player and terrain feeds require explicit configuration. The public demo uses
 simulated activity, not a live server. The viewer has no built-in account system;

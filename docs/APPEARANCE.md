@@ -77,7 +77,7 @@ Exact detail and its overview share `relief.wgsl` and the lighting composition f
 Relief reuses height storage and adds no per-region allocation. Setting its
 strength to zero skips neighbor lookups without disabling cast shadows.
 
-The 2×2 and 4×4 viewing levels use averaged sample heights and directional
+Reduced viewing levels use averaged sample heights and directional
 gradient relief instead of enlarged block-edge bands. Their surface raster is
 filtered in the browser, retaining adjustable sunlight and the same color grade.
 This approximates diagonal ledges and small terrain features; exact band widths,

@@ -239,7 +239,7 @@ for (const sampleStride of [1, 2])
       before.cz,
       before.scale,
     ]);
-    expect(after.terrain?.changedChunks).toBeGreaterThan(0);
+    expect(after.terrain?.changedRegions).toBeGreaterThan(0);
     const canvas = page.locator("canvas#map"),
       box = (await canvas.boundingBox())!;
     await page.mouse.move(
@@ -254,7 +254,7 @@ for (const sampleStride of [1, 2])
         .some((p) =>
           p.endsWith(roots[1].regions[0].surface.url.split("/").at(-1)),
         ),
-    ).toBe(false);
+    ).toBe(true);
     const stable = await page.evaluate(() => window.__map.state().draws);
     await page.waitForTimeout(4500);
     expect(await page.evaluate(() => window.__map.state().draws)).toBe(stable);

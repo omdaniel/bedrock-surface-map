@@ -1,5 +1,6 @@
 use crate::*;
 use std::collections::BTreeMap;
+use surface_core::reduction::validate_stride;
 use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
@@ -74,6 +75,24 @@ pub fn decode_region_words(
     }
     Ok(r.gpu_words())
 }
+
+/// Decode one region's row-major height page at the viewport's uniform stride.
+/// Use the rendered records' rounded heights and coverage, including coarse
+/// present counts; unavailable and verified-empty cells become -1e6.
+#[wasm_bindgen]
+pub fn decode_region_heights(
+    bytes: &[u8],
+    rx: i32,
+    rz: i32,
+    material_count: u32,
+    stride: usize,
+) -> Result<Vec<f32>, JsValue> {
+    validate_stride(stride).map_err(js_error)?;
+    let words = decode_region_words(bytes, rx, rz, material_count)?;
+    surface_core::reduction::reduce_word_heights(&words, surface_core::SIDE, stride)
+        .map_err(js_error)
+}
+
 #[wasm_bindgen]
 pub fn reduce_surface_words(
     words: &[u32],
@@ -94,12 +113,13 @@ pub fn decode_height_samples(
     width: usize,
     stride: usize,
 ) -> Result<Vec<f32>, JsValue> {
+    validate_stride(stride).map_err(js_error)?;
     if columns > 16 * 1024 * 1024 {
         return Err(js_error("heightfield limit"));
     }
-    if width == 0
+    if columns == 0
+        || width == 0
         || !columns.is_multiple_of(width)
-        || ![1, 2, 4].contains(&stride)
         || !width.is_multiple_of(stride)
         || !(columns / width).is_multiple_of(stride)
     {
@@ -132,6 +152,66 @@ pub fn decode_height_samples(
         }
     }
     Ok(out)
+}
+
+fn height_window_dimensions(
+    bounds: &[i32],
+    heights: &[f32],
+    stride: usize,
+) -> Result<(usize, usize), JsValue> {
+    validate_stride(stride).map_err(js_error)?;
+    if bounds.len() != 4 {
+        return Err(js_error("height window bounds"));
+    }
+    // Widen before subtraction so reversed/extreme bounds cannot wrap. Align
+    // the window to the same world grid as reduced region and chunk records.
+    let width = i64::from(bounds[2]) - i64::from(bounds[0]);
+    let height = i64::from(bounds[3]) - i64::from(bounds[1]);
+    if width <= 0 || height <= 0 || bounds.iter().any(|v| v.rem_euclid(stride as i32) != 0) {
+        return Err(js_error(
+            "height window dimensions must be positive and stride-aligned",
+        ));
+    }
+    let width = (width / stride as i64) as usize;
+    let height = (height / stride as i64) as usize;
+    if width.checked_mul(height) != Some(heights.len())
+        || heights.len() > 16 * 1024 * 1024
+        || !heights.iter().all(|v| v.is_finite())
+    {
+        return Err(js_error("height window size"));
+    }
+    Ok((width, height))
+}
+
+fn height_allocation_dimensions(width: usize, height: usize) -> (usize, usize) {
+    // A one- or two-sample field packs only 516 or 524 bytes. WGSL's
+    // HeightTree has 16-byte struct alignment and needs at least 528 bytes
+    // when bound. Pad these tiny windows with missing cells in the existing
+    // height field; camera bounds and all region strides remain unchanged.
+    if width <= 2 && height <= 2 {
+        (2, 2)
+    } else {
+        (width, height)
+    }
+}
+
+fn create_height_field(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: usize,
+    height: usize,
+    heights: &[f32],
+) -> Result<height_field::HeightField, JsValue> {
+    let (allocated_width, allocated_height) = height_allocation_dimensions(width, height);
+    if (allocated_width, allocated_height) == (width, height) {
+        return height_field::HeightField::new(device, queue, width, height, heights)
+            .map_err(js_error);
+    }
+    let mut padded = [-1e6; 4];
+    for row in 0..height {
+        padded[row * 2..row * 2 + width].copy_from_slice(&heights[row * width..(row + 1) * width]);
+    }
+    height_field::HeightField::new(device, queue, 2, 2, &padded).map_err(js_error)
 }
 
 struct Region {
@@ -193,14 +273,7 @@ impl Renderer {
         {
             return Err(js_error("invalid renderer input"));
         }
-        if ![1, 2, 4].contains(&stride) {
-            return Err(js_error("invalid surface resolution"));
-        }
-        let w = (bounds[2] - bounds[0]) as usize / stride;
-        let h = (bounds[3] - bounds[1]) as usize / stride;
-        if w == 0 || h == 0 || heights.len() != w * h || w * h > 16 * 1024 * 1024 {
-            return Err(js_error("invalid heightfield dimensions"));
-        }
+        let (w, h) = height_window_dimensions(&bounds, &heights, stride)?;
         let instance = wgpu::Instance::default();
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
@@ -279,8 +352,7 @@ impl Renderer {
             contents: bytemuck::cast_slice(&values),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let height_field =
-            height_field::HeightField::new(&device, &queue, w, h, &heights).map_err(js_error)?;
+        let height_field = create_height_field(&device, &queue, w, h, &heights)?;
         let mats = storage(&device, bytemuck::cast_slice(&materials));
         let atlas = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shared material atlas"),
@@ -451,9 +523,11 @@ impl Renderer {
         words: Vec<u32>,
         stride: usize,
     ) -> Result<(), JsValue> {
-        if ![1, 2, 4].contains(&stride)
-            || words.len() != surface_core::CELLS * 8 / (stride * stride)
-        {
+        validate_stride(stride).map_err(js_error)?;
+        if stride != self.values[18] as usize {
+            return Err(js_error("region stride must match the height window"));
+        }
+        if words.len() != surface_core::CELLS * 8 / (stride * stride) {
             return Err(js_error("invalid region GPU data"));
         }
         self.remove_region(rx, rz);
@@ -647,28 +721,19 @@ impl Renderer {
         heights: Vec<f32>,
         stride: usize,
     ) -> Result<(), JsValue> {
-        if bounds.len() != 4 || ![1, 2, 4].contains(&stride) {
-            return Err(js_error("height window bounds"));
+        let (width, height) = height_window_dimensions(&bounds, &heights, stride)?;
+        if self.regions.values().any(|r| r.stride != stride) {
+            return Err(js_error(
+                "remove resident regions before changing the viewport stride",
+            ));
         }
-        let (width, height) = (
-            (bounds[2] - bounds[0]) as usize / stride,
-            (bounds[3] - bounds[1]) as usize / stride,
-        );
-        if width == 0
-            || height == 0
-            || width.checked_mul(height) != Some(heights.len())
-            || heights.len() > 16 * 1024 * 1024
-            || !heights.iter().all(|v| v.is_finite())
-        {
-            return Err(js_error("height window size"));
-        }
-        let bytes = height_field::HeightField::allocation_bytes(width, height).map_err(js_error)?;
+        let (allocated_width, allocated_height) = height_allocation_dimensions(width, height);
+        let bytes = height_field::HeightField::allocation_bytes(allocated_width, allocated_height)
+            .map_err(js_error)?;
         if self.gpu_bytes() as usize - self.heights.bytes() + bytes > 256 * 1024 * 1024 {
             return Err(js_error("GPU cache limit exceeded"));
         }
-        let field =
-            height_field::HeightField::new(&self.device, &self.queue, width, height, &heights)
-                .map_err(js_error)?;
+        let field = create_height_field(&self.device, &self.queue, width, height, &heights)?;
         self.base_bytes = self.base_bytes - self.heights.bytes() + field.bytes();
         let old = std::mem::replace(&mut self.heights, field);
         self.height_dirty = false;
@@ -692,11 +757,14 @@ impl Renderer {
         rz: i32,
         values: Vec<f32>,
     ) -> Result<(), JsValue> {
-        let stride = self.values[18] as i32;
+        let stride = self.values[18] as i64;
         let side = 256 / stride;
-        let x = (rx * 256 - self.values[8] as i32) / stride;
-        let z = (rz * 256 - self.values[9] as i32) / stride;
-        if x < 0 || z < 0 || x + side > self.values[10] as i32 || z + side > self.values[11] as i32
+        if values.len() != (side * side) as usize || !values.iter().all(|v| v.is_finite()) {
+            return Err(js_error("invalid region height page"));
+        }
+        let x = (i64::from(rx) * 256 - self.values[8] as i64) / stride;
+        let z = (i64::from(rz) * 256 - self.values[9] as i64) / stride;
+        if x < 0 || z < 0 || x + side > self.values[10] as i64 || z + side > self.values[11] as i64
         {
             return Ok(());
         }
@@ -721,6 +789,11 @@ impl Renderer {
             .regions
             .get(&(cx.div_euclid(16), cz.div_euclid(16)))
             .ok_or_else(|| js_error("region not resident"))?;
+        if r.stride > 16 {
+            return Err(js_error(
+                "chunk updates above stride 16 require whole-region replacement",
+            ));
+        }
         let side = 16 / r.stride;
         if words.len() != side * side * 8 {
             return Err(js_error("invalid chunk GPU data"));

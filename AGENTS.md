@@ -14,6 +14,10 @@
 - Live-player deployment belongs in runproxmox. Production experiment activation requires
   backup-derived test evidence and explicit owner approval; keep other homelab services unchanged.
 - Rust/WASM/wgpu/WGSL terrain renderer; no Vello or exported map-image tiles.
+- Use one sample spacing across the viewport and its navigation buffer. Do not
+  introduce mixed-resolution composition, parent/child cuts or LOD stitching.
+  The complete compressed terrain dataset is local; camera movement controls
+  decoding/residency, independently of publication downloads.
 - Pin toolchains and dependencies. Run tests, lint, WASM build and browser checks before delivery.
 - Use apply_patch for manual edits. Prefer uv for dependency-backed Python commands.
 - Keep installation addresses, world identities and account policies in operator

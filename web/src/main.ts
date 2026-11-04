@@ -12,13 +12,27 @@ import {
   ChevronDown,
   SlidersHorizontal,
 } from "lucide";
-import type { Manifest, RegionRef, DecodeRequest, DecodeReply } from "./types";
+import type {
+  Manifest,
+  RegionRef,
+  ObjectRef,
+  DecodeRequest,
+  DecodeReply,
+} from "./types";
 import { bindSunDial } from "./sun-dial";
 import { PlayerLayer } from "./players";
-import { TerrainClient, type LiveRoot } from "./terrain";
+import { TerrainClient, validateRoot, type LiveRoot } from "./terrain";
 import { boundedBytes } from "./http";
 import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
 import { DemoPlayback } from "./demo";
+import { LocalMapDataset } from "./local-map";
+import {
+  SnapshotHeights,
+  expandView,
+  intersects,
+  heightBounds,
+  containsBounds,
+} from "./planar-window";
 import {
   MAP_CACHE_BYTES,
   WORKING_BYTES,
@@ -84,6 +98,11 @@ let manifest: Manifest;
 let renderer: Renderer;
 let base: URL;
 let terrain: TerrainClient | null = null;
+let snapshotHeights: SnapshotHeights | null = null;
+let localMap: LocalMapDataset | null = null;
+let preparedLiveRevision = 0;
+let bufferPadding = 256;
+let selectionScale = NaN;
 let demo: DemoPlayback | null = null;
 let terrainBusy = false,
   terrainAgain = false,
@@ -181,12 +200,22 @@ worker.onerror = (e) => {
   pending.clear();
   message(e.message, true);
 };
+let decodeTail: Promise<unknown> = Promise.resolve();
 function decode(request: Omit<DecodeRequest, "id">) {
-  return new Promise<Uint32Array | Float32Array>((resolve, reject) => {
-    const id = ++sequence;
-    pending.set(id, { resolve, reject });
-    worker.postMessage({ ...request, id });
+  const job = decodeTail.then(async () => {
+    if (!localMap) throw Error("Local map is not initialized");
+    const bytes = await localMap.read({
+      url: request.url,
+      sha256: request.sha256,
+    });
+    return new Promise<Uint32Array | Float32Array>((resolve, reject) => {
+      const id = ++sequence;
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ ...request, id, bytes }, [bytes]);
+    });
   });
+  decodeTail = job.catch(() => {});
+  return job;
 }
 function asset(path: string) {
   const url = new URL(path, base);
@@ -195,6 +224,23 @@ function asset(path: string) {
       "Cross-origin map assets are disabled in the local prototype",
     );
   return url.href;
+}
+async function prepareLocal(refs: ObjectRef[]) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await localMap!.prepare(refs);
+      return;
+    } catch (error) {
+      if (
+        attempt >= 2 ||
+        !/HTTP (404|408|429|5\d\d)|fetch|NetworkError|TimeoutError/i.test(
+          String(error),
+        )
+      )
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
 }
 function message(text: string, retry = false) {
   $("message-text").textContent = text;
@@ -213,26 +259,27 @@ function viewport() {
   };
 }
 function visible(r: RegionRef) {
-  const v = viewport();
-  return (
-    r.rx * 256 <= v.right &&
-    (r.rx + 1) * 256 >= v.left &&
-    r.rz * 256 <= v.bottom &&
-    (r.rz + 1) * 256 >= v.top
-  );
+  return intersects(r.rx, r.rz, viewport());
+}
+function bufferedView() {
+  return expandView(viewport(), bufferPadding);
+}
+function buffered(r: RegionRef) {
+  return intersects(r.rx, r.rz, bufferedView());
 }
 function memory() {
   return renderer
     ? renderer.gpu_bytes() +
         renderer.cpu_bytes() +
         (terrain?.memoryBytes ?? 0) +
+        (snapshotHeights?.memoryBytes ?? 0) +
         [...cache.values()].reduce((n, r) => n + r.pick.byteLength, 0)
     : 0;
 }
 function makeSpace() {
   while (memory() + regionBytes(stride) + WORKING_BYTES > MAP_CACHE_BYTES) {
     const victim = [...cache.entries()]
-      .filter(([, v]) => !visible(v.ref))
+      .filter(([, v]) => !buffered(v.ref))
       .sort((a, b) => a[1].last - b[1].last)[0];
     if (!victim) return false;
     renderer.remove_region(victim[1].ref.rx, victim[1].ref.rz);
@@ -245,18 +292,18 @@ function loadRegions() {
     !renderer ||
     disposed ||
     renderer.is_lost() ||
-    terrainBusy ||
-    offlineHeightBusy ||
     heightStride !== stride ||
-    needsHeightWindow()
+    (terrain !== null && !terrain.covers(viewport(), elevation)) ||
+    (snapshotHeights !== null && !snapshotHeights.covers(viewport(), elevation))
   )
     return;
   const wanted = manifest.regions
-    .filter(visible)
+    .filter(buffered)
     .sort(
       (a, b) =>
+        Number(visible(b)) - Number(visible(a)) ||
         Math.hypot(a.rx * 256 + 128 - cx, a.rz * 256 + 128 - cz) -
-        Math.hypot(b.rx * 256 + 128 - cx, b.rz * 256 + 128 - cz),
+          Math.hypot(b.rx * 256 + 128 - cx, b.rz * 256 + 128 - cz),
     );
   for (const r of wanted) {
     if (active >= 2) break;
@@ -284,12 +331,12 @@ function loadRegions() {
         if (
           disposed ||
           epoch !== resolutionEpoch ||
-          terrainBusy ||
           !manifest.regions.some((v) => key(v) === k && v.sha256 === r.sha256)
         )
           return;
         const words = data as Uint32Array;
         if (!makeSpace()) return;
+        if (!buffered(r)) return;
         renderer.add_region(r.rx, r.rz, words, stride);
         updatePick(r, words);
         requestDraw();
@@ -354,7 +401,9 @@ function canDraw() {
     !disposed &&
     !switchingResolution &&
     heightStride === stride &&
-    (!terrain || terrain.covers(viewport(), elevation))
+    (!terrain || terrain.covers(viewport(), elevation)) &&
+    (!snapshotHeights || snapshotHeights.covers(viewport(), elevation)) &&
+    manifest.regions.filter(visible).every((r) => cache.has(key(r)))
   );
 }
 function requestDraw() {
@@ -404,26 +453,41 @@ function fixedMapBytes() {
     cache.size * regionGpuBytes(stride)
   );
 }
-function viewFits(step: SurfaceStride) {
-  const heights = terrain
-    ? heightWindowBytes(terrain.needed(viewport(), elevation), step)
-    : heightWindowBytes(manifest.bounds, step);
+function viewFits(step: SurfaceStride, padding = 0) {
+  // Reserve another region beyond the navigation buffer so crossing a grid
+  // boundary cannot repeatedly switch a tightly packed view's resolution.
+  const view = expandView(viewport(), padding + 256);
+  const heights = heightWindowBytes(
+    heightBounds(manifest, view, elevation),
+    step,
+  );
   return (
     fixedMapBytes() +
       heights +
-      manifest.regions.filter(visible).length * regionBytes(step) <=
+      manifest.regions.filter((r) => intersects(r.rx, r.rz, view)).length *
+        regionBytes(step) <=
     MAP_CACHE_BYTES - WORKING_BYTES
   );
 }
 function selectResolution() {
-  const next = chooseStride(scale, viewFits);
-  capacityWarning = !viewFits(next);
+  let next = chooseStride(scale, (step) => viewFits(step, 256));
+  if (next < stride && scale <= selectionScale) next = stride;
+  selectionScale = scale;
+  capacityWarning = !viewFits(next, 256);
   if (capacityWarning) {
     message(
       "This view exceeds the available overview memory. Zoom in for more detail.",
     );
     return false;
   }
+  const desired = Math.max(
+    256,
+    Math.min(main.clientWidth, main.clientHeight) / scale / 2,
+  );
+  bufferPadding =
+    [desired, Math.max(256, desired / 2), 256].find((padding) =>
+      viewFits(next, padding),
+    ) ?? 256;
   if (next !== stride) {
     for (const c of cache.values()) renderer.remove_region(c.ref.rx, c.ref.rz);
     cache.clear();
@@ -438,32 +502,38 @@ function selectResolution() {
   return true;
 }
 async function updateOfflineHeights() {
-  if (offlineHeightBusy || heightStride === stride) return;
+  if (
+    offlineHeightBusy ||
+    !snapshotHeights ||
+    (heightStride === stride &&
+      snapshotHeights.covers(bufferedView(), elevation))
+  )
+    return;
   offlineHeightBusy = true;
   const step = stride;
+  let prepared = false;
   try {
-    const heights = await decode({
-      kind: "heights",
-      url: asset(manifest.heights),
-      sha256: manifest.heights_sha256,
-      columns:
-        (manifest.bounds[2] - manifest.bounds[0]) *
-        (manifest.bounds[3] - manifest.bounds[1]),
-      width: manifest.bounds[2] - manifest.bounds[0],
-      stride: step,
-    });
+    const update = await snapshotHeights.prepare(
+      bufferedView(),
+      elevation,
+      step,
+      terrainBudget(),
+    );
     if (step !== stride || disposed) return;
     renderer.set_height_window(
-      new Int32Array(manifest.bounds),
-      heights as Float32Array,
+      new Int32Array(update.window),
+      update.heights,
       step,
     );
+    snapshotHeights.commit(update);
     heightStride = step;
+    prepared = true;
   } catch (error) {
     message(String(error), true);
   } finally {
     offlineHeightBusy = false;
-    if (step !== stride) {
+    if (!prepared) return;
+    if (step !== stride || !snapshotHeights.covers(viewport(), elevation)) {
       void updateOfflineHeights();
       return;
     }
@@ -473,9 +543,19 @@ async function updateOfflineHeights() {
 }
 function changed(_resized = false) {
   if (!renderer || !manifest || !selectResolution()) return;
+  for (const [id, c] of cache)
+    if (!buffered(c.ref)) {
+      renderer.remove_region(c.ref.rx, c.ref.rz);
+      cache.delete(id);
+    }
   for (const c of cache.values())
     if (visible(c.ref)) c.last = performance.now();
-  if (!terrain && heightStride !== stride) void updateOfflineHeights();
+  if (
+    snapshotHeights &&
+    (heightStride !== stride ||
+      !snapshotHeights.covers(bufferedView(), elevation))
+  )
+    void updateOfflineHeights();
   else if (needsHeightWindow()) void syncTerrain();
   else loadRegions();
   requestDraw();
@@ -504,7 +584,7 @@ function updatePick(ref: RegionRef, words: Uint32Array) {
 }
 function terrainBudget() {
   const missing = manifest.regions.filter(
-    (r) => visible(r) && !cache.has(key(r)),
+    (r) => buffered(r) && !cache.has(key(r)),
   ).length;
   // Reserve all visible detail before enlarging the height window, not just
   // regions that have already arrived. Nonvisible detail can be evicted on retry.
@@ -516,10 +596,14 @@ function terrainBudget() {
   );
 }
 function needsHeightWindow() {
+  if (snapshotHeights)
+    return (
+      heightStride !== stride || !snapshotHeights.covers(viewport(), elevation)
+    );
   return (
     terrain !== null &&
     (heightStride !== stride ||
-      !terrain.covers(viewport(), elevation) ||
+      !terrain.covers(bufferedView(), elevation) ||
       renderer.height_bytes() + terrain.memoryBytes > terrainBudget())
   );
 }
@@ -538,13 +622,12 @@ async function syncTerrain(poll = false) {
     return;
   }
   terrainBusy = true;
-  const camera = [cx, cz, scale, elevation, stride, resolutionEpoch].join(",");
   try {
     let update;
     try {
       update = await terrain.prepare(
         cache,
-        viewport(),
+        bufferedView(),
         elevation,
         poll,
         terrainBudget(),
@@ -553,13 +636,13 @@ async function syncTerrain(poll = false) {
     } catch (error) {
       if (!String(error).includes("cache")) throw error;
       for (const [k, r] of cache)
-        if (!visible(r.ref)) {
+        if (!buffered(r.ref)) {
           renderer.remove_region(r.ref.rx, r.ref.rz);
           cache.delete(k);
         }
       update = await terrain.prepare(
         cache,
-        viewport(),
+        bufferedView(),
         elevation,
         poll,
         terrainBudget(),
@@ -567,7 +650,8 @@ async function syncTerrain(poll = false) {
       );
     }
     if (
-      camera !== [cx, cz, scale, elevation, stride, resolutionEpoch].join(",")
+      update.stride !== stride ||
+      !containsBounds(update.window, terrain.needed(viewport(), elevation))
     ) {
       terrainAgain = true;
       return;
@@ -695,7 +779,7 @@ function zoom(
   playerLayer.manualNavigation();
   const wx = cx + (x - main.clientWidth / 2) / scale,
     wz = cz + (y - main.clientHeight / 2) / scale;
-  scale = Math.max(0.025, Math.min(80, scale * factor));
+  scale = Math.max(0.001, Math.min(80, scale * factor));
   cx = wx - (x - main.clientWidth / 2) / scale;
   cz = wz - (y - main.clientHeight / 2) / scale;
   changed();
@@ -867,6 +951,12 @@ $("retry").onclick = () => {
   }
   failures.clear();
   if (terrain) void syncTerrain(true);
+  else if (localMap) {
+    void localMap
+      .prepare(manifest.regions.map((r) => ({ ...r, url: asset(r.url) })))
+      .then(() => changed())
+      .catch((error) => message(String(error), true));
+  }
   message("Retrying map data...");
   changed();
 };
@@ -893,6 +983,7 @@ window.addEventListener("pagehide", () => {
   if (terrainTimer) clearTimeout(terrainTimer);
   worker.terminate();
   renderer?.free();
+  localMap?.dispose();
 });
 window.addEventListener("surface-device-lost", () =>
   message("GPU device lost. Reload the map.", true),
@@ -976,6 +1067,13 @@ function mapState() {
     reliefStrength,
     reliefWidth,
     cached: cache.size,
+    visible: manifest?.regions.filter(visible).length ?? 0,
+    visibleReady:
+      manifest?.regions.filter((r) => visible(r) && cache.has(key(r))).length ??
+      0,
+    bufferPadding,
+    localMap: localMap?.state ?? null,
+    heightWindow: terrain?.window ?? snapshotHeights?.window ?? [],
     stride,
     switchingResolution,
     reservedMemory: WORKING_BYTES,
@@ -990,6 +1088,7 @@ function mapState() {
       ? {
           revision: terrain.root.revision,
           changedChunks: terrain.changedChunks,
+          changedRegions: terrain.changedRegions,
           window: terrain.window,
           bytesReceived: terrain.bytesReceived,
           busy: terrainBusy,
@@ -1018,12 +1117,9 @@ window.__map = {
 async function boot() {
   const params = new URLSearchParams(location.search);
   const demoMode = import.meta.env.VITE_SURFACE_DEMO === "true";
-  const configuration: ViewerConfiguration =
-    !demoMode &&
-    params.get("players") === "off" &&
-    params.get("map")?.startsWith("/maps/")
-      ? {}
-      : await loadConfiguration().catch(() => ({}));
+  const configuration: ViewerConfiguration = await loadConfiguration().catch(
+    () => ({}),
+  );
   if (demoMode && !configuration.demo)
     throw Error("Public demo configuration missing");
   if (!("gpu" in navigator) || !navigator.gpu) {
@@ -1075,11 +1171,37 @@ async function boot() {
         new URL(configuration.terrain.url, location.href).href !== url.href)
     )
       throw Error("No explicit live-terrain binding for this map");
+    validateRoot(raw);
+    localMap = new LocalMapDataset(
+      `${url.href}:${raw.world_id}:${raw.generation}`,
+      configuration.local_map?.maxBytes ?? 2 * 1024 ** 3,
+      localStatus,
+    );
     terrain = new TerrainClient(
       url,
       raw as LiveRoot,
       decode,
       demo ? () => demo!.root() : undefined,
+      {
+        prepare: async (root) => {
+          validateRoot(root);
+          if (
+            root.revision === preparedLiveRevision &&
+            localMap!.state.phase === "ready"
+          )
+            return;
+          const refs = [
+            root.catalog,
+            root.atlas,
+            ...root.regions.flatMap((r) => [r.surface, r.heights]),
+          ];
+          await prepareLocal(
+            refs.map((ref) => ({ ...ref, url: asset(ref.url) })),
+          );
+          preparedLiveRevision = root.revision;
+        },
+        read: (ref) => localMap!.read({ ...ref, url: asset(ref.url) }),
+      },
     );
     manifest = await terrain.initialize();
     document.querySelector(".subtitle")!.textContent = demo
@@ -1095,7 +1217,7 @@ async function boot() {
     ) ||
     !Array.isArray(manifest.regions) ||
     !manifest.regions.length ||
-    manifest.regions.length > (terrain ? 65536 : 4096) ||
+    manifest.regions.length > 65536 ||
     !Array.isArray(manifest.materials) ||
     !manifest.materials.length ||
     manifest.materials.length > 65536 ||
@@ -1107,11 +1229,7 @@ async function boot() {
   $("app").querySelector(".identity strong")!.textContent = manifest.name;
   const width = manifest.bounds[2] - manifest.bounds[0],
     height = manifest.bounds[3] - manifest.bounds[1];
-  if (
-    width <= 0 ||
-    height <= 0 ||
-    (!terrain && width * height > 16 * 1024 * 1024)
-  )
+  if (width <= 0 || height <= 0)
     throw new Error("Map bounds exceed the prototype limit");
   const ids = new Set<string>();
   for (const r of manifest.regions) {
@@ -1136,9 +1254,34 @@ async function boot() {
     )
       throw new Error("Invalid material catalog");
   }
+  if (!terrain) {
+    localMap = new LocalMapDataset(
+      `${url.href}:snapshot`,
+      configuration.local_map?.maxBytes ?? 2 * 1024 ** 3,
+      localStatus,
+    );
+    await prepareLocal(
+      manifest.regions.map((r) => ({ ...r, url: asset(r.url) })),
+    );
+    snapshotHeights = new SnapshotHeights(manifest, asset, decode);
+  }
   const image = new Image();
-  image.src = asset(manifest.atlas);
+  const atlasUrl = terrain
+    ? URL.createObjectURL(
+        new Blob(
+          [
+            await localMap!.read({
+              ...terrain.root.atlas,
+              url: asset(terrain.root.atlas.url),
+            }),
+          ],
+          { type: "image/png" },
+        ),
+      )
+    : asset(manifest.atlas);
+  image.src = atlasUrl;
   await image.decode();
+  if (terrain) URL.revokeObjectURL(atlasUrl);
   if (
     image.width < 4 ||
     image.height < 4 ||
@@ -1173,10 +1316,8 @@ async function boot() {
   stride = chooseStride(
     scale,
     (step) =>
-      heightWindowBytes(
-        terrain ? terrain.needed(viewport(), elevation) : bounds,
-        step,
-      ) <= budget(step),
+      heightWindowBytes(heightBounds(manifest, viewport(), elevation), step) <=
+      budget(step),
   );
   if (terrain) {
     const update = await terrain.prepare(
@@ -1190,15 +1331,17 @@ async function boot() {
     bounds = update.window;
     heights = update.heights!;
     terrain.commit(update);
-  } else
-    heights = (await decode({
-      kind: "heights",
-      url: asset(manifest.heights),
-      sha256: manifest.heights_sha256,
-      columns: width * height,
-      width,
+  } else {
+    const update = await snapshotHeights!.prepare(
+      viewport(),
+      elevation,
       stride,
-    })) as Float32Array;
+      budget(stride),
+    );
+    heights = update.heights;
+    bounds = update.window;
+    snapshotHeights!.commit(update);
+  }
   const materials = materialWords(manifest);
   renderer = await Renderer.create(
     canvas,
@@ -1236,6 +1379,14 @@ async function boot() {
         : undefined,
       configuration,
     );
+}
+function localStatus() {
+  if (!localMap) return;
+  const state = localMap.state;
+  const el = document.querySelector<HTMLElement>(".local-state")!;
+  el.textContent = `Local map: ${state.phase}`;
+  el.title = JSON.stringify(state);
+  if (!renderer) message(`Preparing local map (${state.phase})…`);
 }
 void boot().catch((e) => {
   message(String(e), true);

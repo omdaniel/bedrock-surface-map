@@ -58,9 +58,11 @@ Errors have a nonzero exit code and JSON stderr summary. Compiler time and the
 initial asset download are not included in import timings.
 
 The offline export is limited to 65,536 chunks and a bounding rectangle
-of at most 16 million columns. It carries a whole-dataset heightfield for shadows.
+of at most 16 million columns. It includes a whole-dataset heightfield; the viewer
+derives bounded height pages from surface regions instead of allocating that
+complete field.
 For live-map repair, `--surface-only` uses bounded region streaming instead of
 building that heightfield; its output is repair input, not a directly viewable
-offline manifest. Live maps and the public demo use region-aligned height windows
+offline manifest. All viewing modes use region-aligned height windows
 and a bounded resident cache, including offscreen shadow margins. Unknown terrain
 outside the dataset cannot cast a known shadow.

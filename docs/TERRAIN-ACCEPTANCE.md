@@ -94,9 +94,9 @@ The growth script generates dense synthetic 4x and 16x maps, pans through 26
 locations per map and checks bounded residency, picking, reduced Fit World
 coverage and return to exact detail.
 The 256 MiB budget covers accounted map allocations, not total browser/driver
-RSS or all transient decoder peaks. Wider views select 2×2 or 4×4 samples;
+RSS or all transient decoder peaks. Wider views select power-of-two samples through 256×256;
 camera position and sun elevation remain unchanged. A view that cannot fit even
-at 4×4 must ask for zooming in rather than omit required shadow coverage.
+at the coarsest spacing must ask for zooming in rather than omit required shadow coverage.
 
 Measure direct-edit and background freshness separately, including sampling,
 transport and browser application delay. Targets are five-second direct updates,

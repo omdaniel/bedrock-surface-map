@@ -101,6 +101,7 @@ export function checkSteps(profile) {
   const common = [
     ["cargo", "fmt", "--all", "--check"],
     ["npm", "run", "format:check"],
+    ["node", "--test", "tests/planar-window.test.ts"],
     ...[
       "config:test",
       "release:test",

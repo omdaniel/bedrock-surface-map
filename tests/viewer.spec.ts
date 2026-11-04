@@ -573,7 +573,8 @@ test("corrupt payload is not empty terrain", async ({ page }) => {
     route.fulfill({ body: "bad payload" }),
   );
   await page.goto(fixture);
-  await expect(page.locator("#message")).toContainText("checksum mismatch");
+  await expect(page.locator("#message")).toContainText("size mismatch");
+  expect(await page.evaluate(() => window.__map.state().draws)).toBe(0);
 });
 test("missing WebGPU is explicit", async ({ page }) => {
   await page.addInitScript(() => {

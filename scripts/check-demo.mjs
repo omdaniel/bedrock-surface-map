@@ -36,14 +36,15 @@ try {
     requests = [];
   page.on("pageerror", (e) => errors.push(String(e)));
   const responses = [];
-  page.on("response", (r) =>
+  page.on("response", (r) => {
+    if (!/^https?:/.test(r.url())) return;
     responses.push(
       r
         .body()
         .then((b) => b.length)
         .catch(() => 0),
-    ),
-  );
+    );
+  });
   page.on("request", (r) => requests.push(r.url()));
   await page.clock.install();
   await page.goto(url);
@@ -122,7 +123,7 @@ try {
   await page.clock.fastForward(11000);
   await page.waitForTimeout(1000);
   await page.waitForFunction(
-    () => window.__map.state().terrain.changedChunks > 0,
+    () => window.__map.state().terrain.changedRegions > 0,
   );
   const built = await page.evaluate(() => window.__map.state());
   await pickSite(67, "oak planks");
@@ -261,7 +262,10 @@ try {
   });
   for (const request of requests) {
     assert.equal(new URL(request).origin, new URL(url).origin);
-    assert.ok(new URL(request).pathname.startsWith(new URL(url).pathname));
+    // Locally decoded atlas Blobs are not HTTP requests. Still require their
+    // creator origin to match; network assets must remain beneath the demo path.
+    if (new URL(request).protocol !== "blob:")
+      assert.ok(new URL(request).pathname.startsWith(new URL(url).pathname));
     assert.ok(!request.includes("/api/"));
   }
   assert.deepEqual(errors, []);

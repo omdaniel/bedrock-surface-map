@@ -41,7 +41,9 @@ export interface DecodeRequest {
   id: number;
   url: string;
   sha256: string;
-  kind: "region" | "heights" | "chunk";
+  /** Verified compressed bytes transferred from the complete local dataset. */
+  bytes?: ArrayBuffer;
+  kind: "region" | "heights" | "chunk" | "region-heights";
   rx?: number;
   rz?: number;
   materials?: number;

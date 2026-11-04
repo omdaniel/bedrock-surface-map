@@ -53,6 +53,9 @@ operator-owned `viewer-config.json` beside the built site. Its optional
 `map` selects the offline manifest, relative to the application's base path;
 the default is `maps/world/manifest.json`. An explicit `?map=` overrides it.
 Live `terrain` and `players` bindings follow their respective guides.
+`local_map.maxBytes` optionally sets the compressed-terrain IndexedDB quota in
+bytes (default 2 GiB). See [local terrain data](LOCAL-MAPS.md) for retention and
+browser storage limits. This setting does not enlarge the GPU/resident map budget.
 The development server accepts `SURFACE_MAP` for the same offline selection.
 
 The [packaged snapshot server](INSTALL.md) instead generates `viewer-config.json`
