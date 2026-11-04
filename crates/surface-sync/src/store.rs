@@ -1,5 +1,6 @@
+use crate::lod_queue::{self, ChangedChunk};
 use anyhow::{Context, Result, ensure};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -62,14 +63,14 @@ pub struct Store {
     pub connection: Connection,
     pub root: PathBuf,
     pub limit: u64,
-    used: Cell<u64>,
-    data_version: Cell<i64>,
+    pub(crate) used: Cell<u64>,
+    pub(crate) data_version: Cell<i64>,
 }
 
-struct Objects<'a> {
-    root: &'a Path,
-    used: &'a Cell<u64>,
-    limit: u64,
+pub(crate) struct Objects<'a> {
+    pub(crate) root: &'a Path,
+    pub(crate) used: &'a Cell<u64>,
+    pub(crate) limit: u64,
 }
 impl std::ops::Deref for Objects<'_> {
     type Target = Path;
@@ -78,7 +79,7 @@ impl std::ops::Deref for Objects<'_> {
     }
 }
 impl Objects<'_> {
-    fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
+    pub(crate) fn refresh(&self, db: &Connection, previous: &Cell<i64>) -> Result<()> {
         let version = db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))?;
         if version != previous.get() {
             let used = fs::read_dir(self.root.join("objects"))?
@@ -96,15 +97,15 @@ impl Objects<'_> {
     }
 }
 
-fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
+pub(crate) fn meta<T: for<'a> Deserialize<'a>>(db: &Connection, key: &str) -> Result<T> {
     let value: String = db.query_row("SELECT value FROM meta WHERE key=?1", [key], |r| r.get(0))?;
     Ok(serde_json::from_str(&value)?)
 }
-fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
+pub(crate) fn set_meta(db: &Connection, key: &str, value: &impl Serialize) -> Result<()> {
     db.execute("INSERT INTO meta(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value",params![key,serde_json::to_string(value)?])?;
     Ok(())
 }
-fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
+pub(crate) fn object(root: &Objects<'_>, bytes: &[u8], extension: &str) -> Result<ObjectRef> {
     let sha256 = hash(bytes);
     let name = format!("{sha256}.{extension}");
     let path = root.join("objects").join(&name);
@@ -230,11 +231,24 @@ fn intern(db: &Connection, spec: &MaterialSpec) -> Result<u32> {
     Ok(id)
 }
 
+// Queue ordering includes repairs as well as live observations. Do not advance
+// or repurpose the existing observation counter used by reconciliation fences.
+fn next_lod_observation(db: &Transaction<'_>) -> Result<u64> {
+    let revision = meta::<u64>(db, "lod_observation")?
+        .checked_add(1)
+        .filter(|revision| *revision <= i64::MAX as u64)
+        .context("LOD observation revision exhausted")?;
+    set_meta(db, "lod_observation", &revision)?;
+    Ok(revision)
+}
+
 fn save_chunk(
-    db: &Connection,
+    db: &Transaction<'_>,
     root: &Objects<'_>,
     c: &SurfaceChunk,
     observed: u64,
+    queue_revision: u64,
+    queued_ms: u64,
 ) -> Result<bool> {
     c.validate(65536, false)?;
     let packed = zstd::encode_all(c.encode()?.as_slice(), 3)?;
@@ -247,7 +261,23 @@ fn save_chunk(
         )
         .optional()?;
     db.execute("INSERT INTO chunks(cx,cz,hash,bytes,observed) VALUES(?1,?2,?3,?4,?5) ON CONFLICT(cx,cz) DO UPDATE SET hash=excluded.hash,bytes=excluded.bytes,observed=excluded.observed",params![c.cx,c.cz,reference.sha256,reference.bytes as i64,observed as i64])?;
-    Ok(old.as_deref() != Some(reference.sha256.as_str()))
+    let changed = old.as_deref() != Some(reference.sha256.as_str());
+    // Once enabled, keep tracking even while the publisher is stopped. Before
+    // first opt-in, its one-time bootstrap reads the current chunk references.
+    if changed && crate::lod_publish::bootstrapped(db)? {
+        lod_queue::enqueue(
+            db,
+            &ChangedChunk {
+                cx: c.cx,
+                cz: c.cz,
+                sha256: reference.sha256,
+                bytes: reference.bytes,
+                observation_revision: queue_revision,
+                now_ms: queued_ms,
+            },
+        )?;
+    }
+    Ok(changed)
 }
 
 fn publish_region(db: &Connection, root: &Objects<'_>, rx: i32, rz: i32) -> Result<()> {
@@ -361,6 +391,7 @@ fn publish_root(
     let manifest = json!({"format_version":2,"world_id":meta::<String>(db,"world_id")?,"generation":meta::<String>(db,"generation")?,"revision":revision+1,"rules_version":1,
         "name":meta::<String>(db,"name")?,"bounds":bounds,"spawn":meta::<[i32;3]>(db,"spawn")?,"source_sha256":meta::<String>(db,"source_sha256")?,"catalog":catalog,"atlas":meta::<ObjectRef>(db,"atlas")?,"regions":regions,"height_range":range});
     set_meta(db, "manifest", &manifest)?;
+    crate::lod_publish::record_source(db, &manifest)?;
     Ok(())
 }
 
@@ -371,7 +402,7 @@ impl Store {
             "invalid configured identity"
         );
         fs::create_dir_all(root.join("objects"))?;
-        let db = Connection::open(root.join("current.sqlite3"))?;
+        let mut db = Connection::open(root.join("current.sqlite3"))?;
         db.busy_timeout(std::time::Duration::from_secs(10))?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA cache_size=-8192;
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -407,6 +438,13 @@ impl Store {
                 && meta::<String>(&db, "generation")? == generation,
             "dataset identity mismatch; use a new state directory for another generation"
         );
+        let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        lod_queue::install(&tx)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO meta(key,value) VALUES('lod_observation','0')",
+            [],
+        )?;
+        tx.commit()?;
         let used = fs::read_dir(root.join("objects"))?.try_fold(0u64, |n, e| -> Result<u64> {
             Ok(n.saturating_add(e?.metadata()?.len()))
         })?;
@@ -474,7 +512,10 @@ impl Store {
             set_meta(&tx, "producer_started", &observation.started_ms)?;
         }
         let accepted: u64 = meta(&tx, "observation")?;
-        let accepted = accepted + 1;
+        let accepted = accepted
+            .checked_add(1)
+            .context("observation revision exhausted")?;
+        let queue_revision = next_lod_observation(&tx)?;
         let ids = observation
             .materials
             .iter()
@@ -484,7 +525,7 @@ impl Store {
         for source in &observation.chunks {
             let mut chunk = source.clone();
             chunk.remap(&ids)?;
-            if save_chunk(&tx, &objects, &chunk, accepted)? {
+            if save_chunk(&tx, &objects, &chunk, accepted, queue_revision, now)? {
                 dirty.insert((chunk.cx.div_euclid(16), chunk.cz.div_euclid(16)));
             }
         }
@@ -603,6 +644,8 @@ impl Store {
         let mut changed = 0;
         let mut skipped = 0;
         let mut checked = 0;
+        let queue_revision = next_lod_observation(&tx)?;
+        let queued_ms = now_ms();
         for reference in &manifest.regions {
             ensure!(
                 Path::new(&reference.url)
@@ -640,7 +683,14 @@ impl Store {
                         continue;
                     }
                     chunk.remap(&ids)?;
-                    if save_chunk(&tx, &objects, &chunk, boundary.map_or(0, |b| b.observation))? {
+                    if save_chunk(
+                        &tx,
+                        &objects,
+                        &chunk,
+                        boundary.map_or(0, |b| b.observation),
+                        queue_revision,
+                        queued_ms,
+                    )? {
                         dirty.insert((region.rx, region.rz));
                         changed += 1;
                     }
@@ -652,12 +702,29 @@ impl Store {
         let mut published: Value = meta(&tx, "manifest")?;
         published["source_sha256"] = json!(manifest.source_sha256);
         set_meta(&tx, "manifest", &published)?;
+        crate::lod_publish::record_source(&tx, &published)?;
         set_meta(&tx, "last_repair_ms", &now_ms())?;
         tx.commit()?;
         Ok(json!({"checked":checked,"changed":changed,"newer_live_preserved":skipped}))
     }
     pub fn manifest(&self) -> Result<Value> {
         meta(&self.connection, "manifest")
+    }
+    pub fn lod_manifest(&self) -> Result<surface_core::lod::LodManifest> {
+        let manifest: surface_core::lod::LodManifest = meta(&self.connection, "lod_manifest")?;
+        manifest.validate()?;
+        ensure!(
+            manifest.world_id.as_deref()
+                == Some(meta::<String>(&self.connection, "world_id")?.as_str())
+                && manifest.generation == meta::<String>(&self.connection, "generation")?,
+            "LOD dataset identity mismatch"
+        );
+        Ok(manifest)
+    }
+    /// Record service configuration without discarding queued edits or the last
+    /// coherent tree. Publisher::open enables publication and claims its lease.
+    pub fn pause_lod(&self) -> Result<()> {
+        set_meta(&self.connection, "lod_enabled", &false)
     }
     /// Correct descriptors atomically while retaining every published ID and
     /// chunk hash. Existing clients adopt the new catalog on their next poll.
@@ -720,7 +787,7 @@ impl Store {
             "live"
         };
         Ok(
-            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2"}),
+            json!({"schema_version":1,"world_id":meta::<String>(&self.connection,"world_id")?,"generation":meta::<String>(&self.connection,"generation")?,"status":status,"reason":reason,"sample_age_ms":if sample>0 {Some(age)} else {None},"revision":meta::<u64>(&self.connection,"revision")?,"last_repair_ms":meta::<u64>(&self.connection,"last_repair_ms")?,"diagnostics":meta::<Value>(&self.connection,"diagnostics")?,"rules_version":1,"pack_version":"1.0.2","lod":crate::lod_publish::health(&self.connection,now)?}),
         )
     }
     pub fn disable(&self, disabled: bool, reason: &str) -> Result<()> {
@@ -774,6 +841,14 @@ impl Store {
             collect(&serde_json::from_str(&index)?, &mut reachable);
         }
         drop(s);
+        lod_queue::visit_references(&tx, |_, reference| {
+            reachable.insert(format!("{}.zst", reference.sha256));
+            Ok(())
+        })?;
+        crate::lod_publish::visit_pins(&tx, |value| {
+            collect(value, &mut reachable);
+            Ok(())
+        })?;
         let mut removed = 0;
         let mut used = 0u64;
         for entry in fs::read_dir(self.root.join("objects"))? {

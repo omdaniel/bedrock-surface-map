@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use surface_sync::{
     http::{App, ingest_router, read_router},
+    lod_publish::Publisher,
     store::{Boundary, Store, now_ms},
 };
 
@@ -40,6 +41,9 @@ enum Command {
         ingest: String,
         #[arg(long, env = "TERRAIN_READ_BIND", default_value = "127.0.0.1:8111")]
         read: String,
+        /// Publish the incremental multiresolution tree alongside the legacy feed.
+        #[arg(long, env = "TERRAIN_LOD", default_value_t = false)]
+        lod: bool,
     },
     Seed {
         #[arg(long)]
@@ -93,11 +97,21 @@ async fn main() -> Result<()> {
             token_file,
             ingest,
             read,
+            lod,
         } => {
             let token = std::fs::read_to_string(token_file)?;
             let app = App::new(store, token.trim().as_bytes().to_vec(), args.world)?;
             let a = tokio::net::TcpListener::bind(ingest).await?;
             let b = tokio::net::TcpListener::bind(read).await?;
+            if lod {
+                let publisher = Publisher::open(app.store.clone())?;
+                tokio::spawn(publisher.run());
+            } else {
+                app.store
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("store lock"))?
+                    .pause_lod()?;
+            }
             let gc = app.store.clone();
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(600));

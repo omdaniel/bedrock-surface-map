@@ -1,5 +1,5 @@
 #[path = "assets.rs"]
-mod assets;
+pub(crate) mod assets;
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
@@ -18,6 +18,19 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Prepare content-addressed, multiresolution terrain from an existing surface snapshot.
+    PrepareLod {
+        #[arg(long)]
+        map: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// Maximum bytes referenced by the completed publication.
+        #[arg(long)]
+        max_output_bytes: Option<u64>,
+        /// Report conservative output requirements without writing files.
+        #[arg(long)]
+        estimate: bool,
+    },
     Sample {
         #[arg(long)]
         input: PathBuf,
@@ -654,6 +667,24 @@ fn run() -> Result<()> {
                 "{}",
                 serde_json::json!({"regions":m.regions.len(),"columns":columns,"decode_seconds":start.elapsed().as_secs_f64()})
             );
+        }
+        Command::PrepareLod {
+            map,
+            output,
+            max_output_bytes,
+            estimate,
+        } => {
+            let report = if estimate {
+                crate::lod::estimate_lod(&map)?
+            } else {
+                crate::lod::prepare_lod_with_options(
+                    &map,
+                    &output,
+                    crate::lod::PrepareLodOptions { max_output_bytes },
+                )?
+                .1
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
         }
         Command::Fixture { output, coast } => {
             create_fixture(&output, coast)?;
