@@ -10,7 +10,7 @@ try {
     deviceScaleFactor: 1,
   });
   await page.clock.install();
-  await page.goto("http://127.0.0.1:5180/bedrock-surface-map/");
+  await page.goto("http://127.0.0.1:5180/bedrock-surface-map/demo/");
   await page.waitForFunction(
     () => window.__map?.ready && window.__map.state().pending === 0,
   );
