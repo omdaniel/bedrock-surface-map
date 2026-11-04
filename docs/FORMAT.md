@@ -55,9 +55,9 @@ another import. World spawn is retained, not private player records.
 Live manifests use format version 2 with explicit `world_id`, `generation`,
 revision, bounds, height range and catalog/atlas references. The root references
 regional indexes, complete region objects and height-only objects. Each index
-references its current chunks. Cold loads use regions; connected viewers compare
-hashes and fetch changed chunks. A missing index or incompatible chunk coverage
-falls back to a complete region replacement, not a historical patch log.
+references its current chunks. The viewer synchronizes complete compressed region
+objects locally and compares hashes to refresh changed regions. Individual chunk
+objects remain available to read clients; no historical patch log is required.
 
 Material descriptors include block/state identity, top texture, tint class,
 atlas UVs, average color and approximation status. Live IDs append within a
@@ -101,9 +101,10 @@ per block. Filtering is local to each region; no overview images are exported.
 Procedural borders use fragment derivatives and fade with zoom. Relief uses
 neighbor heights and analytical band coverage, without contour or edge meshes.
 
-The visible map uses a single sample spacing of 1, 2 or 4 blocks. The scale bar
+The visible map uses a single power-of-two sample spacing from 1 through 256 blocks. The scale bar
 retains exact detail through its 100-block range when memory permits; the next
-200-block bar selects 2×2 reduction. Memory pressure selects 4×4 reduction.
+200-block bar selects at least 2×2 reduction. Memory pressure selects a coarser
+spacing for the complete view and its surrounding navigation buffer.
 The worker chooses a modal material from each group, with center-nearest ties,
 and retains that real sample's tint, water, support and overlay attributes.
 Height is the mean of present columns, rounded to a sixteenth block. Partial
@@ -123,9 +124,10 @@ an empty or partially replaced resolution. The prepared view appears in one draw
 
 ## Height Coverage and Caching
 
-Offline maps carry a complete dataset heightfield. Live maps and the demo use
-region-aligned working windows around the visible area, including offscreen
-height-only pages. The margin derives from the dataset's height range and sun
+Offline maps include a dataset heightfield in their export; the viewer derives
+bounded height pages directly from locally stored surface regions. Live maps
+and the demo use the published height-only objects. All modes use region-aligned
+working windows around the visible area. The margin derives from the dataset's height range and sun
 elevation: `height_difference / tan(elevation)`, plus neighbor padding. Unknown
 terrain outside mapped coverage cannot supply an occluder.
 
@@ -144,12 +146,14 @@ each draw. Unchanged polls and player-only motion do not request terrain frames;
 following a player moves the camera and therefore redraws terrain.
 
 The logical map budget is 256 MiB, including resident samples, picking records,
-GPU height trees and compact live height pages, with a 32 MiB working reserve.
-Eviction prefers nonvisible detail. Camera, resize and lighting changes select a
+GPU height trees and compact height pages, with a 32 MiB working reserve.
+The viewer releases detail outside its navigation buffer. Camera, resize and lighting changes select a
 sample spacing that fits visible terrain and the required shadow coverage.
 They do not silently change camera position, zoom or sun elevation. If even
-4×4 samples cannot fit, the viewer requests a smaller view. This is not a
+256×256 samples cannot fit, the viewer requests a smaller view. This is not a
 guarantee about total browser/driver RSS or all transient allocation peaks.
-Region loading uses two requests at a time; an unchanged view has no continuous
-terrain loop. Existing offline and live endpoints deliver the same objects at
-every resolution; reduction requires no new server index or preparation step.
+Whole-dataset synchronization uses two downloads at a time; one worker decodes
+local objects serially. An unchanged view has no continuous terrain loop.
+Existing offline and live endpoints deliver the same objects at every resolution;
+reduction requires no new server index or preparation step. See
+[local terrain storage](LOCAL-MAPS.md) for publication, quota and retry behavior.

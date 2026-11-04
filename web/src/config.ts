@@ -3,6 +3,7 @@ export interface ViewerConfiguration {
   players?: unknown;
   terrain?: { url: string; world_id: string; generation: string };
   demo?: { scenario: string; poster: string };
+  local_map?: { maxBytes?: number };
 }
 export function appUrl(path: string) {
   // The packaged viewer can be mounted at either `/` or a subpath without a

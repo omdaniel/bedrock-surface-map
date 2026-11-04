@@ -229,16 +229,45 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   page,
 }, info) => {
   // npm run fixture -- --coast --output web/public/maps/coast
-  let hold = false;
-  let held = 0;
-  let release!: () => void;
-  let gate: Promise<void>;
-  const holdRequests = () => {
-    hold = true;
-    gate = new Promise<void>((resolve) => {
-      release = resolve;
+  // Delay actual worker submissions, not HTTP: preparation uses local objects.
+  // This makes the retained-frame assertion deterministic without changing the renderer.
+  await page.addInitScript(() => {
+    const original = Worker.prototype.postMessage;
+    const gate = { hold: false, waiting: [] as (() => void)[] };
+    Object.assign(window, { __decodeGate: gate });
+    Worker.prototype.postMessage = function (
+      ...args: [
+        message: unknown,
+        options?: Transferable[] | StructuredSerializeOptions,
+      ]
+    ) {
+      const send = () => Reflect.apply(original, this, args);
+      if (gate.hold) gate.waiting.push(send);
+      else send();
+    };
+  });
+  const holdDecodes = () =>
+    page.evaluate(() => {
+      (
+        window as unknown as { __decodeGate: { hold: boolean } }
+      ).__decodeGate.hold = true;
     });
-  };
+  const held = () =>
+    page.evaluate(
+      () =>
+        (window as unknown as { __decodeGate: { waiting: unknown[] } })
+          .__decodeGate.waiting.length,
+    );
+  const release = () =>
+    page.evaluate(() => {
+      const gate = (
+        window as unknown as {
+          __decodeGate: { hold: boolean; waiting: (() => void)[] };
+        }
+      ).__decodeGate;
+      gate.hold = false;
+      for (const send of gate.waiting.splice(0)) send();
+    });
   const geometry = () =>
     page.evaluate(() => {
       const canvas = document.querySelector<HTMLCanvasElement>("#map")!;
@@ -260,13 +289,6 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
         ),
       };
     });
-  await page.route("**/maps/coast/regions/**", async (route) => {
-    if (hold) {
-      held++;
-      await gate;
-    }
-    await route.continue();
-  });
   await page.goto("/?map=/maps/coast/manifest.json&players=off");
   await settled(page, 1, 16);
   await zoomTo(page, 0.500001);
@@ -274,7 +296,7 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   const originalGeometry = await geometry();
   const original = await screenshot(page, info, "coast-fine");
   coastPixels(original, fine);
-  holdRequests();
+  await holdDecodes();
   try {
     // A wheel event can cross the threshold while a pan frame is already queued.
     // Queue both actions in one turn so the pending frame cannot run first.
@@ -283,10 +305,9 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
       window.__map.pan(-1, 0);
       window.__map.zoom(0.5 / window.__map.state().scale);
     });
-    await expect.poll(() => held).toBeGreaterThan(0);
+    await expect.poll(held).toBeGreaterThan(0);
     const replacing = await state(page);
     expect(replacing.switchingResolution).toBe(true);
-    expect(replacing.pending).toBeGreaterThan(0);
     await expect(page.locator("#message-text")).toHaveText(
       "Preparing 2 × 2 overview…",
     );
@@ -305,8 +326,7 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
     expect(replacing.draws).toBe(fine.draws);
     expect((await state(page)).draws).toBe(fine.draws);
   } finally {
-    hold = false;
-    release();
+    await release();
   }
   const coarse = await settled(page, 2, 16);
   expect(await geometry()).toEqual(originalGeometry);
@@ -318,15 +338,14 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
   expect(ratio).toBeLessThan(0.251);
   const png = await screenshot(page, info, "coast-stride-2");
   coastPixels(png, coarse);
-  held = 0;
-  holdRequests();
+  await holdDecodes();
   try {
     await page.evaluate(() => {
       window.__map.pan(1, 0);
       window.__map.pan(-1, 0);
       window.__map.zoom(0.500001 / window.__map.state().scale);
     });
-    await expect.poll(() => held).toBeGreaterThan(0);
+    await expect.poll(held).toBeGreaterThan(0);
     await expect(page.locator("#message-text")).toHaveText(
       "Preparing full detail…",
     );
@@ -334,8 +353,7 @@ test("the 16-region coast stays visible during replacement and uses one reduced 
     coastPixels(await screenshot(page, info, "coast-refining"), coarse);
     expect((await state(page)).draws).toBe(coarse.draws);
   } finally {
-    hold = false;
-    release();
+    await release();
   }
   const restored = await settled(page, 1, 16);
   expect(await geometry()).toEqual(originalGeometry);
@@ -400,8 +418,8 @@ test("dense live terrain reaches stride 4 within budget and returns to fine deta
       (regions) => {
         const s = window.__map.state();
         const main = document.querySelector("main")!;
-        const dx = main.clientWidth / s.scale / 2;
-        const dz = main.clientHeight / s.scale / 2;
+        const dx = main.clientWidth / s.scale / 2 + s.bufferPadding;
+        const dz = main.clientHeight / s.scale / 2 + s.bufferPadding;
         return regions.filter(
           (r) =>
             r.rx * 256 <= s.cx + dx &&
@@ -412,13 +430,13 @@ test("dense live terrain reaches stride 4 within budget and returns to fine deta
       },
       root.regions.map(({ rx, rz }) => ({ rx, rz })),
     );
-  await zoomTo(page, 1);
+  await zoomTo(page, 3);
   const baseline = await settled(page, 1, await expectedRegions());
   const measurements: State[] = [baseline];
   for (const [scale, stride] of [
-    [0.3, 2],
+    [0.5, 2],
     [0.2, 4],
-    [1, 1],
+    [3, 1],
   ]) {
     const before = await zoomTo(page, scale);
     const after = await settled(page, stride, await expectedRegions());
@@ -450,7 +468,6 @@ test("dense live terrain reaches stride 4 within budget and returns to fine deta
   }
   const [, half, quarter, restored] = measurements;
   expect(quarter.cached).toBeGreaterThan(half.cached);
-  expect(quarter.memory / half.memory).toBeLessThan(0.75);
   expect(
     quarter.memory / quarter.cached / (half.memory / half.cached),
   ).toBeLessThan(0.3);

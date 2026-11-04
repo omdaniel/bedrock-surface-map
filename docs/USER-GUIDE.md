@@ -44,7 +44,7 @@ can simplify the view. These settings last for the browser session.
 
 Water depth and vegetation are surface approximations. A map cannot show
 everything underneath a roof, canopy or water surface. Live terrain updates
-replace changed chunks without resetting your camera; an offline snapshot stays
+replace changed terrain without resetting your camera; an offline snapshot stays
 fixed until the operator imports another one and you reload.
 
 ## If the Map Does Not Load

@@ -13,12 +13,13 @@ maintenance entry points without making the demo visitor read an operator guide.
 | surface-sync / terrain pack     | Chunk observations, durable current terrain, incremental delivery           |
 | web                             | Worker decoding, navigation, picking, configuration and overlays            |
 
-Live terrain replaces chunks and patches resident height windows, overviews and
+Live terrain replaces changed regions and patches resident height windows, overviews and
 picking data. It does not allocate a heightfield for an arbitrarily large world.
 The logical map budget is 256 MiB, with 32 MiB reserved for working allocations;
 it is not a browser/driver RSS guarantee. One view-wide sample spacing selects
-exact blocks, 2×2 summaries or 4×4 summaries. Wider views reduce detail without
-moving the camera. Views exceeding even the 4×4 representation require zooming in.
+exact blocks or power-of-two reductions through 256×256. Wider views reduce detail
+without moving the camera. [Local terrain storage](LOCAL-MAPS.md) keeps the complete
+compressed map independently of which regions are decoded and resident.
 
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),

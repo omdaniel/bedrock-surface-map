@@ -40,8 +40,10 @@ scan errors, transport failures, overflow and delayed coverage.
   producer tombstones and reconciliation metadata. Immutable compressed objects
   are written and synced before their references commit.
 - The root manifest references complete regions, height-only objects and regional
-  chunk indexes. New visitors load current regions; connected viewers fetch
-  changed chunks, without replaying an edit log.
+  chunk indexes. The viewer keeps complete compressed regions locally and refreshes
+  changed regions independently of camera movement, without replaying an edit log.
+  The read API also exposes individual changed chunks. See [local maps](LOCAL-MAPS.md)
+  for client storage and transfer behavior.
 - Material IDs append within a generation. `surface-sync refresh-catalog` updates
   descriptors without changing IDs or chunk hashes. Unknown materials stay visible
   as diagnostics.

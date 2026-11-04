@@ -3,7 +3,8 @@ export const REGION_GPU_BYTES = 65536 * 32 + 349524;
 export const REGION_BYTES = REGION_GPU_BYTES + 65536 * 8;
 // Keep working room for one decoder, height-window replacement and uploads.
 export const WORKING_BYTES = 32 * 1024 * 1024;
-export type SurfaceStride = 1 | 2 | 4;
+export const SURFACE_STRIDES = [1, 2, 4, 8, 16, 32, 64, 128, 256] as const;
+export type SurfaceStride = (typeof SURFACE_STRIDES)[number];
 
 export function regionGpuBytes(stride: number) {
   const side = 256 / stride;
@@ -27,9 +28,9 @@ export function chooseStride(
   scale: number,
   fits: (stride: SurfaceStride) => boolean,
 ): SurfaceStride {
-  const candidates: SurfaceStride[] =
-    scaleBarBlocks(scale) > 100 ? [2, 4] : [1, 2, 4];
-  return candidates.find(fits) ?? 4;
+  const candidates =
+    scaleBarBlocks(scale) > 100 ? SURFACE_STRIDES.slice(1) : SURFACE_STRIDES;
+  return candidates.find((step) => fits(step)) ?? 256;
 }
 
 export function heightWindowBytes(bounds: number[], stride = 1) {
@@ -38,7 +39,7 @@ export function heightWindowBytes(bounds: number[], stride = 1) {
   const columns = width * height;
   if (
     bounds.length !== 4 ||
-    ![1, 2, 4].includes(stride) ||
+    !SURFACE_STRIDES.includes(stride as SurfaceStride) ||
     !Number.isSafeInteger(width) ||
     !Number.isSafeInteger(height) ||
     width <= 0 ||
