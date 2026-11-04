@@ -421,6 +421,11 @@ async function verified(
   return actual === request.sha256;
 }
 
+export {
+  validate as validateVerifiedObjectRequest,
+  verified as verifyObjectBytes,
+};
+
 async function save(
   buffer: ArrayBuffer,
   request: VerifiedObjectRequest,
