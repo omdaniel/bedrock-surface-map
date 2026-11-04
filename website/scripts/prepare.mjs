@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 export const website = fileURLToPath(new URL('../', import.meta.url));
 export const root = path.resolve(website, '..');
 export const sourceUrl = 'https://github.com/omdaniel/bedrock-surface-map/blob/main/';
+export const screenshots = ['docs/media/demo.png', 'docs/media/demo-players.png', 'docs/media/demo-lighting.png'];
 
 // Explicit public documentation only. Never recurse into the application checkout.
 export async function inventory() {
@@ -18,7 +19,7 @@ export function transformLinks(markdown, source, pages) {
     if (/^(?:[a-z]+:|\/|#)/i.test(href)) return match;
     const [name, fragment] = href.split('#');
     const target = path.posix.normalize(path.posix.join(path.posix.dirname(source), name));
-    if (pages.has(target) || target === 'docs/media/demo.png') return match;
+    if (pages.has(target) || screenshots.includes(target)) return match;
     return `${open}${sourceUrl}${target}${fragment ? `#${fragment}` : ''}${close}`;
   });
 }
@@ -38,7 +39,9 @@ export async function prepare() {
     await copyFile(path.join(website, 'pages', file), path.join(destination, file));
   }
   await mkdir(path.join(destination, 'public/docs/media'), { recursive: true });
-  await copyFile(path.join(root, 'docs/media/demo.png'), path.join(destination, 'public/docs/media/demo.png'));
+  for (const file of screenshots) {
+    await copyFile(path.join(root, file), path.join(destination, 'public', file));
+  }
   console.log(`Prepared ${sources.length} canonical guides and website entry pages.`);
 }
 

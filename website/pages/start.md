@@ -1,7 +1,7 @@
-# Choose your path
+# Installation Options
 
-You do not need a Minecraft account or a server to try the map. Installation and
-live integration are separate steps; choose the smallest path that fits your goal.
+Try the demo, install a snapshot viewer, or connect a live server using the
+guides below. The demo requires no Minecraft account or server.
 
 ## I want to see what it does
 

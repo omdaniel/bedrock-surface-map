@@ -7,18 +7,19 @@ const doc = (text: string, file: string) => ({ text, link: `/docs/${file}` });
 
 export default defineConfig({
   title: 'Bedrock Surface Map',
-  description: 'Explore your Bedrock world in the browser. Start with a demo, install a map, or contribute to the project.',
+  description: 'Installation, usage and development documentation for Bedrock Surface Map.',
   srcDir: '.generated',
   base,
   cleanUrls: false,
+  appearance: false,
   lastUpdated: false,
   ignoreDeadLinks: false,
   sitemap: pagesUrl ? { hostname: new URL(base, pagesUrl).href } : undefined,
-  head: [['meta', { name: 'theme-color', content: '#244b3b' }]],
+  head: [['meta', { name: 'theme-color', content: '#ffffff' }]],
   themeConfig: {
     siteTitle: 'Bedrock Surface Map',
     nav: [
-      { text: 'Start here', link: '/start' },
+      { text: 'Installation', link: '/start' },
       { text: 'Use the map', link: '/docs/USER-GUIDE' },
       { text: 'Contribute', link: '/CONTRIBUTING' },
       { text: 'Demo', link: 'https://omdaniel.github.io/bedrock-surface-map/demo/' },
@@ -31,7 +32,7 @@ export default defineConfig({
       text: 'Edit this page on GitHub',
     },
     sidebar: [
-      { text: 'Welcome', items: [{ text: 'Choose your path', link: '/start' }, doc('Map controls & players', 'USER-GUIDE'), doc('Compatibility & troubleshooting', 'COMPATIBILITY')] },
+      { text: 'Getting started', items: [{ text: 'Installation options', link: '/start' }, doc('Map controls & players', 'USER-GUIDE'), doc('Compatibility & troubleshooting', 'COMPATIBILITY')] },
       { text: 'Install your map', items: [doc('Snapshot viewer', 'INSTALL'), doc('Prepare a world export', 'WORLD-EXPORT'), doc('Download the live bundle', 'OPERATOR-INSTALL'), doc('Existing Docker Bedrock server', 'QUICKSTART-BDS'), doc('Crafty & AMP', 'PANELS'), doc('HTTPS deployment', 'DEPLOYMENT')] },
       { text: 'Configure & operate', collapsed: true, items: [doc('Configuration', 'CONFIGURATION'), doc('Player tracking', 'TRACKING'), doc('Terrain synchronization', 'TERRAIN-SYNC'), doc('Connection acceptance', 'TERRAIN-ACCEPTANCE')] },
       { text: 'Contribute', items: [{ text: 'Contribution guide', link: '/CONTRIBUTING' }, doc('Source setup', 'GETTING_STARTED'), doc('Architecture & local checks', 'DEVELOPMENT'), doc('Website development', 'WEBSITE')] },

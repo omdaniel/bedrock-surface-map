@@ -22,11 +22,16 @@ one of those source files, restart `dev` to refresh the generated copy. Website
 entry pages live in `website/pages/`, the theme in `website/.vitepress/theme/`,
 and navigation in `website/.vitepress/config.ts`.
 
-The preparation script stages an explicit list of Markdown files and the
-approved `docs/media/demo.png` into ignored `website/.generated/`. It never
+The preparation script stages an explicit list of Markdown files and approved
+demo screenshots from `docs/media/` into ignored `website/.generated/`. It never
 copies a developer's map directory. Links to repository source/configuration
 files point to GitHub; documentation links stay within the site. Do not edit
 generated Markdown or HTML.
+
+The homepage is a text index for users and developers with captioned feature
+thumbnails. Screenshots show only the public demo's fictional players and
+simulated activity. Add reviewed images to the explicit screenshot list in
+`website/scripts/prepare.mjs`; other files in `docs/media/` are not copied.
 
 ## Check a Change
 
