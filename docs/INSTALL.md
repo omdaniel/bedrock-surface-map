@@ -11,7 +11,7 @@ Python, Git, Zig, Vite, or a Minecraft server.
 [Download a release](https://github.com/omdaniel/bedrock-surface-map/releases/latest)
 for **Linux AMD64** (Intel/AMD x86-64) or **Linux ARM64**. The release includes
 checksums, source and native test evidence. macOS users can use the
-[public demo](https://omdaniel.github.io/bedrock-surface-map/) or the
+[public demo](https://omdaniel.github.io/bedrock-surface-map/demo/) or the
 [source development path](GETTING_STARTED.md#run-the-demo-locally).
 
 On Linux, these commands select your architecture, download into a dedicated
@@ -63,7 +63,8 @@ install path. Follow the documentation bundled with your selected version.
 
 ## Import Your World
 
-To import a consistent offline `.mcworld` or ZIP snapshot, first acquire the
+Prepare a [consistent world export](WORLD-EXPORT.md) with world files at the
+archive root. To import that `.mcworld` or ZIP snapshot, first acquire the
 supported Mojang sample archive explicitly, review the linked terms, then import:
 
 ```sh

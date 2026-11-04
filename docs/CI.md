@@ -6,7 +6,12 @@ same command prepares synthetic fixtures, checks native/WASM code and packs,
 runs browser tests, and verifies the public demo. Use `./dev check` for the
 smaller local feedback loop. Neither command requires homelab credentials.
 
-GitHub Actions checks source and Pages, and its uncredentialed `native-amd64`
+GitHub Actions checks source and Pages. Its Node-only `documentation` job builds
+the welcome site, validates local links and tests search/navigation at root and
+the Pages subpath. After successful source/demo and documentation checks on
+`main`, `assemble-pages` combines the documentation with the demo under `demo/`
+for one Pages deployment. See [website maintenance](WEBSITE.md).
+The uncredentialed `native-amd64`
 job assembles and tests the exact AMD64 Linux archive on an AMD64 runner.
 The optional GitLab pipeline in [`.gitlab-ci.yml`](../.gitlab-ci.yml) builds
 the same release scripts on both native Linux architectures after an owner

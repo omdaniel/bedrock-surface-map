@@ -52,7 +52,8 @@ try {
 const env = {
   ...process.env,
   VITE_SURFACE_DEMO: "true",
-  SURFACE_BASE_PATH: process.env.SURFACE_BASE_PATH ?? "/bedrock-surface-map/",
+  SURFACE_BASE_PATH:
+    process.env.SURFACE_BASE_PATH ?? "/bedrock-surface-map/demo/",
   SURFACE_DEMO_PUBLIC: publicDir,
   SURFACE_DEMO_DIST: resolve(".local/demo-dist"),
 };

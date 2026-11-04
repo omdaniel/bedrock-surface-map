@@ -56,11 +56,12 @@ desktop image to `docs/media/demo.png` and uploading the GIF to the demo release
 Other screenshots remain ignored. No production player names appear in this media.
 
 GitHub Pages uses the existing CI workflow. PRs run checks without publishing;
-successful pushes to main publish only `.local/demo-dist`, with pinned Pages
-actions and restricted deployment permissions. The artifact audit checks every
+successful checks on main combine `.local/demo-dist` under `demo/` with the
+[welcome and documentation site](WEBSITE.md), using pinned Pages actions and
+restricted deployment permissions. The demo artifact audit checks every
 dataset file against the reviewed packet, rejects extra files and private markers,
-and verifies the poster and demo-only configuration. The site is independently
-hosted at <https://omdaniel.github.io/bedrock-surface-map/> with trusted HTTPS.
+and verifies the poster and demo-only configuration. The demo is
+hosted at <https://omdaniel.github.io/bedrock-surface-map/demo/> with trusted HTTPS.
 
 Rollback is a revert of the relevant application/source pin commit followed by
 the same checked build. Old release objects remain available. This does not change

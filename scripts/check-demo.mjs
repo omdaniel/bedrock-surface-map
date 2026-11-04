@@ -7,8 +7,8 @@ const server = process.env.DEMO_SELF_SERVE ? await serveDemo() : null;
 const url =
   process.env.DEMO_URL ??
   (server
-    ? "http://127.0.0.1:5190/bedrock-surface-map/"
-    : "http://127.0.0.1:5180/bedrock-surface-map/");
+    ? "http://127.0.0.1:5190/bedrock-surface-map/demo/"
+    : "http://127.0.0.1:5180/bedrock-surface-map/demo/");
 const output = ".local/demo-evidence";
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
