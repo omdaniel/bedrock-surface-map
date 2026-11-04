@@ -7,7 +7,15 @@ test('documentation index links to user and developer guides', async ({ page }, 
   await page.goto('./');
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bedrock Surface Map');
   await expect(page.locator('.vp-doc').getByRole('link', { name: 'Try the demo' })).toHaveAttribute('href', 'https://omdaniel.github.io/bedrock-surface-map/demo/');
-  await expect(page.locator('.vp-doc img')).toHaveCount(0);
+  await expect(page.locator('.feature-previews img')).toHaveCount(3);
+  for (const image of await page.locator('.feature-previews img').all()) {
+    await expect(image).toHaveJSProperty('complete', true);
+    expect(await image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(600);
+    const href = await image.locator('..').getAttribute('href');
+    expect(href).toBeTruthy();
+    const response = await page.request.get(href!);
+    expect(response.ok()).toBe(true);
+  }
   await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('welcome.png'), fullPage: true });
