@@ -95,6 +95,30 @@ export const fixtureSteps = [
     "web/public/maps/coast",
   ],
   ["node", "scripts/terrain-fixture.mjs"],
+  [
+    "cargo",
+    "run",
+    "--locked",
+    "-p",
+    "surface-cli",
+    "--",
+    "fixture-lod",
+    "--output",
+    ".local/lod-browser",
+  ],
+  [
+    "cargo",
+    "test",
+    "--locked",
+    "-p",
+    "surface-sync",
+    "--test",
+    "lod_browser",
+    "ci_generate_lod_browser",
+    "--",
+    "--ignored",
+    "--exact",
+  ],
 ];
 
 export function checkSteps(profile) {
@@ -107,6 +131,7 @@ export function checkSteps(profile) {
       "tracking:test",
       "terrain:test",
       "demo:test",
+      "lod:test",
     ].map((name) => ["npm", "run", name]),
   ];
   if (profile === "fast")

@@ -15,10 +15,13 @@ maintenance entry points without making the demo visitor read an operator guide.
 
 Live terrain replaces chunks and patches resident height windows, overviews and
 picking data. It does not allocate a heightfield for an arbitrarily large world.
-The logical map budget is 256 MiB, with 32 MiB reserved for working allocations;
-it is not a browser/driver RSS guarantee. One view-wide sample spacing selects
-exact blocks, 2×2 summaries or 4×4 summaries. Wider views reduce detail without
-moving the camera. Views exceeding even the 4×4 representation require zooming in.
+The logical map budget is 256 MiB; it is not a browser/driver RSS guarantee.
+The legacy snapshot path reserves 32 MiB for working allocations and selects
+exact blocks, 2×2 or 4×4 summaries. Its widest views can require zooming in.
+The optional [multiresolution hierarchy](MULTIRESOLUTION.md) provides independently
+downloadable levels through 65,536-block samples, persistent object caching and
+a prepared navigation buffer. It adapts detail to the view and budget, with
+64 MiB reserved for WASM and transient work, without moving the camera.
 
 See [format/rendering](FORMAT.md), [import safeguards](IMPORT.md),
 [tracking](TRACKING.md), [terrain synchronization](TERRAIN-SYNC.md),
@@ -53,7 +56,7 @@ Chromium and software Vulkan as configured in the [workflow](../.github/workflow
 
 `npm test -- tests/dial.spec.ts` is equivalent to `./dev test -- ...`;
 `npm run verify` is equivalent to the full check. Browser tests build WASM and
-prepare the basic, coastline and live-terrain fixtures automatically. `./dev
+prepare the basic, coastline, multiresolution and live-terrain fixtures automatically. `./dev
 fixtures` prepares those datasets without opening a browser. For repeated browser
 iterations after preparation, `npx --no-install playwright test tests/dial.spec.ts`
 reuses them. Set `SURFACE_TEST_PORT` if the default test port 5173 is occupied;

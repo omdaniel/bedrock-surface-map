@@ -48,7 +48,7 @@ try {
   await screenshot("overview");
   const overview = await script("return window.__map.state()");
   await script("window.__map.spawn()");
-  await delay(300);
+  await wait(`return (${mapReady})()`);
   await screenshot("detail");
   await script("window.__map.measure().then(r=>window.__safariTiming=r)");
   await wait("return !!window.__safariTiming");
@@ -96,7 +96,7 @@ try {
   );
   if (!picking.trim()) throw new Error("Safari surface picking is blank");
   await script("window.__map.zoom(4)");
-  await delay(300);
+  await wait(`return (${mapReady})()`);
   await screenshot("texture");
   await script(
     'document.getElementById("grid").click(); document.getElementById("sun").click(); window.__map.pan(20,20)',

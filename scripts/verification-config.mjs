@@ -116,6 +116,8 @@ export function mapReady(expected = null) {
   return (
     state.cached > 0 &&
     state.pending === 0 &&
+    !state.renderPending &&
+    !state.switchingResolution &&
     Number.isFinite(state.firstVisible) &&
     !state.terrain?.busy &&
     (expected === null || state.cached === expected)

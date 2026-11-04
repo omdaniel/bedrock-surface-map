@@ -1,5 +1,9 @@
 struct HeightTree { levels:array<vec4u,32>, data:array<f32> }
 
+fn world_to_height(world:vec2f)->vec2f {
+    return (world-p.bounds.xy)/max(1.0,p.relief.z);
+}
+
 fn maximum_height(level:u32, cell:vec2u)->f32 {
     let info=heights.levels[level];
     return heights.data[info.x+cell.y*info.y+cell.x];

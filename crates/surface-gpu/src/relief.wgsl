@@ -4,6 +4,18 @@ fn relief_neighbor(at:vec2i,fallback:f32)->f32 {
     return select(y,fallback,y< -900000.0);
 }
 
+// A continuous sampled surface, measured in world blocks even when the tile
+// and global height window use different strides. Floor preserves negatives.
+fn sampled_relief(world:vec2f,y:f32,stride:f32)->vec2f {
+    let step=max(stride,max(1.0,p.relief.z));
+    let gradient=vec2f(
+        relief_neighbor(vec2i(floor(world_to_height(world+vec2f(step,0)))),y)-relief_neighbor(vec2i(floor(world_to_height(world-vec2f(step,0)))),y),
+        relief_neighbor(vec2i(floor(world_to_height(world+vec2f(0,step)))),y)-relief_neighbor(vec2i(floor(world_to_height(world-vec2f(0,step)))),y)
+    )/(2.0*step);
+    let facing=-dot(gradient,p.lighting.zw);
+    return vec2f(max(facing,0.0)*0.22,max(-facing,0.0)*0.14);
+}
+
 // Exact footprint coverage of two axis-aligned bands. Equal-height blocks have
 // no interior seam. At 4 pixels/block a 0.25-block band is one pixel wide.
 fn edge_relief(at:vec2f,y:f32,lo:vec2f,hi:vec2f)->vec2f {

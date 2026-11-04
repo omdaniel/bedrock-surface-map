@@ -102,7 +102,8 @@ pub struct HeightField {
 impl HeightField {
     /// GPU allocation size, validated without creating a buffer.
     pub fn allocation_bytes(width: usize, height: usize) -> Result<usize> {
-        Ok(layout(width, height)?.1)
+        let (metadata, bytes) = layout(width, height)?;
+        Ok(bytes + (metadata[127] as usize - 1) * 16)
     }
 
     /// Upload only metadata and leaf values, then submit GPU construction of all
@@ -197,9 +198,9 @@ impl HeightField {
         Ok(field)
     }
 
-    /// Size of the packed GPU tree, including its 128 metadata words.
+    /// Tree allocation plus the 16-byte uniform for every reduction level.
     pub fn bytes(&self) -> usize {
-        self.buffer.size() as usize
+        self.buffer.size() as usize + self.levels.len() * 16
     }
 
     /// Queue writes to leaf rows only. Validate the entire patch before writing
@@ -332,7 +333,14 @@ mod tests {
                 }
                 let field = HeightField::new(&device, &queue, width, height, &values).unwrap();
                 let initial = surface_core::height_pyramid(&values, width, height);
-                assert_eq!(field.bytes(), initial.len() * size_of::<u32>());
+                assert_eq!(
+                    field.bytes(),
+                    initial.len() * size_of::<u32>() + field.levels.len() * 16
+                );
+                assert_eq!(
+                    field.bytes(),
+                    HeightField::allocation_bytes(width, height).unwrap()
+                );
                 assert_eq!(readback(&device, &queue, &field), initial, "initial {kind}");
                 if kind == "split dispatch" {
                     assert!(field.levels[0].dispatch[1] > 1);
@@ -386,6 +394,51 @@ mod tests {
                     surface_core::height_pyramid(&values, width, height),
                     "cleared {kind}"
                 );
+            }
+        });
+    }
+
+    #[test]
+    fn lod_page_patches_rebuild_the_existing_tree_at_native_sample_offsets() {
+        pollster::block_on(async {
+            let (device, queue) = gpu().await;
+            for level in [0, 3, 16] {
+                let key = surface_core::lod::TileKey::new(level, -1, 0).unwrap();
+                let span = 128 << level;
+                let window = [-2 * span, -span, 0, span];
+                let mut values = vec![-1e6; 256 * 256];
+                let field = HeightField::new(&device, &queue, 256, 256, &values).unwrap();
+                let allocated = field.bytes();
+                for peak in [64., -1e6] {
+                    let mut patch = vec![-1e6; 128 * 128];
+                    patch[127] = peak;
+                    patch[127 * 128 + 127] = peak;
+                    let [x, z] =
+                        crate::lod_support::height_patch_origin(key, window, 1 << level, &patch)
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!([x, z], [128, 128]);
+                    let before = surface_core::height_pyramid(&values, 256, 256);
+                    field.patch(&queue, x, z, 128, 128, &patch).unwrap();
+                    for row in 0..128 {
+                        values[(z + row) * 256 + x..(z + row) * 256 + x + 128]
+                            .copy_from_slice(&patch[row * 128..(row + 1) * 128]);
+                    }
+                    let mut leaves_only = before;
+                    for (word, value) in leaves_only[METADATA_WORDS..METADATA_WORDS + values.len()]
+                        .iter_mut()
+                        .zip(&values)
+                    {
+                        *word = value.to_bits();
+                    }
+                    assert_eq!(readback(&device, &queue, &field), leaves_only);
+                    field.rebuild(&device, &queue);
+                    assert_eq!(
+                        readback(&device, &queue, &field),
+                        surface_core::height_pyramid(&values, 256, 256)
+                    );
+                    assert_eq!(field.bytes(), allocated);
+                }
             }
         });
     }

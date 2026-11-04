@@ -55,6 +55,14 @@ the default is `maps/world/manifest.json`. An explicit `?map=` overrides it.
 Live `terrain` and `players` bindings follow their respective guides.
 The development server accepts `SURFACE_MAP` for the same offline selection.
 
+An optional top-level `lod_url` selects a prepared
+[multiresolution hierarchy](MULTIRESOLUTION.md). `object_cache` controls its
+best-effort browser disk cache: `{ "enabled": true, "maxBytes": 268435456 }`.
+Both the hierarchy and ordinary map URLs resolve beneath the application's base
+path. Explicit `?map=` or `?terrain=off` retains the ordinary snapshot path;
+`?lod=` explicitly selects a same-origin hierarchy. These options do not grant
+access to an unconfigured player feed.
+
 The [packaged snapshot server](INSTALL.md) instead generates `viewer-config.json`
 from its selected offline dataset. Its state-directory `config.toml` configures
 only `server.bind` (loopback) and `server.base_path`; it does not accept live-feed
@@ -64,7 +72,7 @@ The importer defaults to `web/public/maps/world`; `--output` selects another
 directory and `--name` sets its display name. Import and serving locations must
 agree. `?terrain=off` uses the configured offline map independently of players.
 
-The temporary LAN preview accepts `--map`, `--players-origin`, `--terrain-origin`,
+The temporary LAN preview accepts `--map`, `--players-origin`, `--terrain-origin`, `--terrain-lod`,
 `--world-id`, `--generation`, `--map-fingerprint`, `--host`, `--port` and `--ca-port`.
 Read origins allow operator-selected ports on RFC1918 or loopback IPv4 HTTP(S)
 addresses.
@@ -83,6 +91,9 @@ certificate; enabling HTTPS on the preview does not add TLS to its upstreams.
 `surface-sync` requires `--world`/`TERRAIN_WORLD_ID` and
 `--generation`/`TERRAIN_GENERATION`. Bind listeners with `TERRAIN_READ_BIND` and
 `TERRAIN_INGEST_BIND`; `serve` requires `--token-file`/`TERRAIN_TOKEN_FILE`.
+`--lod`/`TERRAIN_LOD=true` enables derived hierarchy publication, and
+`SURFACE_TERRAIN_LOD=true` selects it in the Vite read proxy. The reference
+deployment uses `features.terrain_lod = true` alongside `features.terrain`.
 The player collector uses `TRACKER_WORLD_ID`,
 `TRACKER_READ_BIND`, `TRACKER_INGEST_BIND` and `TRACKER_TOKEN_FILE`.
 Defaults bind only loopback. The reference Compose stack keeps read listeners

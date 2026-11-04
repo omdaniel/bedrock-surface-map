@@ -19,6 +19,7 @@ import { TerrainClient, type LiveRoot } from "./terrain";
 import { boundedBytes } from "./http";
 import { appUrl, loadConfiguration, type ViewerConfiguration } from "./config";
 import { DemoPlayback } from "./demo";
+import { PyramidMap } from "./lod/map";
 import {
   MAP_CACHE_BYTES,
   WORKING_BYTES,
@@ -82,6 +83,7 @@ const canvas = $<HTMLCanvasElement>("map");
 const main = canvas.parentElement!;
 let manifest: Manifest;
 let renderer: Renderer;
+let pyramid: PyramidMap | null = null;
 let base: URL;
 let terrain: TerrainClient | null = null;
 let demo: DemoPlayback | null = null;
@@ -152,6 +154,7 @@ const playerLayer = new PlayerLayer({
     changed();
   },
   covered: (x, z) => {
+    if (pyramid) return pyramid.covered(x, z);
     const rx = Math.floor(x / 256),
       rz = Math.floor(z / 256),
       r = cache.get(`${rx},${rz}`);
@@ -222,6 +225,7 @@ function visible(r: RegionRef) {
   );
 }
 function memory() {
+  if (pyramid) return pyramid.memoryBytes;
   return renderer
     ? renderer.gpu_bytes() +
         renderer.cpu_bytes() +
@@ -336,6 +340,10 @@ function updateStatus() {
 }
 function updateMetrics() {
   if (!renderer) return;
+  if (pyramid) {
+    $("metrics").textContent = JSON.stringify(pyramid.state(), null, 2);
+    return;
+  }
   $("metrics").textContent =
     `Surface step    ${stride} × ${stride} blocks\nCached regions  ${cache.size}\nMap memory      ${(memory() / 1048576).toFixed(1)} MiB\nWorking reserve ${WORKING_BYTES / 1048576} MiB\nWorker decode   ${totalDecode.toFixed(0)} ms\nFirst region    ${firstVisible?.toFixed(0) ?? "—"} ms\nFrames drawn    ${draws}`;
   if (lastMeasurement)
@@ -349,6 +357,7 @@ function updateScale() {
   el.querySelector("span")!.textContent = `${blocks.toLocaleString()} blocks`;
 }
 function canDraw() {
+  if (pyramid) return renderer && !disposed && !renderer.is_lost();
   return (
     renderer &&
     !disposed &&
@@ -373,6 +382,12 @@ function requestDraw() {
         canvas.width = w;
         canvas.height = h;
       }
+      pyramid?.update({
+        view: viewport(),
+        scale: scale * dpr,
+        elevation,
+        azimuth,
+      });
       renderer.render(
         cx,
         cz,
@@ -388,6 +403,20 @@ function requestDraw() {
         reliefStrength,
         reliefWidth,
       );
+      if (pyramid) {
+        const more = pyramid.advance();
+        const state = pyramid.state();
+        $("load-state").textContent =
+          `${state.stride} × ${state.stride} blocks · ${state.cached} tiles · ${Math.round(scale * 100)}%`;
+        message(
+          state.error ||
+            (state.pending
+              ? `Preparing ${state.stride === 1 ? "full detail" : `${state.stride} × ${state.stride} surface`}…`
+              : ""),
+          !!state.error,
+        );
+        if (more) requestDraw();
+      }
       draws++;
       playerLayer.project();
       updateScale();
@@ -472,6 +501,16 @@ async function updateOfflineHeights() {
   }
 }
 function changed(_resized = false) {
+  if (pyramid) {
+    pyramid.update({
+      view: viewport(),
+      scale: scale * Math.min(devicePixelRatio, 2),
+      elevation,
+      azimuth,
+    });
+    requestDraw();
+    return;
+  }
   if (!renderer || !manifest || !selectResolution()) return;
   for (const c of cache.values())
     if (visible(c.ref)) c.last = performance.now();
@@ -712,6 +751,16 @@ function inspect(x: number, y: number) {
     wz = Math.floor(cz + (y - main.clientHeight / 2) / scale);
   $("coordinates").textContent =
     `X ${wx.toLocaleString()}   Z ${wz.toLocaleString()}`;
+  if (pyramid) {
+    const p = pyramid.pick(wx, wz);
+    $("inspect").hidden = !p;
+    if (p) {
+      $("block-name").textContent = p.name;
+      $("block-pos").textContent = `${wx} / ${p.height.toFixed(1)} / ${wz}`;
+      $("block-detail").textContent = p.detail;
+    }
+    return;
+  }
   const r = cache.get(`${Math.floor(wx / 256)},${Math.floor(wz / 256)}`);
   const ix =
     Math.floor((((wz % 256) + 256) % 256) / stride) * (256 / stride) +
@@ -822,7 +871,8 @@ bindSunDial(
   azimuth,
   (value) => {
     azimuth = value;
-    requestDraw();
+    if (pyramid) changed();
+    else requestDraw();
   },
 );
 $("elevation").oninput = () => {
@@ -866,6 +916,7 @@ $("retry").onclick = () => {
     return;
   }
   failures.clear();
+  if (pyramid) pyramid.retry();
   if (terrain) void syncTerrain(true);
   message("Retrying map data...");
   changed();
@@ -880,6 +931,7 @@ new ResizeObserver(() => {
   });
 }).observe(main);
 document.addEventListener("visibilitychange", () => {
+  pyramid?.visibility();
   if (terrainTimer) clearTimeout(terrainTimer);
   if (!document.hidden) {
     requestDraw();
@@ -887,6 +939,7 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 window.addEventListener("pagehide", () => {
+  pyramid?.dispose();
   playerLayer.destroy();
   demo?.destroy();
   disposed = true;
@@ -959,11 +1012,13 @@ declare global {
       zoom: (factor: number) => void;
       measure: () => Promise<unknown>;
       loseDevice: () => void;
+      cacheStats: () => Promise<unknown>;
       pan: (x: number, z: number) => void;
     };
   }
 }
 function mapState() {
+  const lod = pyramid?.state() ?? null;
   return {
     cx,
     cz,
@@ -975,17 +1030,18 @@ function mapState() {
     vivid,
     reliefStrength,
     reliefWidth,
-    cached: cache.size,
-    stride,
+    cached: lod?.cached ?? cache.size,
+    stride: lod?.stride ?? stride,
     switchingResolution,
-    reservedMemory: WORKING_BYTES,
-    pending: active,
+    reservedMemory: lod?.reserve ?? WORKING_BYTES,
+    pending: lod?.pending ?? active,
     renderPending: frameQueued || resizeQueued,
     failures: [...failures],
     memory: memory(),
     draws,
     firstVisible,
-    totalDecode,
+    totalDecode: lod?.totalDecode ?? totalDecode,
+    lod,
     terrain: terrain
       ? {
           revision: terrain.root.revision,
@@ -1004,6 +1060,7 @@ window.__map = {
   spawn,
   zoom,
   measure,
+  cacheStats: () => pyramid?.cacheStats() ?? Promise.resolve(null),
   loseDevice: () => {
     renderer.simulate_device_loss();
   },
@@ -1042,6 +1099,49 @@ async function boot() {
   if (demoMode) {
     demo = new DemoPlayback();
     await demo.initialize(appUrl(configuration.demo!.scenario));
+  }
+  const lodUrl =
+    params.get("lod") ??
+    (!params.has("map") && params.get("terrain") !== "off"
+      ? configuration.lod_url
+      : undefined);
+  if (lodUrl && !demo) {
+    const wasm = await init();
+    pyramid = new PyramidMap(
+      new URL(lodUrl, appUrl(".")),
+      requestDraw,
+      configuration.object_cache,
+      wasm.memory,
+    );
+    await pyramid.initialize(canvas);
+    renderer = pyramid.renderer;
+    manifest = pyramid.manifest;
+    worker.terminate();
+    $("app").querySelector(".identity strong")!.textContent = manifest.name;
+    document.querySelector(".subtitle")!.textContent =
+      "OVERWORLD / MULTIRESOLUTION";
+    document.querySelector<HTMLElement>(".local-state")!.textContent =
+      "Surface hierarchy";
+    window.__map.ready = true;
+    fit();
+    if (params.get("players") === "off") playerLayer.disableForView();
+    else {
+      const root = pyramid.source.root;
+      if (
+        configuration.terrain &&
+        (configuration.terrain.world_id !== root.world_id ||
+          configuration.terrain.generation !== root.generation)
+      )
+        throw Error("Terrain hierarchy does not match the configured world");
+      void playerLayer.configure(
+        manifest.source_sha256,
+        root.world_id
+          ? { world_id: root.world_id, generation: root.generation }
+          : undefined,
+        configuration,
+      );
+    }
+    return;
   }
   const url = new URL(
     (demo ? appUrl(configuration.demo!.scenario).href : params.get("map")) ??

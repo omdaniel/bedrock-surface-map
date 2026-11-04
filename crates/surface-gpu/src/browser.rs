@@ -1,10 +1,14 @@
 use crate::*;
 use std::collections::BTreeMap;
+use surface_core::lod::TileKey;
 use wasm_bindgen::prelude::*;
 use wgpu::util::DeviceExt;
 
 fn js_error(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
+}
+fn lod_key(level: u32, x: i32, z: i32) -> Result<TileKey, JsValue> {
+    TileKey::new(u8::try_from(level).map_err(js_error)?, x, z).map_err(js_error)
 }
 fn storage(device: &wgpu::Device, bytes: &[u8]) -> wgpu::Buffer {
     device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -18,6 +22,22 @@ fn entry(binding: u32, buffer: &wgpu::Buffer) -> wgpu::BindGroupEntry<'_> {
         binding,
         resource: buffer.as_entire_binding(),
     }
+}
+
+#[wasm_bindgen]
+pub fn decode_lod_surface(
+    bytes: &[u8],
+    level: u32,
+    x: i32,
+    z: i32,
+    material_count: u32,
+) -> Result<Vec<u32>, JsValue> {
+    lod_support::decode_surface(bytes, lod_key(level, x, z)?, material_count).map_err(js_error)
+}
+
+#[wasm_bindgen]
+pub fn decode_lod_height(bytes: &[u8], level: u32, x: i32, z: i32) -> Result<Vec<f32>, JsValue> {
+    lod_support::decode_height(bytes, lod_key(level, x, z)?).map_err(js_error)
 }
 
 #[wasm_bindgen]
@@ -143,7 +163,26 @@ struct Region {
     texture: wgpu::Texture,
     words: usize,
     stride: usize,
+    side: u32,
+    world_origin: [f32; 2],
     dirty: std::cell::Cell<bool>,
+    prepared: std::cell::Cell<bool>,
+}
+
+impl Region {
+    fn bytes(&self) -> usize {
+        lod_support::tile_bytes(self.words, self.side)
+    }
+    fn visible(&self, cx: f32, cz: f32, halfx: f32, halfz: f32) -> bool {
+        let [x, z] = self.world_origin;
+        let span = (self.side as usize * self.stride) as f32;
+        x <= cx + halfx && x + span >= cx - halfx && z <= cz + halfz && z + span >= cz - halfz
+    }
+    fn destroy(self) {
+        self._data.destroy();
+        self._origin.destroy();
+        self.texture.destroy();
+    }
 }
 
 #[wasm_bindgen]
@@ -160,9 +199,14 @@ pub struct Renderer {
     params: wgpu::Buffer,
     values: [f32; 20],
     regions: BTreeMap<(i32, i32), Region>,
+    lod_tiles: BTreeMap<TileKey, Region>,
+    // None retains the legacy region API. Some(empty) is an explicit empty cut.
+    lod_draw_tiles: Option<Vec<lod_support::DrawTile>>,
     sampler: wgpu::Sampler,
     base_bytes: usize,
     heights: height_field::HeightField,
+    // Exact world bounds for page-to-sample mapping, separate from shader f32s.
+    height_bounds: [i32; 4],
     height_dirty: bool,
     material_buffer: wgpu::Buffer,
     atlas_view: wgpu::TextureView,
@@ -189,17 +233,22 @@ impl Renderer {
         if bounds.len() != 4
             || !materials.len().is_multiple_of(12)
             || materials.is_empty()
-            || rgba.len() != aw as usize * ah as usize * 4
+            || aw < 4
+            || ah < 4
+            || (aw as u64 * ah as u64).checked_mul(4) != Some(rgba.len() as u64)
+            || materials.len() > 65536 * 12
+            || !materials.iter().all(|v| v.is_finite())
         {
             return Err(js_error("invalid renderer input"));
         }
-        if ![1, 2, 4].contains(&stride) {
-            return Err(js_error("invalid surface resolution"));
-        }
-        let w = (bounds[2] - bounds[0]) as usize / stride;
-        let h = (bounds[3] - bounds[1]) as usize / stride;
-        if w == 0 || h == 0 || heights.len() != w * h || w * h > 16 * 1024 * 1024 {
-            return Err(js_error("invalid heightfield dimensions"));
+        let (w, h) =
+            lod_support::height_dimensions(&bounds, stride, heights.len()).map_err(js_error)?;
+        let base_bytes = height_field::HeightField::allocation_bytes(w, h).map_err(js_error)?
+            + lod_support::mip_bytes(aw, ah, 3)
+            + materials.len() * 4
+            + 80;
+        if base_bytes > lod_support::GPU_LIMIT {
+            return Err(js_error("GPU cache limit exceeded"));
         }
         let instance = wgpu::Instance::default();
         let surface = instance
@@ -419,7 +468,6 @@ impl Renderer {
                 entry(2, &height_field.buffer),
             ],
         });
-        let base_bytes = height_field.bytes() + rgba.len() * 21 / 16 + materials.len() * 4;
         Ok(Self {
             device,
             queue,
@@ -433,9 +481,12 @@ impl Renderer {
             params,
             values,
             regions: BTreeMap::new(),
+            lod_tiles: BTreeMap::new(),
+            lod_draw_tiles: None,
             sampler,
             base_bytes,
             heights: height_field,
+            height_bounds: bounds.as_slice().try_into().unwrap(),
             height_dirty: false,
             material_buffer: mats,
             atlas_view,
@@ -456,24 +507,157 @@ impl Renderer {
         {
             return Err(js_error("invalid region GPU data"));
         }
-        self.remove_region(rx, rz);
         let side = 256 / stride as u32;
-        let mip_count = side.ilog2() + 1;
-        let texture_bytes = (0..mip_count)
-            .map(|i| (side >> i).pow(2) as usize * 4)
-            .sum::<usize>();
-        let cost = words.len() * 4 + texture_bytes;
-        if self.gpu_bytes() as usize + cost > 256 * 1024 * 1024 {
+        let old_bytes = self.regions.get(&(rx, rz)).map_or(0, Region::bytes);
+        if self.gpu_bytes() as usize - old_bytes + lod_support::tile_bytes(words.len(), side)
+            > lod_support::GPU_LIMIT
+        {
             return Err(js_error("GPU cache limit exceeded"));
         }
-        let data = storage(&self.device, bytemuck::cast_slice(&words));
+        self.remove_region(rx, rz);
+        let region = self.make_tile([rx as f32 * 256., rz as f32 * 256.], side, stride, &words);
+        self.regions.insert((rx, rz), region);
+        Ok(())
+    }
+
+    pub fn add_lod_tile(
+        &mut self,
+        level: u32,
+        x: i32,
+        z: i32,
+        words: Vec<u32>,
+    ) -> Result<(), JsValue> {
+        let key = lod_key(level, x, z)?;
+        let words =
+            lod_support::pack_surface(key, words, (self.material_buffer.size() / 48) as u32)
+                .map_err(js_error)?;
+        if let Some(tile) = self.lod_tiles.get(&key) {
+            // Same-size replacement keeps the last valid shaded texture resident.
+            self.queue
+                .write_buffer(&tile._data, 0, bytemuck::cast_slice(&words));
+            tile.dirty.set(true);
+            return Ok(());
+        }
+        if self.gpu_bytes() as usize + lod_support::tile_bytes(words.len(), 128)
+            > lod_support::GPU_LIMIT
+        {
+            return Err(js_error("GPU cache limit exceeded"));
+        }
+        let [wx, wz, _, _] = key.bounds().map_err(js_error)?;
+        let tile = self.make_tile([wx as f32, wz as f32], 128, 1usize << level, &words);
+        self.lod_tiles.insert(key, tile);
+        Ok(())
+    }
+
+    pub fn remove_lod_tile(&mut self, level: u32, x: i32, z: i32) {
+        let Ok(key) = lod_key(level, x, z) else {
+            return;
+        };
+        if let Some(tile) = self.lod_tiles.remove(&key) {
+            tile.destroy();
+        }
+    }
+
+    /// Activates LOD mode, including for an empty cut. Missing or unprepared
+    /// residents are skipped; selection never implicitly uploads or shades.
+    pub fn set_lod_draw_tiles(&mut self, triples: Vec<i32>) -> Result<(), JsValue> {
+        self.lod_draw_tiles = Some(lod_support::draw_tiles(&triples).map_err(js_error)?);
+        Ok(())
+    }
+
+    pub fn set_lod_draw_cut(&mut self, records: Vec<i32>) -> Result<(), JsValue> {
+        self.lod_draw_tiles = Some(lod_support::draw_cut(&records).map_err(js_error)?);
+        Ok(())
+    }
+
+    pub fn lod_pending_tiles(&self) -> u32 {
+        self.lod_tiles
+            .values()
+            .filter(|tile| tile.dirty.get())
+            .count() as u32
+    }
+
+    /// Whether this resident still needs shaded-texture preparation. Invalid or
+    /// missing keys return false. This is independent of height eligibility;
+    /// combine with lod_tile_ready to check whether a prepared tile is drawable.
+    pub fn lod_tile_dirty(&self, level: u32, x: i32, z: i32) -> bool {
+        let Ok(key) = lod_key(level, x, z) else {
+            return false;
+        };
+        self.lod_tiles
+            .get(&key)
+            .is_some_and(|tile| tile.dirty.get())
+    }
+
+    /// Dirty-but-prepared tiles keep their previous shaded texture. The cut
+    /// builder can use this to retain parent coverage while a child warms up.
+    pub fn lod_tile_ready(&self, level: u32, x: i32, z: i32) -> bool {
+        let Ok(key) = lod_key(level, x, z) else {
+            return false;
+        };
+        !self.is_lost()
+            && self.lod_height_ready(key)
+            && self
+                .lod_tiles
+                .get(&key)
+                .is_some_and(|tile| tile.prepared.get())
+    }
+
+    /// Uses the settings from the latest render call. Selected tiles have first
+    /// priority, then other residents. Fine tiles wait for stride-one coverage.
+    pub fn prepare_lod_tiles(&mut self, max_tiles: u32) -> u32 {
+        if max_tiles == 0 || self.is_lost() {
+            return self.lod_pending_tiles();
+        }
+        if self.height_dirty {
+            self.heights.rebuild(&self.device, &self.queue);
+            self.height_dirty = false;
+        }
+        self.queue
+            .write_buffer(&self.params, 0, bytemuck::cast_slice(&self.values));
+        let mut remaining = max_tiles;
+        for selected in [true, false] {
+            for (key, tile) in &self.lod_tiles {
+                if remaining == 0 {
+                    return self.lod_pending_tiles();
+                }
+                if self
+                    .lod_draw_tiles
+                    .as_ref()
+                    .is_some_and(|cut| cut.iter().any(|draw| draw.key == *key))
+                    != selected
+                    || !tile.dirty.get()
+                    || !self.lod_height_ready(*key)
+                {
+                    continue;
+                }
+                self.regenerate(tile);
+                remaining -= 1;
+            }
+        }
+        self.lod_pending_tiles()
+    }
+}
+
+impl Renderer {
+    fn lod_height_ready(&self, key: TileKey) -> bool {
+        lod_support::fine_height_coverage(
+            key,
+            self.values[8..12].try_into().unwrap(),
+            self.values[18],
+        )
+    }
+
+    fn make_tile(&self, world_origin: [f32; 2], side: u32, stride: usize, words: &[u32]) -> Region {
+        let mip_count = side.ilog2() + 1;
+        let data = storage(&self.device, bytemuck::cast_slice(words));
         let origin = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: None,
                 contents: bytemuck::cast_slice(&[
-                    rx as f32 * 256.,
-                    rz as f32 * 256.,
+                    world_origin[0],
+                    world_origin[1],
                     stride as f32,
                     side as f32,
                 ]),
@@ -554,7 +738,7 @@ impl Renderer {
                 ],
             }));
         }
-        let region = Region {
+        Region {
             render,
             overview_group,
             mips,
@@ -563,10 +747,11 @@ impl Renderer {
             texture,
             words: words.len(),
             stride,
+            side,
+            world_origin,
             dirty: std::cell::Cell::new(true),
-        };
-        self.regions.insert((rx, rz), region);
-        Ok(())
+            prepared: std::cell::Cell::new(false),
+        }
     }
     fn regenerate(&self, r: &Region) {
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -575,11 +760,11 @@ impl Renderer {
             pass.set_pipeline(&self.overview_pipeline);
             pass.set_bind_group(0, &self.global_overview, &[]);
             pass.set_bind_group(1, &r.overview_group, &[]);
-            let groups = (256 / r.stride as u32).div_ceil(8);
+            let groups = r.side.div_ceil(8);
             pass.dispatch_workgroups(groups, groups, 1);
         }
         for (i, g) in r.mips.iter().enumerate() {
-            let size = (128 / r.stride as u32) >> i;
+            let size = (r.side / 2) >> i;
             let mut pass = encoder.begin_compute_pass(&Default::default());
             pass.set_pipeline(&self.mip_pipeline);
             pass.set_bind_group(0, g, &[]);
@@ -587,6 +772,7 @@ impl Renderer {
         }
         self.queue.submit([encoder.finish()]);
         r.dirty.set(false);
+        r.prepared.set(true);
     }
 
     fn rebind(&mut self) {
@@ -617,6 +803,10 @@ impl Renderer {
             ],
         });
     }
+}
+
+#[wasm_bindgen]
+impl Renderer {
     pub fn cpu_bytes(&self) -> u32 {
         0
     }
@@ -631,12 +821,17 @@ impl Renderer {
         {
             return Err(js_error("invalid catalog update"));
         }
+        if self.gpu_bytes() as usize - self.material_buffer.size() as usize + values.len() * 4
+            > lod_support::GPU_LIMIT
+        {
+            return Err(js_error("GPU cache limit exceeded"));
+        }
         let buffer = storage(&self.device, bytemuck::cast_slice(&values));
         self.base_bytes = self.base_bytes - self.material_buffer.size() as usize + values.len() * 4;
         let old = std::mem::replace(&mut self.material_buffer, buffer);
         self.rebind();
         old.destroy();
-        for r in self.regions.values() {
+        for r in self.regions.values().chain(self.lod_tiles.values()) {
             r.dirty.set(true);
         }
         Ok(())
@@ -647,23 +842,13 @@ impl Renderer {
         heights: Vec<f32>,
         stride: usize,
     ) -> Result<(), JsValue> {
-        if bounds.len() != 4 || ![1, 2, 4].contains(&stride) {
-            return Err(js_error("height window bounds"));
-        }
-        let (width, height) = (
-            (bounds[2] - bounds[0]) as usize / stride,
-            (bounds[3] - bounds[1]) as usize / stride,
-        );
-        if width == 0
-            || height == 0
-            || width.checked_mul(height) != Some(heights.len())
-            || heights.len() > 16 * 1024 * 1024
-            || !heights.iter().all(|v| v.is_finite())
-        {
+        let (width, height) =
+            lod_support::height_dimensions(&bounds, stride, heights.len()).map_err(js_error)?;
+        if !heights.iter().all(|v| v.is_finite()) {
             return Err(js_error("height window size"));
         }
         let bytes = height_field::HeightField::allocation_bytes(width, height).map_err(js_error)?;
-        if self.gpu_bytes() as usize - self.heights.bytes() + bytes > 256 * 1024 * 1024 {
+        if self.gpu_bytes() as usize - self.heights.bytes() + bytes > lod_support::GPU_LIMIT {
             return Err(js_error("GPU cache limit exceeded"));
         }
         let field =
@@ -671,6 +856,7 @@ impl Renderer {
                 .map_err(js_error)?;
         self.base_bytes = self.base_bytes - self.heights.bytes() + field.bytes();
         let old = std::mem::replace(&mut self.heights, field);
+        self.height_bounds = bounds.as_slice().try_into().unwrap();
         self.height_dirty = false;
         self.values[8..12].copy_from_slice(&[
             bounds[0] as f32,
@@ -681,10 +867,40 @@ impl Renderer {
         self.values[18] = stride as f32;
         self.rebind();
         old.buffer.destroy();
-        for r in self.regions.values() {
+        for r in self.regions.values().chain(self.lod_tiles.values()) {
             r.dirty.set(true);
         }
         Ok(())
+    }
+    /// Patch decoded 128x128 means at their native stride. Invalid input throws;
+    /// a different stride, partial/outside page or shifted sample grid returns
+    /// false without writes. The next render/prepare rebuilds the height tree.
+    pub fn patch_lod_height(
+        &mut self,
+        level: u32,
+        x: i32,
+        z: i32,
+        values: Vec<f32>,
+    ) -> Result<bool, JsValue> {
+        let key = lod_key(level, x, z)?;
+        let Some([x, z]) = lod_support::height_patch_origin(
+            key,
+            self.height_bounds,
+            self.values[18] as usize,
+            &values,
+        )
+        .map_err(js_error)?
+        else {
+            return Ok(false);
+        };
+        self.heights
+            .patch(&self.queue, x, z, 128, 128, &values)
+            .map_err(js_error)?;
+        self.height_dirty = true;
+        for tile in self.regions.values().chain(self.lod_tiles.values()) {
+            tile.dirty.set(true);
+        }
+        Ok(true)
     }
     pub fn patch_height_region(
         &mut self,
@@ -693,6 +909,9 @@ impl Renderer {
         values: Vec<f32>,
     ) -> Result<(), JsValue> {
         let stride = self.values[18] as i32;
+        if ![1, 2, 4].contains(&stride) {
+            return Err(js_error("legacy height patches require stride 1, 2 or 4"));
+        }
         let side = 256 / stride;
         let x = (rx * 256 - self.values[8] as i32) / stride;
         let z = (rz * 256 - self.values[9] as i32) / stride;
@@ -711,7 +930,7 @@ impl Renderer {
             )
             .map_err(js_error)?;
         self.height_dirty = true;
-        for r in self.regions.values() {
+        for r in self.regions.values().chain(self.lod_tiles.values()) {
             r.dirty.set(true);
         }
         Ok(())
@@ -739,8 +958,7 @@ impl Renderer {
     }
     pub fn remove_region(&mut self, rx: i32, rz: i32) {
         if let Some(r) = self.regions.remove(&(rx, rz)) {
-            r._data.destroy();
-            r.texture.destroy();
+            r.destroy();
         }
     }
     pub fn gpu_bytes(&self) -> u32 {
@@ -748,13 +966,8 @@ impl Renderer {
             + self
                 .regions
                 .values()
-                .map(|r| {
-                    let side = 256 / r.stride;
-                    r.words * 4
-                        + (0..=side.ilog2())
-                            .map(|i| (side >> i).pow(2) * 4)
-                            .sum::<usize>()
-                })
+                .chain(self.lod_tiles.values())
+                .map(Region::bytes)
                 .sum::<usize>()) as u32
     }
     pub fn is_lost(&self) -> bool {
@@ -835,20 +1048,22 @@ impl Renderer {
         self.queue
             .write_buffer(&self.params, 0, bytemuck::cast_slice(&self.values));
         if changed {
-            for r in self.regions.values() {
+            for r in self.regions.values().chain(self.lod_tiles.values()) {
                 r.dirty.set(true);
             }
         }
-        for ((rx, rz), r) in &self.regions {
-            let x = *rx as f32 * 256.;
-            let z = *rz as f32 * 256.;
-            if r.dirty.get()
-                && x <= cx + width as f32 / scale / 2.
-                && x + 256. >= cx - width as f32 / scale / 2.
-                && z <= cz + height as f32 / scale / 2.
-                && z + 256. >= cz - height as f32 / scale / 2.
-            {
-                self.regenerate(r);
+        if self.lod_draw_tiles.is_none() {
+            for r in self.regions.values() {
+                if r.dirty.get()
+                    && r.visible(
+                        cx,
+                        cz,
+                        width as f32 / scale / 2.,
+                        height as f32 / scale / 2.,
+                    )
+                {
+                    self.regenerate(r);
+                }
             }
         }
         let frame = match self.surface.get_current_texture() {
@@ -889,19 +1104,36 @@ impl Renderer {
             pass.set_bind_group(0, &self.global_render, &[]);
             let halfx = width as f32 / scale / 2.;
             let halfz = height as f32 / scale / 2.;
-            for ((rx, rz), r) in &self.regions {
-                let x = *rx as f32 * 256.;
-                let z = *rz as f32 * 256.;
-                if x > cx + halfx
-                    || x + 256. < cx - halfx
-                    || z > cz + halfz
-                    || z + 256. < cz - halfz
-                {
-                    continue;
+            if let Some(cut) = &self.lod_draw_tiles {
+                for draw in cut {
+                    let Some(r) = self.lod_tiles.get(&draw.key) else {
+                        continue;
+                    };
+                    if !r.prepared.get()
+                        || !self.lod_height_ready(draw.key)
+                        || !r.visible(cx, cz, halfx, halfz)
+                    {
+                        continue;
+                    }
+                    let Some([x, y, w, h]) =
+                        lod_support::scissor(draw.clip, cx, cz, scale, width, height)
+                    else {
+                        continue;
+                    };
+                    pass.set_scissor_rect(x, y, w, h);
+                    pass.set_bind_group(1, &r.render, &[]);
+                    pass.draw(0..6, 0..1);
+                    drew_region = true;
                 }
-                pass.set_bind_group(1, &r.render, &[]);
-                pass.draw(0..6, 0..1);
-                drew_region = true;
+            } else {
+                for r in self.regions.values() {
+                    if !r.prepared.get() || !r.visible(cx, cz, halfx, halfz) {
+                        continue;
+                    }
+                    pass.set_bind_group(1, &r.render, &[]);
+                    pass.draw(0..6, 0..1);
+                    drew_region = true;
+                }
             }
         }
         self.queue.submit([encoder.finish()]);

@@ -10,7 +10,7 @@
 struct Vertex { @builtin(position) position:vec4f, @location(0) local:vec2f }
 @vertex fn vs(@builtin(vertex_index) i:u32)->Vertex {
     let points=array<vec2f,6>(vec2f(0,0),vec2f(1,0),vec2f(0,1),vec2f(0,1),vec2f(1,0),vec2f(1,1));
-    let local=points[i]*256.0; let world=origin.xy+local;
+    let local=points[i]*(origin.z*origin.w); let world=origin.xy+local;
     let pixel=(world-p.camera.xy)*p.camera.z;
     var v:Vertex;v.position=vec4f(pixel.x*2.0/p.camera.w,-pixel.y*2.0/p.screen.x,0,1);v.local=local;return v;
 }
@@ -23,12 +23,13 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
 }
 @fragment fn fs(v:Vertex)->@location(0) vec4f {
     let fractional=fract(v.local);let footprint=fwidth(v.local);
-    if origin.z>1.0 || p.camera.z < 1.0 {
+    if origin.z>1.0 || p.relief.z>1.0 || p.camera.z < 1.0 {
         let lod=max(0.0,log2(1.0/(p.camera.z*origin.z)));
-        let col=textureSampleLevel(overview,overview_sampler,v.local/256.0,lod);
+        let col=textureSampleLevel(overview,overview_sampler,v.local/(origin.z*origin.w),lod);
         if col.a<0.005{discard;}return vec4f(col.rgb/max(col.a,0.001),col.a);
     }
-    let q=clamp(vec2u(v.local),vec2u(0),vec2u(255));let c=cells[q.y*256u+q.x];
+    let side=u32(origin.w);
+    let q=clamp(vec2u(v.local),vec2u(0),vec2u(side-1u));let c=cells[q.y*side+q.x];
     if c.covered!=1u {discard;}
     var col=material_color(c.material,c.tint,fractional);
     if c.depth>0u {
@@ -40,7 +41,7 @@ fn material_color(id:u32,tint:u32,uv:vec2f)->vec4f {
         col=vec4f(mix(base*0.7,col.rgb,col.a),1.0);
     }
     if c.overlay!=0u {let over=material_color(c.overlay,c.tint,fractional);col=vec4f(mix(col.rgb,over.rgb,over.a*0.65),1.0);}
-    let at=origin.xy+vec2f(q)-p.bounds.xy;
+    let at=world_to_height(origin.xy+vec2f(q));
     let lo=max(vec2f(0),fractional-footprint*0.5);
     let hi=min(vec2f(1),fractional+footprint*0.5);
     let shade=surface_shadow(at,f32(bitcast<i32>(c.height))/16.0,lo,hi);

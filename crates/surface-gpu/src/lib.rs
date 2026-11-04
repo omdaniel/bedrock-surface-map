@@ -1,4 +1,7 @@
 pub mod height_field;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod lod_gpu_tests;
+pub mod lod_support;
 
 pub const SHADOW_SHADER: &str = include_str!("shadow.wgsl");
 pub const APPEARANCE_SHADER: &str = include_str!("appearance.wgsl");

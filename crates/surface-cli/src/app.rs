@@ -71,6 +71,26 @@ enum Command {
         #[arg(long)]
         coast: bool,
     },
+    /// Generate synthetic native LOD terrain for browser and CI checks.
+    ///
+    /// Writes OUTPUT/lod.json and content-addressed objects. The reusable source
+    /// snapshot is OUTPUT/source/manifest.json; progress is OUTPUT/progress.json.
+    FixtureLod {
+        #[arg(long, default_value = "web/public/maps/fixture-lod")]
+        output: PathBuf,
+        /// Dense square side: 1024, 2048, 4096, 8192 or 16384 blocks.
+        #[arg(long, default_value_t = 1024)]
+        size: u32,
+        /// Include legacy heights in source/manifest.json (dense 1024 only).
+        #[arg(long, conflicts_with_all = ["sparse_small", "sparse_extreme"])]
+        legacy_reference: bool,
+        /// Four populated regions in a fixed 2048-square map; keep size at 1024.
+        #[arg(long, conflicts_with = "sparse_extreme")]
+        sparse_small: bool,
+        /// 4096 populated regions spanning all four L16 roots; keep size at 1024.
+        #[arg(long)]
+        sparse_extreme: bool,
+    },
 }
 pub fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -689,6 +709,24 @@ fn run() -> Result<()> {
         Command::Fixture { output, coast } => {
             create_fixture(&output, coast)?;
         }
+        Command::FixtureLod {
+            output,
+            size,
+            legacy_reference,
+            sparse_small,
+            sparse_extreme,
+        } => {
+            let (_, report) = crate::lod::create_lod_fixture_with_options(
+                &output,
+                crate::lod::LodFixtureOptions {
+                    size,
+                    legacy_reference,
+                    sparse_small,
+                    sparse_extreme,
+                },
+            )?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
     }
     Ok(())
 }
@@ -717,6 +755,96 @@ mod tests {
         McStructurePaletteEntry, McStructurePlacement, McStructureRotation, McStructureSize,
         OpenOptions, WriteGuard, write_level_dat_document,
     };
+
+    #[test]
+    fn fixture_lod_cli_defaults_and_options() {
+        let Args { command } = Args::try_parse_from(["surface-map", "fixture-lod"]).unwrap();
+        let Command::FixtureLod {
+            output,
+            size,
+            legacy_reference,
+            sparse_small,
+            sparse_extreme,
+        } = command
+        else {
+            panic!("expected native LOD fixture command");
+        };
+        assert_eq!(output, PathBuf::from("web/public/maps/fixture-lod"));
+        assert_eq!(size, 1024);
+        assert!(!legacy_reference && !sparse_small && !sparse_extreme);
+
+        for (flag, expected) in [
+            ("--legacy-reference", [true, false, false]),
+            ("--sparse-small", [false, true, false]),
+            ("--sparse-extreme", [false, false, true]),
+        ] {
+            let Args { command } = Args::try_parse_from([
+                "surface-map",
+                "fixture-lod",
+                "--output",
+                "fixture-output",
+                "--size",
+                "1024",
+                flag,
+            ])
+            .unwrap();
+            let Command::FixtureLod {
+                output,
+                size,
+                legacy_reference,
+                sparse_small,
+                sparse_extreme,
+            } = command
+            else {
+                panic!("expected native LOD fixture command");
+            };
+            assert_eq!(output, PathBuf::from("fixture-output"));
+            assert_eq!(size, 1024);
+            assert_eq!([legacy_reference, sparse_small, sparse_extreme], expected);
+        }
+        let args = Args::try_parse_from(["surface-map", "fixture-lod", "--size", "2048"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Command::FixtureLod { size: 2048, .. }
+        ));
+    }
+
+    #[test]
+    fn fixture_lod_cli_help_and_conflicting_flags() {
+        let help = Args::try_parse_from(["surface-map", "fixture-lod", "--help"])
+            .err()
+            .expect("help exits without running the fixture");
+        assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = help.to_string();
+        for text in [
+            "--output",
+            "--size",
+            "--legacy-reference",
+            "--sparse-small",
+            "--sparse-extreme",
+            "OUTPUT/lod.json",
+            "OUTPUT/source/manifest.json",
+        ] {
+            assert!(help.contains(text), "help missing {text}");
+        }
+        for flags in [
+            ["--sparse-small", "--sparse-extreme"],
+            ["--legacy-reference", "--sparse-small"],
+            ["--legacy-reference", "--sparse-extreme"],
+        ] {
+            let error = Args::try_parse_from(["surface-map", "fixture-lod", flags[0], flags[1]])
+                .err()
+                .expect("conflicting fixture options must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+        assert!(Args::try_parse_from(["surface-map", "fixture-lod", "--size", "-1"]).is_err());
+        assert!(matches!(
+            Args::try_parse_from(["surface-map", "fixture", "--coast"])
+                .unwrap()
+                .command,
+            Command::Fixture { coast: true, .. }
+        ));
+    }
 
     fn add_tree_to_zip(archive: &mut zip::ZipWriter<fs::File>, root: &Path, current: &Path) {
         for entry in fs::read_dir(current).unwrap() {
