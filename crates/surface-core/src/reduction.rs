@@ -2,14 +2,24 @@
 
 use anyhow::{Context, Result, ensure};
 use std::cmp::Reverse;
+use std::collections::HashMap;
 
 const MAX_SAMPLES: usize = 16 * 1024 * 1024;
 const WORDS_PER_CELL: usize = 8;
 const MISSING_HEIGHT: f32 = -1_000_000.;
 const MIN_PRESENT_HEIGHT: f32 = -900_000.;
 
+/// One uniform planar stride, shared by surface records and height samples.
+pub fn validate_stride(stride: usize) -> Result<()> {
+    ensure!(
+        stride.is_power_of_two() && stride <= 256,
+        "stride must be a power of two from 1 through 256"
+    );
+    Ok(())
+}
+
 fn sample_count(width: usize, height: usize, stride: usize) -> Result<usize> {
-    ensure!(matches!(stride, 1 | 2 | 4), "stride must be 1, 2, or 4");
+    validate_stride(stride)?;
     ensure!(width > 0 && height > 0, "dimensions must be nonzero");
     ensure!(
         width.is_multiple_of(stride) && height.is_multiple_of(stride),
@@ -22,7 +32,6 @@ fn sample_count(width: usize, height: usize, stride: usize) -> Result<usize> {
 
 #[derive(Clone, Copy, Default)]
 struct MaterialCandidate {
-    material: u32,
     count: u32,
     representative: usize,
     distance: usize,
@@ -55,11 +64,12 @@ pub fn reduce_words(words: &[u32], side: usize, stride: usize) -> Result<Vec<u32
 
     let coarse_side = side / stride;
     let mut reduced = Vec::with_capacity(coarse_side * coarse_side * WORDS_PER_CELL);
+    // Reuse storage across blocks. A coarse block can contain up to 65536
+    // distinct materials; indexed counts avoid a quadratic candidate scan.
+    let mut candidates = HashMap::<u32, MaterialCandidate>::new();
     for z in (0..side).step_by(stride) {
         for x in (0..side).step_by(stride) {
-            // At most 16 distinct materials; no per-block heap allocation.
-            let mut candidates = [MaterialCandidate::default(); 16];
-            let mut material_count = 0;
+            candidates.clear();
             let mut present_count = 0u32;
             let mut height_sum = 0i64;
             let mut all_empty = true;
@@ -79,29 +89,23 @@ pub fn reduce_words(words: &[u32], side: usize, stride: usize) -> Result<Vec<u32
                     let cz = (2 * dz).abs_diff(stride - 1);
                     let distance = cx * cx + cz * cz;
                     let material = words[index + 1];
-                    if let Some(candidate) = candidates[..material_count]
-                        .iter_mut()
-                        .find(|candidate| candidate.material == material)
-                    {
-                        candidate.count += 1;
-                        if distance < candidate.distance {
-                            candidate.distance = distance;
-                            candidate.representative = index;
-                        }
-                    } else {
-                        candidates[material_count] = MaterialCandidate {
-                            material,
-                            count: 1,
-                            representative: index,
-                            distance,
-                        };
-                        material_count += 1;
+                    let candidate = candidates.entry(material).or_insert(MaterialCandidate {
+                        count: 0,
+                        representative: index,
+                        distance,
+                    });
+                    candidate.count += 1;
+                    if distance < candidate.distance {
+                        candidate.distance = distance;
+                        candidate.representative = index;
                     }
                 }
             }
 
             let mut cell = [0; WORDS_PER_CELL];
-            if let Some(candidate) = candidates[..material_count].iter().min_by_key(|candidate| {
+            // The representative index makes ties deterministic regardless of
+            // hash iteration order, matching the original row-major rule.
+            if let Some(candidate) = candidates.values().min_by_key(|candidate| {
                 (
                     Reverse(candidate.count),
                     candidate.distance,
@@ -122,10 +126,26 @@ pub fn reduce_words(words: &[u32], side: usize, stride: usize) -> Result<Vec<u32
     Ok(reduced)
 }
 
+/// Build a row-major height page from the very same reduced surface records
+/// used for rendering. Decode signed sixteenths only for present coverage;
+/// unavailable and verified-empty cells both yield the missing-height sentinel.
+pub fn reduce_word_heights(words: &[u32], side: usize, stride: usize) -> Result<Vec<f32>> {
+    Ok(reduce_words(words, side, stride)?
+        .chunks_exact(WORDS_PER_CELL)
+        .map(|cell| {
+            if cell[7] & 255 == 1 {
+                (cell[0] as i32) as f32 / 16.
+            } else {
+                MISSING_HEIGHT
+            }
+        })
+        .collect())
+}
+
 /// Reduce a rectangular height field by averaging samples >= -900000 in each
 /// stride-sized block. All input values must be finite, including missing ones.
 /// Empty blocks yield -1000000. Stride 1 preserves the exact input values.
-/// Both helpers accept strides 1, 2, and 4, nonzero divisible dimensions, and
+/// All reducers accept power-of-two strides through 256, nonzero divisible dimensions, and
 /// at most 16 * 1024 * 1024 input samples.
 pub fn reduce_heights(
     heights: &[f32],
@@ -290,6 +310,108 @@ mod tests {
     }
 
     #[test]
+    fn coarse_blocks_handle_many_materials_and_keep_deterministic_representatives() {
+        for stride in [8, 16, 32, 64, 128, 256] {
+            let mut cells: Vec<_> = (0..stride * stride)
+                .map(|i| cell(-17 - (i % 2) as i32, i as u32, i as u32, 1))
+                .collect();
+            let center = (stride / 2 - 1) * stride + stride / 2 - 1;
+            let actual = reduce_words(&flatten(&cells), stride, stride).unwrap();
+            assert_eq!(actual.len(), 8);
+            assert_eq!(actual[0] as i32, -18);
+            assert_eq!(&actual[1..7], &cells[center][1..7]);
+            assert_eq!(actual[7], ((stride * stride) as u32) << 8 | 1);
+
+            // A repeated material wins even far from the block center. Its
+            // nearest real sample supplies every attribute except the mean.
+            let last = cells.len() - 1;
+            cells[last][1] = cells[0][1];
+            cells[last - 1][1] = cells[0][1];
+            let actual = reduce_words(&flatten(&cells), stride, stride).unwrap();
+            assert_eq!(&actual[1..7], &cells[last - 1][1..7]);
+            assert_eq!(actual[0] as i32, -18);
+        }
+    }
+
+    #[test]
+    fn coarse_height_pages_match_render_records_and_coverage_in_row_major_order() {
+        for stride in [2, 4, 8, 16, 32, 64, 128, 256] {
+            let side = stride * 2;
+            let mut cells = vec![cell(i32::MAX, 99, 0, 0); side * side];
+            for z in 0..side {
+                for x in stride..side {
+                    cells[z * side + x] = if z < stride {
+                        cell(i32::MIN, 99, 0, 2)
+                    } else {
+                        cell(32, 7, 10, 1)
+                    };
+                }
+            }
+            cells[0] = cell(-17, 1, 20, 1);
+            cells[1] = cell(-18, 2, 30, 1);
+            let words = flatten(&cells);
+            let reduced = reduce_words(&words, side, stride).unwrap();
+            assert_eq!(reduced[7], (2 << 8) | 1);
+            assert_eq!(reduced[15], 2);
+            assert_eq!(reduced[23], 0);
+            assert_eq!(reduced[31], ((stride * stride) as u32) << 8 | 1);
+            let heights = reduce_word_heights(&words, side, stride).unwrap();
+            assert_eq!(heights, [-1.125, MISSING_HEIGHT, MISSING_HEIGHT, 2.]);
+            for (height, record) in heights.iter().zip(reduced.chunks_exact(8)) {
+                if record[7] & 255 == 1 {
+                    assert_eq!(*height, (record[0] as i32) as f32 / 16.);
+                } else {
+                    assert_eq!(*height, MISSING_HEIGHT);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn height_pages_use_coverage_including_coarse_counts_instead_of_height_sentinels() {
+        let words = flatten(&[
+            cell(-17, 1, 0, 1),
+            cell(320, 1, 0, 0),
+            cell(320, 1, 0, 2),
+            cell(-33, 1, 0, (65536 << 8) | 1),
+        ]);
+        assert_eq!(
+            reduce_word_heights(&words, 2, 1).unwrap(),
+            [-1.0625, MISSING_HEIGHT, MISSING_HEIGHT, -2.0625]
+        );
+    }
+
+    #[test]
+    fn chunk_reductions_match_region_cells_through_stride_sixteen() {
+        let cells: Vec<_> = (0..256 * 256)
+            .map(|i| cell(i % 513 - 256, (i % 37) as u32, i as u32, (i % 3) as u32))
+            .collect();
+        let words = flatten(&cells);
+        // The last chunk also covers negative-world chunk coordinates ending
+        // in -1, which map to the local chunk offset 15 using Euclidean modulo.
+        for (cx, cz) in [(0, 0), (3, 7), (15, 15)] {
+            let chunk: Vec<_> = (0..16)
+                .flat_map(|z| cells[(cz * 16 + z) * 256 + cx * 16..][..16].iter().copied())
+                .collect();
+            for stride in [1, 2, 4, 8, 16] {
+                let region = reduce_words(&words, 256, stride).unwrap();
+                let chunk = reduce_words(&flatten(&chunk), 16, stride).unwrap();
+                let side = 16 / stride;
+                for z in 0..side {
+                    let start = ((cz * side + z) * (256 / stride) + cx * side) * 8;
+                    assert_eq!(
+                        &chunk[z * side * 8..(z + 1) * side * 8],
+                        &region[start..start + side * 8]
+                    );
+                }
+            }
+        }
+        for stride in [32, 64, 128, 256] {
+            assert!(reduce_words(&words[..16 * 16 * 8], 16, stride).is_err());
+        }
+    }
+
+    #[test]
     fn partial_present_verified_empty_and_unavailable_stay_distinct() {
         let mut cells = [cell(i32::MAX, 99, 90, 0); 16];
         cells[0] = cell(-32, 7, 10, 1);
@@ -312,7 +434,7 @@ mod tests {
             reduce_heights(&[-1.25, -2.5, 0.25, 1.], 2, 2, 2).unwrap(),
             [-0.625]
         );
-        for stride in [2, 4] {
+        for stride in [2, 4, 8, 16, 32, 64, 128, 256] {
             let heights = vec![f32::MAX; stride * stride];
             assert_eq!(
                 reduce_heights(&heights, stride, stride, stride).unwrap(),
@@ -337,6 +459,20 @@ mod tests {
             reduce_heights(&heights, 4, 2, 2).unwrap(),
             [-899_999.5, MISSING_HEIGHT]
         );
+    }
+
+    #[test]
+    fn coarse_rectangular_heights_keep_negative_means_and_missing_blocks() {
+        for stride in [8, 16, 32, 64, 128, 256] {
+            let width = 2 * stride;
+            let mut heights = vec![MISSING_HEIGHT; width * stride];
+            heights[0] = -1.25;
+            heights[width + 1] = -2.5;
+            assert_eq!(
+                reduce_heights(&heights, width, stride, stride).unwrap(),
+                [-1.875, MISSING_HEIGHT]
+            );
+        }
     }
 
     #[test]
@@ -372,9 +508,22 @@ mod tests {
 
     #[test]
     fn invalid_dimensions_strides_and_lengths_are_rejected() {
-        for stride in [0, 3, 8, usize::MAX] {
+        for stride in [0, 3, 6, 255, 257, 512, usize::MAX] {
+            assert!(validate_stride(stride).is_err());
             assert!(reduce_words(&[0; 32], 2, stride).is_err());
             assert!(reduce_heights(&[0.; 4], 2, 2, stride).is_err());
+            assert!(reduce_word_heights(&[0; 32], 2, stride).is_err());
+        }
+        for stride in [1, 2, 4, 8, 16, 32, 64, 128, 256] {
+            assert!(validate_stride(stride).is_ok());
+            assert_eq!(sample_count(4096, 4096, stride).unwrap(), MAX_SAMPLES);
+            assert!(reduce_words(&[], stride, stride).is_err());
+            assert!(reduce_word_heights(&[], stride, stride).is_err());
+            assert!(reduce_heights(&[], stride, stride, stride).is_err());
+            if stride > 1 {
+                assert!(sample_count(stride - 1, stride, stride).is_err());
+                assert!(sample_count(stride, stride + 1, stride).is_err());
+            }
         }
         for (width, height, stride) in [
             (0, 2, 1),
