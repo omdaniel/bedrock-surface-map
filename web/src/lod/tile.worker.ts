@@ -2,11 +2,6 @@ import init, {
   decode_lod_surface,
   decode_lod_height,
 } from "../../pkg/surface_gpu.js";
-import {
-  configureObjectCache,
-  readVerifiedObject,
-  type ObjectCacheOptions,
-} from "../object-cache";
 import type { ObjectRef } from "../types";
 import { MAX_TILE_BYTES, TILE_CELLS, type TileKey } from "./protocol.ts";
 
@@ -14,10 +9,10 @@ export interface TileDecodeRequest {
   type: "load";
   id: number;
   key: TileKey;
-  url: string;
   object: ObjectRef;
   kind: "surface" | "height";
   materialCount: number;
+  bytes: ArrayBuffer;
 }
 export interface TileDecodeReply {
   id: number;
@@ -34,24 +29,15 @@ export interface TileDecodeReply {
 
 const ready = init();
 const tasks = new Map<number, AbortController>();
-let configured: Promise<unknown> = Promise.resolve();
 const scope = self as unknown as {
   onmessage: (
-    e: MessageEvent<
-      | TileDecodeRequest
-      | { type: "cancel"; id: number }
-      | { type: "cache"; options: ObjectCacheOptions }
-    >,
+    e: MessageEvent<TileDecodeRequest | { type: "cancel"; id: number }>,
   ) => void;
   postMessage: (reply: TileDecodeReply, transfer?: Transferable[]) => void;
 };
 scope.onmessage = async ({ data: request }) => {
   if (request.type === "cancel") {
     tasks.get(request.id)?.abort();
-    return;
-  }
-  if (request.type === "cache") {
-    configured = configureObjectCache(request.options);
     return;
   }
   const controller = new AbortController();
@@ -64,7 +50,6 @@ scope.onmessage = async ({ data: request }) => {
     wasmBytes: 0,
   };
   try {
-    await configured;
     const wasm = await ready;
     if (
       !Number.isInteger(request.materialCount) ||
@@ -76,13 +61,14 @@ scope.onmessage = async ({ data: request }) => {
       controller.signal,
       AbortSignal.timeout(10000),
     ]);
-    const bytes = await readVerifiedObject({
-      url: request.url,
-      sha256: request.object.sha256,
-      bytes: request.object.bytes,
-      maxBytes: MAX_TILE_BYTES,
-      signal,
-    });
+    // Bodies are hash-verified local-store reads transferred by the caller.
+    // Decoding has no HTTP or persistent-storage fallback.
+    const bytes = request.bytes;
+    if (
+      bytes.byteLength !== request.object.bytes ||
+      bytes.byteLength > MAX_TILE_BYTES
+    )
+      throw Error("Invalid local terrain object size");
     signal.throwIfAborted();
     const start = performance.now(),
       { level, x, z } = request.key;

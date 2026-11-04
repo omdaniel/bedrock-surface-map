@@ -3,6 +3,8 @@ export interface ViewerConfiguration {
   /** Prepared unlit hierarchy, relative to this application's base path. */
   lod_url?: string;
   object_cache?: { enabled: boolean; maxBytes: number };
+  /** Complete compressed map storage, separate from RAM/GPU and legacy LRU. */
+  local_map?: { maxBytes: number };
   players?: unknown;
   terrain?: { url: string; world_id: string; generation: string };
   demo?: { scenario: string; poster: string };

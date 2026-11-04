@@ -1,15 +1,12 @@
 import { Renderer } from "../../pkg/surface_gpu.js";
 import { MAP_CACHE_BYTES, WORKING_BYTES } from "../cache-budget";
-import {
-  configureObjectCache,
-  objectCacheStats,
-  type ObjectCacheOptions,
-} from "../object-cache";
 import type { Manifest, Material } from "../types";
+import { boundedBytes } from "../http";
 import { PyramidSource } from "./source";
 import { TileDecoder } from "./tile-decoder";
 import { TileJobs, type TileJob } from "./jobs";
-import { planDemand, type DemandPlan } from "./demand";
+import type { DemandPlan } from "./demand";
+import { planView } from "./planner";
 import {
   catalogPagesForMask,
   tileId,
@@ -17,12 +14,7 @@ import {
   type TileKey,
   type LodNode,
 } from "./protocol";
-import {
-  desiredLevel,
-  shadowBounds,
-  type Bounds,
-  type View,
-} from "./selection";
+import { shadowBounds, type Bounds, type View } from "./selection";
 import {
   planHeightWindow,
   buildHeightWindow,
@@ -115,19 +107,18 @@ export class PyramidMap {
   private cutSignature = "";
   private maxCharged = 0;
   private statusError = "";
+  private liveStatus?: URL;
+  private syncStatus = "Surface hierarchy";
   private lastPanHit = false;
   private framesWithFallback = 0;
   constructor(
     url: URL,
     private redraw: () => void,
-    cache?: ObjectCacheOptions,
     private mainWasm?: WebAssembly.Memory,
+    localBytes?: number,
   ) {
-    this.source = new PyramidSource(url);
-    this.decoder = new TileDecoder(cache);
-    void configureObjectCache(
-      cache ?? { enabled: true, maxBytes: 256 * 1024 * 1024 },
-    );
+    this.source = new PyramidSource(url, localBytes);
+    this.decoder = new TileDecoder();
   }
   async initialize(canvas: HTMLCanvasElement) {
     await this.source.refresh(AbortSignal.timeout(15000));
@@ -184,6 +175,18 @@ export class PyramidMap {
   }
   private roots() {
     return new Set(this.source.root.roots.map((r) => tileId(r.key)));
+  }
+  bindLive(binding: { url: string; world_id: string; generation: string }) {
+    if (
+      binding.world_id !== this.source.root.world_id ||
+      binding.generation !== this.source.root.generation
+    )
+      throw Error("Terrain hierarchy does not match the configured world");
+    const url = new URL("status", new URL(binding.url, location.href));
+    if (url.origin !== location.origin || url.username || url.password)
+      throw Error("Terrain status must use this origin");
+    this.liveStatus = url;
+    this.syncStatus = "Terrain starting";
   }
   private touch(key: TileKey) {
     const item = this.residents.get(tileId(key));
@@ -284,40 +287,16 @@ export class PyramidMap {
     const d = this.demand!,
       root = this.source.root,
       maxLevel = root.roots[0].key.level;
-    let level = desiredLevel(d.scale, this.level, maxLevel),
-      plan: DemandPlan | undefined,
-      height: HeightPlan | null = null;
-    for (; level <= maxLevel; level++) {
-      try {
-        plan = planDemand(d.view, root.bounds, level, {
-          maxTiles: 120,
-          velocity: this.velocity,
-        });
-        if (!plan.tiles.length) break;
-        if (!plan.bufferComplete && level < maxLevel) continue;
-        const boxes = plan.tiles.map((t) => tileBounds(t.key));
-        const bounds: Bounds = [
-          Math.min(...boxes.map((b) => b[0])),
-          Math.min(...boxes.map((b) => b[1])),
-          Math.max(...boxes.map((b) => b[2])),
-          Math.max(...boxes.map((b) => b[3])),
-        ];
-        height = planHeightWindow(
-          bounds,
-          root.bounds,
-          root.height_range,
-          level,
-          d.elevation,
-          d.azimuth,
-          2 * 1024 * 1024,
-        );
-        if (height) break;
-      } catch (error) {
-        if (level === maxLevel) throw error;
-      }
-    }
-    if (!plan || (plan.tiles.length && !height))
-      throw Error("Unable to reserve minimum terrain coverage");
+    const selected = planView(
+      d,
+      root.bounds,
+      root.height_range,
+      this.level,
+      maxLevel,
+      this.velocity,
+    );
+    const { level, plan } = selected;
+    let { height } = selected;
     this.level = Math.min(level, maxLevel);
     this.plan = plan;
     if (height && this.heightPlan) {
@@ -325,11 +304,24 @@ export class PyramidMap {
         .filter((t) => t.priority === "visible")
         .map((t) => tileBounds(t.key));
       if (visible.length) {
+        const guard = 128 * 2 ** level;
         const bounds: Bounds = [
-          Math.min(...visible.map((b) => b[0])),
-          Math.min(...visible.map((b) => b[1])),
-          Math.max(...visible.map((b) => b[2])),
-          Math.max(...visible.map((b) => b[3])),
+          Math.max(
+            root.bounds[0],
+            Math.min(...visible.map((b) => b[0])) - guard,
+          ),
+          Math.max(
+            root.bounds[1],
+            Math.min(...visible.map((b) => b[1])) - guard,
+          ),
+          Math.min(
+            root.bounds[2],
+            Math.max(...visible.map((b) => b[2])) + guard,
+          ),
+          Math.min(
+            root.bounds[3],
+            Math.max(...visible.map((b) => b[3])) + guard,
+          ),
         ];
         const required = planHeightWindow(
           bounds,
@@ -340,9 +332,9 @@ export class PyramidMap {
           d.azimuth,
           2 * 1024 * 1024,
         );
-        // Keep the prepared guard window while it covers the view's complete
-        // lighting footprint. Merely shifting a speculative ring needs no GPU
-        // height rebuild or full resident reshade.
+        // Begin replacing heights before visible terrain reaches the window
+        // edge. Fine eligibility needs the NEXT WHOLE tile's shadow footprint,
+        // so retain a full receiver-tile guard while the current window is used.
         if (required && coversPlan(this.heightPlan, required))
           height = this.heightPlan;
       }
@@ -389,6 +381,22 @@ export class PyramidMap {
       if (!wanted.has(id))
         wanted.set(id, { key, kind: "height", priority: 200 });
       else wanted.get(id)!.priority = Math.min(150, wanted.get(id)!.priority);
+    }
+    // Keep the immediately coarser representation of the navigation buffer
+    // prepared too. Zooming out can switch to local, shaded parents immediately
+    // instead of falling all the way back to the world roots.
+    if (level < maxLevel) {
+      for (const tile of plan.tiles) {
+        const parent = {
+          level: level + 1,
+          x: Math.floor(tile.key.x / 2),
+          z: Math.floor(tile.key.z / 2),
+        };
+        const id = tileId(parent);
+        if (!wanted.has(id))
+          wanted.set(id, { key: parent, kind: "surface", priority: 300 });
+        else wanted.get(id)!.kind = "surface";
+      }
     }
     this.used = new Set(
       [...wanted.entries()]
@@ -514,12 +522,16 @@ export class PyramidMap {
         }
         const result: Result = { key, kind, node, revision };
         if (node) {
+          const bytes = await this.source.object(
+            kind === "surface" ? node.data : node.height,
+            signal,
+          );
           const data = await this.decoder.load(
             node,
             kind,
-            this.source.base,
             this.source.root.material_count,
             signal,
+            bytes,
           );
           signal.throwIfAborted();
           await this.loadCatalog(data.materialMask, signal);
@@ -809,10 +821,34 @@ export class PyramidMap {
         this.errors.clear();
         this.schedule();
       }
+      if (this.liveStatus) {
+        const response = await fetch(this.liveStatus, {
+          cache: "no-store",
+          signal: AbortSignal.timeout(5000),
+        });
+        if (!response.ok) throw Error("Terrain status unavailable");
+        const status = JSON.parse(
+          new TextDecoder().decode(await boundedBytes(response, 64 * 1024)),
+        );
+        if (
+          status.world_id !== this.source.root.world_id ||
+          status.generation !== this.source.root.generation
+        )
+          throw Error("Terrain status identity mismatch");
+        this.syncStatus = `Terrain ${String(status.status)}${status.lod?.status === "degraded" ? " · hierarchy delayed" : ""}`;
+        window.dispatchEvent(new Event("surface-lod-status"));
+      }
       this.pollFailures = 0;
+      if (this.statusError === "Terrain connection delayed") {
+        this.statusError = "";
+        if (!this.liveStatus) this.syncStatus = "Surface hierarchy";
+        window.dispatchEvent(new Event("surface-lod-status"));
+      }
     } catch {
       this.pollFailures = Math.min(4, this.pollFailures + 1);
       this.statusError = "Terrain connection delayed";
+      this.syncStatus = "Terrain delayed";
+      window.dispatchEvent(new Event("surface-lod-status"));
     } finally {
       this.polling = false;
       this.schedulePoll();
@@ -877,20 +913,25 @@ export class PyramidMap {
       totalDecode: this.decoder.decodeMs,
       revision: this.source.root.revision,
       heightPages: this.heights.size,
+      heightWindow: this.activeHeightPlan?.bounds,
+      heightTarget: this.heightPlan?.bounds,
       lastPanHit: this.lastPanHit,
       framesWithFallback: this.framesWithFallback,
       visible: this.plan?.visibleCount ?? 0,
       buffered: this.plan?.tiles.length ?? 0,
       error: this.statusError,
+      syncStatus: this.syncStatus,
+      local: { ...this.source.local.state },
       failures: [...this.errors].map(([id, e]) => ({ id, message: e.text })),
       cut: this.cut.map((t) => ({ key: t.key, clip: t.clip })),
     };
   }
   cacheStats() {
-    return objectCacheStats();
+    return this.source.local.store.stats();
   }
   dispose() {
     this.disposed = true;
+    this.source.local.dispose();
     this.jobs.dispose();
     this.decoder.dispose();
     if (this.pollTimer) clearTimeout(this.pollTimer);

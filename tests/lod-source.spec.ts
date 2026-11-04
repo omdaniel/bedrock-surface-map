@@ -53,7 +53,7 @@ const root = {
   roots: [{ key: { level: 1, x: 0, z: 0 }, index: parent.ref }],
 };
 
-test("hierarchy walks only requested ancestors and reuses verified cached indexes", async ({
+test("hierarchy synchronizes the complete dataset and reads requested ancestors locally", async ({
   page,
 }) => {
   const requested: string[] = [];
@@ -66,7 +66,9 @@ test("hierarchy walks only requested ancestors and reuses verified cached indexe
   await page.route("**/source-test/objects/*", (r) => {
     const name = new URL(r.request().url()).pathname.split("/").at(-1)!;
     requested.push(name);
-    const data = [parent, child, dummy].find((o) => o.ref.url.endsWith(name));
+    const data = [parent, child, dummy].find((o) =>
+      name.startsWith(o.ref.sha256),
+    );
     return data
       ? r.fulfill({ body: data.body, contentType: "application/json" })
       : r.fulfill({ status: 404 });
@@ -78,6 +80,7 @@ test("hierarchy walks only requested ancestors and reuses verified cached indexe
     const { PyramidSource } = await import("/src/lod/source.ts" as string);
     const source = new PyramidSource("/source-test/lod.json");
     const change = await source.refresh();
+    await source.local.complete(source.root);
     const node = await source.at({ level: 0, x: 0, z: 0 });
     const same = await source.at({ level: 0, x: 0, z: 0 });
     const absent = await source.at({ level: 0, x: 1, z: 1 });
@@ -100,6 +103,7 @@ test("hierarchy walks only requested ancestors and reuses verified cached indexe
   });
   expect(result.metadata).toBeLessThan(4096);
   expect(requested).toEqual([
+    `${dummy.ref.sha256}.png`,
     parent.ref.url.split("/").at(-1),
     child.ref.url.split("/").at(-1),
   ]);
@@ -109,6 +113,13 @@ test("reordered publications and changed content at the same revision are reject
   page,
 }) => {
   let current = { ...root };
+  await page.route("**/source-test/objects/*", (r) => {
+    const name = new URL(r.request().url()).pathname.split("/").at(-1)!;
+    const data = [parent, child, dummy].find((o) =>
+      name.startsWith(o.ref.sha256),
+    );
+    return data ? r.fulfill({ body: data.body }) : r.fulfill({ status: 404 });
+  });
   await page.route("**/source-harness", (r) =>
     r.fulfill({ contentType: "text/html", body: "<title>Source test</title>" }),
   );
@@ -221,6 +232,9 @@ async function catalogHarness(
   publication: { value: ReturnType<typeof catalogRoot>; etag: string },
   bodies: Map<string, string>,
 ) {
+  bodies.set(root.atlas.url, dummy.body);
+  for (const entry of [parent, child, dummy])
+    bodies.set(entry.ref.url, entry.body);
   const objects: string[] = [];
   const validators: (string | undefined)[] = [];
   await page.route("**/source-harness", (r) =>
@@ -252,6 +266,7 @@ async function catalogHarness(
       const { PyramidSource } = await import("/src/lod/source.ts" as string);
       const source = new PyramidSource("/source-test/lod.json");
       const change = await source.refresh();
+      await source.local.complete(source.root);
       window.__sourceCatalogTest = { source, accepted: source.root };
       return change;
     }),
@@ -296,7 +311,9 @@ test("appending to a partial catalog page preserves existing descriptors and is 
     previousMaterials: 258,
     page: [...existing, material("added")],
   });
-  expect(requests.objects).toEqual([before.ref.url, after.ref.url]);
+  expect(
+    requests.objects.filter((p) => p === before.ref.url || p === after.ref.url),
+  ).toEqual([before.ref.url, after.ref.url]);
 });
 
 for (const field of ["color", "name"] as const) {
@@ -340,7 +357,11 @@ for (const field of ["color", "name"] as const) {
       sameVersion: true,
       sameGeneration: true,
     });
-    expect(requests.objects).toEqual([before.ref.url, after.ref.url]);
+    expect(
+      requests.objects.filter(
+        (p) => p === before.ref.url || p === after.ref.url,
+      ),
+    ).toEqual([before.ref.url, after.ref.url]);
   });
 }
 
@@ -407,9 +428,7 @@ test("a new catalog hash mismatch preserves the accepted root, signature and ETa
   expect(
     await page.evaluate(() => window.__sourceCatalogTest.source.root.revision),
   ).toBe(2);
-  expect(requests.objects).toEqual([
-    before.ref.url,
-    after.ref.url,
-    after.ref.url,
-  ]);
+  expect(
+    requests.objects.filter((p) => p === before.ref.url || p === after.ref.url),
+  ).toEqual([before.ref.url, after.ref.url, after.ref.url]);
 });

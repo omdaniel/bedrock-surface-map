@@ -950,6 +950,23 @@ window.addEventListener("pagehide", () => {
 window.addEventListener("surface-device-lost", () =>
   message("GPU device lost. Reload the map.", true),
 );
+function localMapStatus() {
+  if (!pyramid?.source.root) return;
+  const state = pyramid.state(),
+    local = state.local;
+  const element = document.querySelector<HTMLElement>(".local-state")!;
+  element.textContent =
+    local.status === "ready"
+      ? "Complete map stored locally"
+      : local.status === "error"
+        ? "Local map download interrupted"
+        : `Saving map locally · ${(local.bytes / 1_000_000).toFixed(1)} MB`;
+  if (state.syncStatus !== "Surface hierarchy")
+    element.textContent += ` · ${state.syncStatus}`;
+  element.title = `${state.syncStatus}; ${local.objects.toLocaleString()} stored objects; ${local.persistent ? "persistent storage granted" : "browser-managed storage"}${local.error ? `; ${local.error}` : ""}`;
+}
+window.addEventListener("surface-lod-status", localMapStatus);
+window.addEventListener("surface-local-status", localMapStatus);
 window.addEventListener("surface-frame-ready", () =>
   requestAnimationFrame(() => {
     if (firstVisible === null) {
@@ -1110,18 +1127,19 @@ async function boot() {
     pyramid = new PyramidMap(
       new URL(lodUrl, appUrl(".")),
       requestDraw,
-      configuration.object_cache,
       wasm.memory,
+      configuration.local_map?.maxBytes,
     );
     await pyramid.initialize(canvas);
+    if (!params.has("lod") && configuration.terrain)
+      pyramid.bindLive(configuration.terrain);
     renderer = pyramid.renderer;
     manifest = pyramid.manifest;
     worker.terminate();
     $("app").querySelector(".identity strong")!.textContent = manifest.name;
     document.querySelector(".subtitle")!.textContent =
       "OVERWORLD / MULTIRESOLUTION";
-    document.querySelector<HTMLElement>(".local-state")!.textContent =
-      "Surface hierarchy";
+    localMapStatus();
     window.__map.ready = true;
     fit();
     if (params.get("players") === "off") playerLayer.disableForView();

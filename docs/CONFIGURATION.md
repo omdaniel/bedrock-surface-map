@@ -56,8 +56,11 @@ Live `terrain` and `players` bindings follow their respective guides.
 The development server accepts `SURFACE_MAP` for the same offline selection.
 
 An optional top-level `lod_url` selects a prepared
-[multiresolution hierarchy](MULTIRESOLUTION.md). `object_cache` controls its
-best-effort browser disk cache: `{ "enabled": true, "maxBytes": 268435456 }`.
+[multiresolution hierarchy](MULTIRESOLUTION.md). The browser stores its complete
+compressed rendering dataset locally. `local_map` configures the payload ceiling:
+`{ "maxBytes": 4294967296 }` (4 GiB by default). This is independent of rendering
+memory; insufficient storage leaves a visible incomplete-download state. The
+legacy `object_cache` option does not control the complete local dataset.
 Both the hierarchy and ordinary map URLs resolve beneath the application's base
 path. Explicit `?map=` or `?terrain=off` retains the ordinary snapshot path;
 `?lod=` explicitly selects a same-origin hierarchy. These options do not grant

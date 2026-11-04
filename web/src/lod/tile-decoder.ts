@@ -1,5 +1,4 @@
-import type { ObjectCacheOptions } from "../object-cache";
-import { localAsset, type LodNode } from "./protocol.ts";
+import type { LodNode } from "./protocol.ts";
 import type { TileDecodeReply, TileDecodeRequest } from "./tile.worker";
 
 export class TileDecoder {
@@ -16,16 +15,10 @@ export class TileDecoder {
   private disposed = false;
   decodeMs = 0;
   wasmBytes = 0;
-  constructor(
-    options: ObjectCacheOptions = {
-      maxBytes: 256 * 1024 * 1024,
-      enabled: true,
-    },
-  ) {
+  constructor() {
     this.worker = new Worker(new URL("./tile.worker.ts", import.meta.url), {
       type: "module",
     });
-    this.worker.postMessage({ type: "cache", options });
     this.worker.onmessage = ({ data: r }: MessageEvent<TileDecodeReply>) => {
       this.wasmBytes = Math.max(this.wasmBytes, r.wasmBytes);
       this.decodeMs += r.decodeMs;
@@ -44,9 +37,9 @@ export class TileDecoder {
   load(
     node: LodNode,
     kind: TileDecodeRequest["kind"],
-    base: URL,
     materialCount: number,
     signal: AbortSignal,
+    bytes: ArrayBuffer,
   ): Promise<TileDecodeReply> {
     signal.throwIfAborted();
     if (this.disposed)
@@ -68,15 +61,18 @@ export class TileDecoder {
         cleanup: () => signal.removeEventListener("abort", abort),
       });
       signal.addEventListener("abort", abort, { once: true });
-      this.worker.postMessage({
-        type: "load",
-        id,
-        key: node.key,
-        object,
-        url: localAsset(object.url, base),
-        kind,
-        materialCount,
-      } satisfies TileDecodeRequest);
+      this.worker.postMessage(
+        {
+          type: "load",
+          id,
+          key: node.key,
+          object,
+          kind,
+          materialCount,
+          bytes,
+        } satisfies TileDecodeRequest,
+        [bytes],
+      );
     });
   }
   private fail(error: Error) {

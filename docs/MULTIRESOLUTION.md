@@ -27,15 +27,16 @@ existing published descriptor; unreferenced objects may remain after failure.
 Serve the output directory with an ordinary static HTTP server. `lod.json` is
 published after its immutable dependencies. It references at most four root
 indexes, catalog pages and the shared texture atlas. Indexes reference their
-own surface/height objects and up to four child indexes. Browsers can traverse
-only the requested branches; the root does not enumerate every region.
+own surface/height objects and up to four child indexes. The root does not
+enumerate every region. The browser synchronizes the complete rendering graph
+to local storage, then traverses its local indexes for rendering.
 
 Select the hierarchy in the viewer's `viewer-config.json`:
 
 ```json
 {
   "lod_url": "maps/world/lod.json",
-  "object_cache": { "enabled": true, "maxBytes": 268435456 }
+  "local_map": { "maxBytes": 4294967296 }
 }
 ```
 
@@ -109,9 +110,11 @@ read-only descriptor route, without exposing ingestion.
 
 ## Browser loading and storage
 
-The browser requests immutable files with ordinary HTTP GETs. Camera movement
-does not create server-side sessions, subscriptions or synchronization state.
-The server remains the authority for terrain; browser caches are disposable.
+The browser downloads the complete compressed surface hierarchy with ordinary
+HTTP GETs in a camera-independent order. The atlas, catalog and coarse roots
+load first. Exact surfaces, aggregation levels, height pages and indexes remain
+in IndexedDB across reloads. The server remains the authority for terrain.
+The footer distinguishes an incomplete download from a complete local map.
 
 Visible work takes priority over a surrounding half-screen guard band and
 bounded directional lookahead. At most two loading jobs run concurrently.
@@ -120,19 +123,34 @@ panning uses prepared detail where available; a large jump or fast movement
 beyond the buffer can temporarily show coarse coverage. Missing downloads are
 reported and retried, not interpreted as empty terrain.
 
-IndexedDB stores hash-verified objects from different levels, bounded by both
-bytes and entry count. The default disk allowance is 256 MiB and 2,048 entries.
-It is separate from map memory. Browsers may deny or evict storage; write
-backpressure can skip a cache entry. The viewer then uses the network. This is
-a reusable local cache, not an offline-download guarantee. Disable or resize it
-through `object_cache`; clearing this site's browser storage removes its cache.
+Local storage has a configurable 4 GiB payload ceiling, independent of rendering
+memory. `local_map.maxBytes` sets this ceiling; database metadata and browser
+overhead require additional space. Writes commit before an object counts as
+stored. There is no entry-count eviction or skipped-write policy. Interrupted
+downloads resume verified objects, and unchanged subtrees are reused when a new
+publication arrives. A changed publication becomes active after its required
+objects are stored. Camera requests read local objects and never fetch terrain.
+Superseded publication objects remain in the local store and count against its
+cap; automatic reclamation is not implemented. Clearing this site's browser data
+removes the stored map and requires downloading its current publication again.
 
-The client adapts resolution to physical sample size and the bounded guard
-window, without moving the camera. It holds up to 160 surface tiles and 256
+The viewer requests persistent browser storage and reports whether it is granted.
+Storage denial, exhaustion and failed downloads leave an explicit incomplete
+state. Browsers can clear nonpersistent data; user-cleared site data also removes
+the download. Storage belongs to the site's origin, so a LAN IP and a public
+hostname do not share it. A complete local dataset makes terrain navigation
+independent of the network; loading the application itself still requires its
+ordinary web assets. The legacy `object_cache` option does not govern this store.
+
+The client chooses resolution from physical sample size, reducing speculative
+buffering before coarsening visible terrain when budgets are tight. It preserves
+the complete required shadow footprint without moving the camera. It holds up
+to 160 surface tiles and 256
 height-page entries, with nonvisible detail evicted first. Each tile has 128²
 samples regardless of its world span. Height allocation covers the buffered
 view and its sun-facing shadow margin rather than the world's bounding box.
-Small pans reuse a prepared height window while the full lighting footprint fits.
+Small pans reuse a prepared height window while the next whole tile's lighting
+footprint fits, preparing its replacement before that tile becomes visible.
 
 The application map allowance is 256 MiB, including a 64 MiB working reservation:
 32 MiB for committed main/decoder WASM capacity and 32 MiB for bounded decode,
@@ -146,7 +164,8 @@ Fine surfaces use the shared texture, water, overlay and relief renderer.
 Coarse surfaces retain interactive sunlight but use approximate color and height
 summaries; inspection labels their scale and elevation range. Player projection
 shares the camera and does not redraw terrain unless following moves the camera.
-Unchanged polls do not draw. Hidden tabs suspend loading and publication polling.
+Unchanged polls do not draw. Hidden tabs suspend rendering work and publication
+polling; the initial local download may continue while the browser allows it.
 Generation or incompatible appearance changes require an explicit reload, so
 old and new dataset identities cannot be blended accidentally.
 
@@ -165,4 +184,8 @@ incremental ancestors, continuous writes, resumable batches, garbage collection,
 and the read-only HTTP routes. These checks establish data/publication behavior;
 browser checks exercise real encoded coarse/detail rendering, buffered movement
 during network failure, persistent-cache reuse, zoom reversals and idle redraw
-behavior. Hardware performance remains a separate measurement.
+behavior. `tests/lod-local-pan.spec.ts` checks complete local download, navigation
+with immutable network routes blocked, reload reuse and offscreen revisions.
+Set `SURFACE_LOD_LOCAL_FIXTURE` to a larger prepared synthetic hierarchy to
+exercise long pans at full, 2×2, 4×4 and 8×8 aggregation. Hardware performance
+remains a separate measurement.

@@ -236,3 +236,56 @@ test("published edits update exact picking and recover after missing objects wit
   await settle(page);
   expect((await page.evaluate(() => window.__map.state())).lod!.error).toBe("");
 });
+
+test("live hierarchy keeps producer freshness separate from successful root polling", async ({
+  page,
+}) => {
+  const live = resolve(".local/lod-live"),
+    root = JSON.parse(readFileSync(resolve(live, "stage0.json"), "utf8"));
+  let status = "stale";
+  await page.route("**/viewer-config.json", (r) =>
+    r.fulfill({
+      json: {
+        lod_url: "/live/lod.json",
+        terrain: {
+          url: "/live/manifest.json",
+          world_id: root.world_id,
+          generation: root.generation,
+        },
+      },
+    }),
+  );
+  await page.route("**/live/**", (r) => {
+    const name = new URL(r.request().url()).pathname.split("/").at(-1)!;
+    if (name === "lod.json") return r.fulfill({ json: root });
+    if (name === "status")
+      return r.fulfill({
+        json: {
+          world_id: root.world_id,
+          generation: root.generation,
+          status,
+          lod: { status: "live" },
+        },
+      });
+    if (!/^[a-f0-9]{64}\.[a-z0-9]+$/.test(name))
+      return r.fulfill({ status: 404 });
+    return r.fulfill({
+      body: readFileSync(resolve(live, "objects", name)),
+      contentType: name.endsWith(".png")
+        ? "image/png"
+        : "application/octet-stream",
+    });
+  });
+  await page.goto("/?players=off");
+  await page.waitForFunction(() => window.__map?.ready);
+  await settle(page);
+  await expect(page.locator(".local-state")).toContainText("Terrain stale", {
+    timeout: 10000,
+  });
+  const before = (await page.evaluate(() => window.__map.state())).draws;
+  status = "live";
+  await expect(page.locator(".local-state")).toContainText("Terrain live", {
+    timeout: 10000,
+  });
+  expect((await page.evaluate(() => window.__map.state())).draws).toBe(before);
+});

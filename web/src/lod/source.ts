@@ -1,8 +1,7 @@
 import { boundedBytes } from "../http";
-import { readVerifiedObject } from "../object-cache";
+import { LocalDataset } from "./local-dataset";
 import type { ObjectRef } from "../types";
 import {
-  localAsset,
   MAX_INDEX_BYTES,
   parseCatalog,
   parseManifest,
@@ -13,18 +12,19 @@ import {
   type TileKey,
 } from "./protocol.ts";
 
-/** Stateless, static-file-compatible publication reader. Mutable roots are
- * revalidated; only hash-verified immutable objects enter persistent storage.
+/** Publication reader backed by a complete local compressed dataset. Mutable
+ * roots revalidate; an independent synchronizer fills immutable objects.
  */
 export class PyramidSource {
   readonly url: URL;
   readonly base: URL;
+  readonly local: LocalDataset;
   root!: LodManifest;
   private etag: string | null = null;
   private signature = "";
   private nodes = new Map<string, { value: LodNode; bytes: number }>();
   private nodeBytes = 0;
-  constructor(url: string | URL) {
+  constructor(url: string | URL, maxLocalBytes?: number) {
     this.url = new URL(url, location.href);
     if (
       this.url.origin !== location.origin ||
@@ -34,6 +34,7 @@ export class PyramidSource {
     )
       throw Error("Terrain hierarchy must use this origin");
     this.base = new URL(".", this.url);
+    this.local = new LocalDataset(this.url, maxLocalBytes);
   }
   async refresh(
     signal?: AbortSignal,
@@ -60,6 +61,10 @@ export class PyramidSource {
       throw Error("Terrain publication moved backwards");
     if (sameGeneration && root.revision === this.root.revision)
       throw Error("Terrain publication changed without advancing its revision");
+    this.local.ensure(root);
+    // Keep the current publication renderable until the complete replacement
+    // is local. The first publication can display roots during its bulk fill.
+    if (this.root) await this.local.complete(root, signal);
     let appearance =
       this.root &&
       (root.appearance_version !== this.root.appearance_version ||
@@ -109,13 +114,7 @@ export class PyramidSource {
     signal?: AbortSignal,
     maxBytes = 2 * 1024 * 1024,
   ) {
-    return readVerifiedObject({
-      url: localAsset(ref.url, this.base),
-      sha256: ref.sha256,
-      bytes: ref.bytes,
-      maxBytes,
-      signal,
-    });
+    return this.local.object(ref, signal, maxBytes);
   }
   async catalog(index: number, signal?: AbortSignal) {
     const page = this.root.catalog[index];
