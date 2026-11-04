@@ -45,15 +45,45 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 7
-      - name: Configure Pages
+      - name: Retain the verified public demo
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
-      - name: Upload reviewed public site only
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
+          name: pages-demo
           path: .local/demo-dist
+          retention-days: 7
       # No raw world imports, Mojang downloads or homelab credentials.
+  documentation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: npm --prefix website ci
+      - run: npm --prefix website exec -- playwright install --with-deps chromium
+      - run: npm --prefix website test
+      - name: Build and check root hosting
+        run: |
+          npm --prefix website run build
+          npm --prefix website run test:browser
+      - name: Build and check Pages subpath
+        env:
+          DOCS_BASE_PATH: /bedrock-surface-map/
+          DOCS_SITE_URL: https://omdaniel.github.io/bedrock-surface-map/
+        run: |
+          npm --prefix website run build
+          npm --prefix website run test:browser
+      - name: Retain checked documentation
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pages-docs
+          path: website/.vitepress/dist
+          retention-days: 7
   native-amd64:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -104,9 +134,34 @@ jobs:
           path: .local/release/x86_64-unknown-linux-musl/dist/
           if-no-files-found: ignore
           retention-days: 14
+  assemble-pages:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [synthetic, documentation]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pages-docs
+          path: website/.vitepress/dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: pages-demo
+          path: .local/demo-dist
+      - run: node website/scripts/assemble.mjs
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b
+        with:
+          path: .local/pages-dist
   deploy:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: synthetic
+    needs: assemble-pages
     runs-on: ubuntu-24.04
     permissions:
       pages: write

@@ -1,8 +1,19 @@
 # Getting Started
 
+## Choose Your Path
+
+| Goal | Start here |
+|---|---|
+| Try the map without installing anything | [Public demo](https://omdaniel.github.io/bedrock-surface-map/demo/) and [map controls](USER-GUIDE.md) |
+| View an offline world on Linux | [Snapshot installation](INSTALL.md) and [world export](WORLD-EXPORT.md) |
+| Add a live map to BDS | [Operator download](OPERATOR-INSTALL.md), then [Docker](QUICKSTART-BDS.md) or [Crafty/AMP](PANELS.md) |
+| Change code or run from source | [Contributor paths](../CONTRIBUTING.md), then source setup below |
+
+The compiler setup below is for development. Linux release users do not need it.
+
 ## View the Public Demo
 
-Open <https://omdaniel.github.io/bedrock-surface-map/> in a WebGPU-enabled Chrome
+Open <https://omdaniel.github.io/bedrock-surface-map/demo/> in a WebGPU-enabled Chrome
 or Safari. Drag to pan, wheel/pinch to zoom, select a player to center, or follow
 them. Manual navigation cancels follow.
 

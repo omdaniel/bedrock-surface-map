@@ -5,11 +5,14 @@
 A responsive overhead map with textured terrain, adjustable sunlight, player
 locations, and terrain updates without reloading.
 
-### [Open the interactive demo](https://omdaniel.github.io/bedrock-surface-map/)
+### [Open the interactive demo](https://omdaniel.github.io/bedrock-surface-map/demo/)
 
 No installation or login. Requires a WebGPU-enabled browser.
 
-[![A fictional player moves while a small structure appears and its center is removed](https://github.com/omdaniel/bedrock-surface-map/releases/download/demo-scene-v1/demo.gif)](https://omdaniel.github.io/bedrock-surface-map/)
+[Welcome site and documentation](https://omdaniel.github.io/bedrock-surface-map/) —
+choose a snapshot, live-server or contributor path.
+
+[![A fictional player moves while a small structure appears and its center is removed](https://github.com/omdaniel/bedrock-surface-map/releases/download/demo-scene-v1/demo.gif)](https://omdaniel.github.io/bedrock-surface-map/demo/)
 
 _Demo playback: fictional players and scripted terrain changes, not a live server.
 The animation is accelerated; the interactive demo runs a 60-second loop._

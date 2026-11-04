@@ -1,0 +1,21 @@
+{
+  "name": "bedrock-surface-map-docs",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "26.8.1" },
+  "scripts": {
+    "prepare:docs": "node scripts/prepare.mjs",
+    "dev": "npm run prepare:docs && vitepress dev --host 127.0.0.1",
+    "build": "npm run prepare:docs && vitepress build && node scripts/check.mjs",
+    "preview": "vitepress preview --host 127.0.0.1",
+    "test": "node --test scripts/*.test.mjs",
+    "test:browser": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "linkedom": "0.18.12",
+    "vitepress": "1.6.4",
+    "vue": "3.5.44"
+  },
+  "overrides": { "vite": "6.4.5" }
+}

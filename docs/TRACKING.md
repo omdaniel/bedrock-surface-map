@@ -4,7 +4,7 @@ See who is online, find them on the map, and follow them as they explore.
 Tracking works with **Mojang's official Bedrock Dedicated Server**; it does not
 require replacing the game server.
 
-[Try the interactive demo](https://omdaniel.github.io/bedrock-surface-map/) to
+[Try the interactive demo](https://omdaniel.github.io/bedrock-surface-map/demo/) to
 explore the controls. Its players are fictional, not connected to a live server.
 
 ## Using the Map

@@ -13,7 +13,7 @@ const mime = {
 };
 export async function serveDemo(port = 5190) {
   const root = resolve(".local/demo-dist");
-  const base = "/bedrock-surface-map/";
+  const base = "/bedrock-surface-map/demo/";
   const server = createServer(async (req, res) => {
     try {
       if (!["GET", "HEAD"].includes(req.method)) {
@@ -49,5 +49,5 @@ export async function serveDemo(port = 5190) {
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   await serveDemo();
-  console.log("http://127.0.0.1:5190/bedrock-surface-map/");
+  console.log("http://127.0.0.1:5190/bedrock-surface-map/demo/");
 }

@@ -5,7 +5,7 @@ installation. It uses your existing HTTPS proxy or tunnel and a dedicated
 internal Docker network for observations. Your existing Compose project manages
 Minecraft; the map has its own project, storage and credentials.
 
-Use an operator bundle that supports `[bds]`, `[gateway]` and `deploy export-bds`;
+[Download and verify the live operator bundle](OPERATOR-INSTALL.md) first;
 the snapshot-only download is insufficient. See [release availability and host
 requirements](DEPLOYMENT.md). The map host needs supported Linux Docker/Compose,
 an existing trusted HTTPS hostname, a consistent offline world export, and access

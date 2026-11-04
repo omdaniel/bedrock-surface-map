@@ -90,7 +90,7 @@ state, not part of the surface format. [Appearance](APPEARANCE.md) describes
 Vivid/Original color, shadows, sand grading and terrain-edge relief.
 
 A max-height pyramid accelerates sunward ray queries. Its buffer contains 32
-vec4<u32> descriptors followed by f32 height levels; descriptor 31.w holds the
+`vec4<u32>` descriptors followed by f32 height levels; descriptor 31.w holds the
 level count. Each parent is the maximum of its existing 2x2 children, including
 odd edges. Missing cells use -1e6 and do not occlude. Four stratified footprint
 samples provide fractional-block shadow coverage.

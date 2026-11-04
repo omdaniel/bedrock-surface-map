@@ -1,5 +1,21 @@
 # Contributing
 
+## Choose a Component
+
+| Change | Tools and starting point | Focused local checks |
+|---|---|---|
+| Documentation and welcome website | Node.js; [website guide](docs/WEBSITE.md) | `npm --prefix website test` and `npm --prefix website run build` |
+| Behavior packs | Node.js; [pack-only setup](#work-on-server-packs-only) | Build and test the affected pack |
+| Browser UI, rendering, imports or collectors | Full source setup below; [component ownership](docs/DEVELOPMENT.md) | `./dev check` and relevant browser/native tests |
+| Deployment generation and packaging | Source setup plus [release CI](docs/CI.md) | Relevant deployment tests; architecture-specific CI |
+
+Synthetic fixtures need no Minecraft account, private world or infrastructure
+credentials. Contributions and bug reports use
+[GitHub](https://github.com/omdaniel/bedrock-surface-map); GitHub Pages hosts the
+documentation. Site changes edit the canonical Markdown rather than generated HTML.
+
+## Work on the Application
+
 Use [source setup](docs/GETTING_STARTED.md#run-the-demo-locally) to install the
 pinned tools and open a synthetic map. No Minecraft account, private world or
 running server is needed for ordinary development.
@@ -10,9 +26,12 @@ running server is needed for ordinary development.
 ./dev test -- tests/dial.spec.ts
 ```
 
-Before a pull request, run `./dev check --profile full`. It is the source/demo
-suite used by CI; native release packaging has separate architecture-specific
-checks. See [development](docs/DEVELOPMENT.md#verify) for focused iteration and
+Before a pull request, run checks relevant to the changed components and state
+which checks you ran. Application changes use `./dev check`; the complete
+`./dev check --profile full` source/demo suite runs in CI and can be run locally
+before cross-component changes. Website-only and pack-only contributors do not
+need to install Rust just to run unrelated checks. Native release packaging has
+separate architecture-specific checks. See [development](docs/DEVELOPMENT.md#verify) for focused iteration and
 [architecture](docs/DEVELOPMENT.md) for component ownership.
 
 Keep changes focused. Include the user-visible behavior, relevant test results

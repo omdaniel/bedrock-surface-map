@@ -6,7 +6,8 @@ selected world's registration, and module-specific `config` directory. A hosting
 plan that blocks server scripting or outbound `server-net` requests cannot run
 this integration. Realms is outside its scope.
 
-Prepare the map using the [Docker quickstart](QUICKSTART-BDS.md) or [deployment
+Start with the [live operator download](OPERATOR-INSTALL.md), then prepare the
+map using the [Docker quickstart](QUICKSTART-BDS.md) or [deployment
 reference](DEPLOYMENT.md). Both feeds use Beta APIs; obtain approval and a verified
 backup before enabling experiments on a persistent world. Use a disposable world
 for initial acceptance. Never upload an entire older world to install an update
