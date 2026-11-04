@@ -1,22 +1,23 @@
 import { test, expect } from '@playwright/test';
 
-test('welcome routes readers to the demo and three onboarding paths', async ({ page }, testInfo) => {
+test('documentation index links to user and developer guides', async ({ page }, testInfo) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(String(error)));
+  await page.emulateMedia({ colorScheme: 'dark' });
   await page.goto('./');
-  await expect(page.getByRole('heading', { level: 1 })).toContainText('whole world to explore');
-  await expect(page.getByRole('link', { name: 'Explore the demo' })).toHaveAttribute('href', 'https://omdaniel.github.io/bedrock-surface-map/demo/');
-  await expect(page.locator('.hero-map img')).toHaveJSProperty('complete', true);
-  expect(await page.locator('.hero-map img').evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(1000);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Bedrock Surface Map');
+  await expect(page.locator('.vp-doc').getByRole('link', { name: 'Try the demo' })).toHaveAttribute('href', 'https://omdaniel.github.io/bedrock-surface-map/demo/');
+  await expect(page.locator('.vp-doc img')).toHaveCount(0);
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(255, 255, 255)');
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath('welcome.png'), fullPage: true });
-  await page.getByRole('link', { name: 'I have a world export' }).click();
+  await page.getByRole('link', { name: 'Install the snapshot viewer', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Install a Snapshot Viewer');
   await page.goto('./');
-  await page.getByRole('link', { name: 'I run a Bedrock server' }).click();
+  await page.getByRole('link', { name: 'Download the operator bundle', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Download the Live Operator Bundle');
   await page.goto('./');
-  await page.getByRole('link', { name: 'I want to contribute' }).click();
+  await page.locator('.vp-doc').getByRole('link', { name: 'Contribution guide', exact: true }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Contributing');
   expect(errors).toEqual([]);
 });
